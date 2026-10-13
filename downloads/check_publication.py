@@ -11,6 +11,82 @@ from playwright.sync_api import sync_playwright
 import fb_upload as upload
 
 
+def caption_probe(caption):
+    # Hashtags are separate DOM links and insert spaces into rendered text.
+    # Check a meaningful caption sentence first, rather than glued hashtags.
+    return " ".join(caption.split("#", 1)[0].split())[:45]
+
+
+def video_nodes(payload, wanted_id):
+    """Extract only public information about the already confirmed video."""
+    result = []
+    def visit(node, actors=(), message="", story=False, depth=0):
+        if depth > 80:
+            return
+        if isinstance(node, list):
+            for child in node:
+                visit(child, actors, message, story, depth + 1)
+        elif isinstance(node, dict):
+            owners = list(actors)
+            for key in ("owner", "video_owner", "actors"):
+                values = node.get(key, [])
+                if isinstance(values, dict):
+                    values = [values]
+                if isinstance(values, list):
+                    owners.extend(str(value["id"]) for value in values if isinstance(value, dict) and str(value.get("id", "")).isdecimal())
+            for key in ("message", "description"):
+                value = node.get(key)
+                if isinstance(value, dict) and isinstance(value.get("text"), str):
+                    message = value["text"]
+                elif isinstance(value, str):
+                    message = value
+            story = story or node.get("__typename") == "Story"
+            if str(node.get("id", "")) == wanted_id:
+                result.append({"video_id": wanted_id, "typename": str(node.get("__typename", "")),
+                               "owner_ids": sorted(set(owners)), "caption": message[:4000],
+                               "in_story": story,
+                               "published_flag": node.get("is_published") if isinstance(node.get("is_published"), bool) else None})
+            for child in node.values():
+                if isinstance(child, (dict, list)):
+                    visit(child, tuple(owners), message, story, depth + 1)
+    visit(payload)
+    return result
+
+
+class KnownVideoResponses:
+    def __init__(self, known_id):
+        self.known_id = known_id
+        self.items = []
+        self.responses_checked = 0
+
+    def receive(self, response):
+        parsed = urlparse(response.url)
+        if parsed.hostname not in {"www.facebook.com", "facebook.com"} or parsed.path.rstrip("/") != "/api/graphql":
+            return
+        try:
+            body = response.text()
+            if len(body) > 4_000_000:
+                return
+            self.responses_checked += 1
+            body = re.sub(r"^\s*for\s*\(\s*;;\s*\)\s*;", "", body)
+            try:
+                payloads = [json.loads(body)]
+            except ValueError:
+                payloads = []
+                for line in body.splitlines():
+                    try:
+                        payloads.append(json.loads(line))
+                    except ValueError:
+                        pass
+            for payload in payloads:
+                for item in video_nodes(payload, self.known_id):
+                    if item not in self.items and len(self.items) < 30:
+                        self.items.append(item)
+        except Exception:
+            # No response headers, cookies, query bodies or raw data are saved.
+            pass
+
+
 def reels_url(url):
     parsed = urlparse(url)
     query = parse_qs(parsed.query)
@@ -21,7 +97,7 @@ def reels_url(url):
 def inspect_known_reel(page, entry, permalink, caption):
     page.goto(permalink, wait_until="domcontentloaded", timeout=90000)
     upload.checkpoint(page)
-    prefix = " ".join(caption.split())[:100]
+    prefix = caption_probe(caption)
     author = page.get_by_role("link", name=entry["name"], exact=True)
     try:
         author.first.wait_for(state="visible", timeout=30000)
@@ -36,7 +112,7 @@ def inspect_known_reel(page, entry, permalink, caption):
         except Exception:
             pass
     result = page.evaluate("""({name, prefix, caption}) => {
-      const norm = text => text.replace(/\\s+/g, ' ').trim();
+      const norm = text => text.normalize('NFKC').replace(/\\s+/g, ' ').trim();
       const body = norm(document.body.innerText);
       const authorLinks = [...document.querySelectorAll('a[href]')]
         .filter(a => norm(a.innerText) === name)
@@ -46,12 +122,15 @@ def inspect_known_reel(page, entry, permalink, caption):
           const id = u.searchParams.get('id');
           return {text: norm(a.innerText), url: u.origin + u.pathname + (id ? '?id=' + id : '')};
         }).filter(Boolean);
-      return {caption_prefix_present: Boolean(prefix && body.includes(prefix)),
+      return {caption_prefix_present: Boolean(prefix && body.includes(norm(prefix))),
               full_caption_present: Boolean(caption && body.includes(norm(caption))),
               author_links: authorLinks.slice(0, 15)};
     }""", {"name": entry["name"], "prefix": prefix, "caption": caption})
     result["known_reel_url"] = permalink
     result["caption_prefix"] = prefix
+    result["reel_page_buttons"] = page.get_by_role("button").evaluate_all(
+        "els => els.map(e => e.getAttribute('aria-label') || e.innerText).filter(Boolean).slice(0, 40)"
+    )
     return result
 
 
@@ -91,23 +170,38 @@ def main():
         with sync_playwright() as playwright:
             context = upload.launch_context(playwright, entry)
             try:
+                known_id = row["permalink"].rstrip("/").split("/")[-1]
+                collector = KnownVideoResponses(known_id)
+                context.on("response", collector.receive)
                 page = context.pages[0] if context.pages else context.new_page()
                 page.set_default_timeout(30000)
-                page.goto(reels_url(entry["url"]), wait_until="domcontentloaded", timeout=90000)
+                page.goto(entry["url"], wait_until="domcontentloaded", timeout=90000)
+                upload.checkpoint(page)
+                tab = page.get_by_role("tab", name="Reels", exact=True)
+                if tab.count() == 1:
+                    tab.click()
+                else:
+                    page.goto(reels_url(entry["url"]), wait_until="domcontentloaded", timeout=90000)
                 upload.checkpoint(page)
                 try:
-                    page.locator('a[href*="/reel/"]').first.wait_for(state="visible", timeout=30000)
+                    page.locator('a[href*="/reel/"], a[href*="v="]').first.wait_for(state="visible", timeout=30000)
                 except Exception:
                     pass
                 report["checks"]["reel_links_on_page"] = page.evaluate("""() => {
                   const urls = [...document.querySelectorAll('a[href]')].map(a => {
                     const u = new URL(a.href);
                     if (!['facebook.com','www.facebook.com'].includes(u.hostname)) return null;
-                    return /^\\/reel\\/[0-9]+\\/?$/.test(u.pathname) ? u.origin + u.pathname : null;
+                    if (/^\\/reel\\/[0-9]+\\/?$/.test(u.pathname)) return u.origin + u.pathname;
+                    const id = u.searchParams.get('v');
+                    return id && /^[0-9]+$/.test(id) ? 'https://www.facebook.com/reel/' + id : null;
                   }).filter(Boolean);
                   return [...new Set(urls)].slice(0, 40);
                 }""")
                 report["checks"]["reel_details"] = inspect_known_reel(page, entry, row["permalink"], caption)
+                # Reading page text below also lets queued response callbacks finish.
+                page.title()
+                report["checks"]["known_video_data"] = collector.items
+                report["checks"]["video_data_responses_checked"] = collector.responses_checked
                 print("只读检查完成，没有上传或发布视频。")
             except Exception as error:
                 report["error"] = str(error)[:1400]
