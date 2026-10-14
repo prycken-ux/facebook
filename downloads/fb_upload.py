@@ -12,7 +12,7 @@ from urllib.parse import parse_qs, urlparse
 
 ROOT = Path(__file__).resolve().parent
 CONFIG = ROOT / "upload_config.json"
-VERSION = "2.2"
+VERSION = "2.3"
 SUCCESS_PATTERN = (
     r"^(?:Your reel (?:is(?: now)?|has been|was) (?:successfully )?"
     r"(?:published|shared|posted)(?: successfully)?|"
@@ -202,6 +202,46 @@ def checkpoint(page):
         raise RuntimeError("遇到登录或安全验证。请本人处理，程序不会跳过验证。")
 
 
+HEADER_MANAGEMENT_JS = r"""heading => {
+    const norm = text => (text || '').replace(/\s+/g, ' ').trim();
+    const controls = /^(Edit|Edit Page|Edit profile|编辑|编辑主页|Professional dashboard|专业仪表板|专业面板)$/i;
+    // Never climb into the app-wide wrapper containing the management sidebar.
+    // That sidebar is also shown while using the personal identity.
+    for (let area = heading.parentElement; area && area !== document.body; area = area.parentElement) {
+        if (/Manage Page|管理主页|管理公共主页/i.test(area.innerText || '')) break;
+        if (area.querySelector('[role="feed"], [role="article"]')) break;
+        for (const el of area.querySelectorAll('button, a, [role="button"], [role="link"]')) {
+            const label = norm(el.getAttribute('aria-label') || el.innerText);
+            const style = getComputedStyle(el);
+            if (controls.test(label) && el.getClientRects().length &&
+                style.visibility !== 'hidden' && style.display !== 'none' &&
+                !el.disabled && el.getAttribute('aria-disabled') !== 'true') {
+                return 'active_page_header_management_control';
+            }
+        }
+    }
+    return null;
+}"""
+
+
+def page_actor_matches(page, entry):
+    # Inspect only the local Page actor identifier. Never print, persist, or
+    # return any cookie values, including session credentials.
+    try:
+        actors = {cookie["value"] for cookie in page.context.cookies(["https://www.facebook.com/"])
+                  if cookie.get("name") == "i_user" and cookie.get("value")}
+    except Exception:
+        raise RuntimeError("无法在本地核对当前主页身份；未点击发布。") from None
+    if not actors:
+        return False
+    target = target_key(entry["url"])
+    if not target.startswith("id:"):
+        raise RuntimeError("身份核对需要含数字 id 的公共主页网址；未点击发布。")
+    if actors != {target[3:]}:
+        raise RuntimeError("当前浏览器的发布身份与目标公共主页不一致；未选择视频或点击发布。")
+    return True
+
+
 def ensure_page_identity(page, entry):
     from playwright.sync_api import expect
 
@@ -220,21 +260,19 @@ def ensure_page_identity(page, entry):
         switched = True
     banner = page.get_by_text(re.compile(r"^Switch into .+ to start managing it\.?$", re.I))
     expect(banner).not_to_be_visible(timeout=30000)
-    # The management sidebar exists even while viewing a Page as the personal
-    # account. Require the active Page's Edit control, not just 'Manage Page'.
-    edit = page.get_by_role("button", name=re.compile(r"^(Edit|Edit Page|Edit profile|编辑|编辑主页)$", re.I)).first
-    try:
-        expect(edit).to_be_visible(timeout=60000)
-        expect(edit).to_be_enabled(timeout=30000)
-    except Exception as error:
-        raise RuntimeError("无法确认已切换到目标公共主页身份。请检查 Switch Now 和主页顶部 Edit 按钮；未选择视频或点击发布。") from error
+    method = "page_actor_id_match" if page_actor_matches(page, entry) else None
+    if method is None:
+        heading = page.get_by_role("heading", name=entry["name"], exact=True).first
+        method = heading.evaluate(HEADER_MANAGEMENT_JS)
+        if method != "active_page_header_management_control":
+            raise RuntimeError("无法确认公共主页身份：当前身份编号不可用，且主页顶部未找到有效管理按钮。未选择视频或点击发布。")
     checkpoint(page)
     expect(page.get_by_role("heading", name=entry["name"], exact=True).first).to_be_visible(timeout=30000)
     if target_key(page.url) != target_key(entry["url"]):
         raise RuntimeError("切换后主页网址与配置不同，已停止。")
     print("主页身份检查通过：", entry["name"], entry["url"], flush=True)
     return {"target_url": entry["url"], "name": entry["name"], "switched": switched,
-            "method": "no_switch_banner_and_active_page_edit_control"}
+            "method": method}
 
 
 def check_identity(entry):
@@ -258,7 +296,7 @@ def prepare_reel(page, entry, video, text):
     from playwright.sync_api import expect
 
     page.goto(entry["url"], wait_until="domcontentloaded", timeout=90000)
-    ensure_page_identity(page, entry)
+    identity_proof = ensure_page_identity(page, entry)
     page.get_by_role("button", name="Facebook menu", exact=True).click()
     page.get_by_role("dialog", name="Menu", exact=True).get_by_role("button", name="Reel", exact=True).click()
     form = page.get_by_role("form", name="Reels", exact=True)
@@ -283,7 +321,7 @@ def prepare_reel(page, entry, video, text):
             label.click()
     button = page.get_by_role("button", name="Post", exact=True)
     expect(button).to_be_enabled(timeout=240000)
-    return button
+    return button, identity_proof
 
 
 def archive(video, caption):
@@ -337,15 +375,18 @@ def run_entry(entry, state, state_path, publish):
                 save_json(state_path, state)
             posted = False
             try:
-                button = prepare_reel(page, entry, video, text)
+                button, identity_proof = prepare_reel(page, entry, video, text)
                 print("视频：", video.name, "目标：", entry["name"], entry["url"])
                 if not publish:
                     print("PREPARE：未点击 Post。请在浏览器检查目标、视频、文案和设置。")
                     input("检查完按回车关闭浏览器；不要在这个准备模式中手动发布。")
                     return True
                 install_receipt_watch(page)
+                actor_matches = page_actor_matches(page, entry)
+                if identity_proof["method"] == "page_actor_id_match" and not actor_matches:
+                    raise RuntimeError("准备视频后当前主页身份信息已变化；未点击发布。")
                 # Persist the intent BEFORE clicking, so crashes cannot retry the Post.
-                record["identity_validation"] = "no_switch_banner_and_active_page_edit_control"
+                record["identity_validation"] = identity_proof
                 record["status"] = "posting"
                 save_json(state_path, state)
                 page.evaluate("() => { window.__fbUploadWatch.armed = true; }")
