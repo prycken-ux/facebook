@@ -12,7 +12,7 @@ from urllib.parse import parse_qs, urlparse
 
 ROOT = Path(__file__).resolve().parent
 CONFIG = ROOT / "upload_config.json"
-VERSION = "2.0"
+VERSION = "2.1"
 SUCCESS_PATTERN = (
     r"^(?:Your reel (?:is(?: now)?|has been|was) (?:successfully )?"
     r"(?:published|shared|posted)(?: successfully)?|"
@@ -98,6 +98,29 @@ def save_json(path, data):
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     temporary.replace(path)
+
+
+def display_status(logs):
+    # State files are replaced atomically by writers. Reading a snapshot does
+    # not need to acquire, modify, or remove the publication lock.
+    state = read_json(logs / "publish_state.json", {})
+    if not state:
+        print("暂无发布记录。")
+    for key, row in state.items():
+        print(key[:12], row["account"], row["target"], row["status"], Path(row["video"]).name)
+    lock = logs / "upload.lock"
+    try:
+        value = lock.read_text(encoding="ascii").strip()
+    except FileNotFoundError:
+        return 0
+    except (UnicodeError, OSError):
+        value = ""
+    if value.isdecimal():
+        print("锁文件仍存在，锁内进程编号 PID：", int(value))
+    else:
+        print("锁文件仍存在，暂时无法读取进程编号。")
+    print("本次仅查看记录，未删除锁，也未上传或发布。请先确认原任务是否还在运行。")
+    return 0
 
 
 def target_key(url):
@@ -312,10 +335,16 @@ def main():
     parser.add_argument("--verified-absent", action="store_true")
     parser.add_argument("--ai-label", choices=["on", "off"])
     args = parser.parse_args()
+    logs = ROOT / "logs"
+    if args.action == "status":
+        try:
+            return display_status(logs)
+        except Exception as error:
+            print("STOP：无法读取发布记录：", error)
+            return 1
     configuration = read_json(CONFIG, {"targets": []})
     entry = next((item for item in configuration["targets"] if
                   item["account"] == args.account and item["target"] == args.target), None)
-    logs = ROOT / "logs"
     logs.mkdir(exist_ok=True)
     state_path = logs / "publish_state.json"
     lock = logs / "upload.lock"
@@ -328,10 +357,6 @@ def main():
         with os.fdopen(fd, "w") as handle:
             handle.write(str(os.getpid()))
         state = read_json(state_path, {})
-        if args.action == "status":
-            for key, row in state.items():
-                print(key[:12], row["account"], row["target"], row["status"], Path(row["video"]).name)
-            return 0
         if args.action in {"confirm", "retry"}:
             if not args.job or len(args.job) < 12:
                 raise ValueError("请用 --job 指定 status 中显示的 12 位任务编号。")
