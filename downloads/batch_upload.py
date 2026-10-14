@@ -69,7 +69,7 @@ def execute(entries, action):
 
 def main():
     parser = argparse.ArgumentParser(description="公共主页批量准备或发布；每个目标每次最多一条")
-    parser.add_argument("action", choices=["plan", "prepare", "enable", "publish"], nargs="?", default="plan")
+    parser.add_argument("action", choices=["plan", "check-identity", "prepare", "enable", "publish"], nargs="?", default="plan")
     parser.add_argument("--accounts", required=True, help="例如 fb01,fb02,fb03")
     args = parser.parse_args()
     accounts = list(dict.fromkeys(value.strip() for value in args.accounts.split(",") if value.strip()))
