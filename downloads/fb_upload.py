@@ -1,4 +1,4 @@
-"""Local Windows uploader based on the user's recorded public Page flow."""
+"""Local Windows uploader based on the user's recorded Page and personal flows."""
 import argparse
 import hashlib
 import json
@@ -12,7 +12,7 @@ from urllib.parse import parse_qs, urlparse
 
 ROOT = Path(__file__).resolve().parent
 CONFIG = ROOT / "upload_config.json"
-VERSION = "2.3"
+VERSION = "2.4"
 SUCCESS_PATTERN = (
     r"^(?:Your reel (?:is(?: now)?|has been|was) (?:successfully )?"
     r"(?:published|shared|posted)(?: successfully)?|"
@@ -146,8 +146,11 @@ def validate_entry(entry):
     for key in ("account", "target"):
         if not re.fullmatch(r"[A-Za-z0-9_-]+", entry[key]):
             raise ValueError("账号和目标编号只能含字母、数字、下划线和短横线。")
-    if entry.get("type") != "page":
-        raise ValueError("这份录制只支持公共主页；个人主页需要另行录制和验证。")
+    if entry.get("type") not in {"page", "personal"}:
+        raise ValueError("目标类型必须是 page 或 personal。")
+    if entry["type"] == "personal" and (entry["target"] != "personal" or
+                                          entry.get("workflow") != "personal_recording_v1"):
+        raise ValueError("个人主页需通过 setup_personal.py 登记录制流程，并使用 personal 目标。")
     if not entry.get("name", "").strip():
         raise ValueError("请填写目标主页名称。")
     target_key(entry["url"])
@@ -202,9 +205,11 @@ def checkpoint(page):
         raise RuntimeError("遇到登录或安全验证。请本人处理，程序不会跳过验证。")
 
 
-HEADER_MANAGEMENT_JS = r"""heading => {
+HEADER_MANAGEMENT_JS = r"""(heading, kind) => {
     const norm = text => (text || '').replace(/\s+/g, ' ').trim();
-    const controls = /^(Edit|Edit Page|Edit profile|编辑|编辑主页|Professional dashboard|专业仪表板|专业面板)$/i;
+    const controls = kind === 'personal'
+        ? /^(Edit profile|编辑个人资料|编辑个人主页|Professional dashboard|专业仪表板|专业面板)$/i
+        : /^(Edit|Edit Page|Edit profile|编辑|编辑主页|Professional dashboard|专业仪表板|专业面板)$/i;
     // Never climb into the app-wide wrapper containing the management sidebar.
     // That sidebar is also shown while using the personal identity.
     for (let area = heading.parentElement; area && area !== document.body; area = area.parentElement) {
@@ -216,7 +221,7 @@ HEADER_MANAGEMENT_JS = r"""heading => {
             if (controls.test(label) && el.getClientRects().length &&
                 style.visibility !== 'hidden' && style.display !== 'none' &&
                 !el.disabled && el.getAttribute('aria-disabled') !== 'true') {
-                return 'active_page_header_management_control';
+                return kind === 'personal' ? 'active_personal_header_management_control' : 'active_page_header_management_control';
             }
         }
     }
@@ -275,6 +280,62 @@ def ensure_page_identity(page, entry):
             "method": method}
 
 
+def personal_actor_fingerprint(page, entry):
+    # Compare identity metadata only in memory; no cookie values enter logs.
+    try:
+        cookies = page.context.cookies(["https://www.facebook.com/"])
+        people = {c["value"] for c in cookies if c.get("name") == "c_user" and c.get("value")}
+        actors = {c["value"] for c in cookies if c.get("name") == "i_user" and c.get("value")}
+    except Exception:
+        raise RuntimeError("无法在本地核对个人主页登录身份；未点击发布。") from None
+    if len(people) != 1 or not next(iter(people)).isdecimal():
+        raise RuntimeError("无法确认个人账号登录身份，请在该账号窗口重新检查登录。")
+    if actors and actors != people:
+        raise RuntimeError("当前仍是公共主页身份，请先手动切回登录者个人主页；未选择视频或点击发布。")
+    target = target_key(entry["url"])
+    if target.startswith("id:") and people != {target[3:]}:
+        raise RuntimeError("登录的个人账号与目标个人主页不一致；未选择视频或点击发布。")
+    return hashlib.sha256(("personal:" + next(iter(people))).encode("ascii")).hexdigest()
+
+
+def ensure_personal_identity(page, entry):
+    from playwright.sync_api import expect
+
+    checkpoint(page)
+    marker = personal_actor_fingerprint(page, entry)
+    heading = page.get_by_role("heading", name=entry["name"], exact=True).first
+    expect(heading).to_be_visible(timeout=90000)
+    if target_key(page.url) != target_key(entry["url"]):
+        raise RuntimeError("浏览器网址与目标个人主页不同；未选择视频或点击发布。")
+    method = "personal_actor_id_match"
+    if target_key(entry["url"]).startswith("slug:"):
+        if heading.evaluate(HEADER_MANAGEMENT_JS, "personal") != "active_personal_header_management_control":
+            raise RuntimeError("无法确认该短网址属于当前登录者：未找到个人主页顶部的编辑个人资料或专业面板按钮。")
+        method = "personal_session_and_own_profile_header"
+    if personal_actor_fingerprint(page, entry) != marker:
+        raise RuntimeError("个人主页身份检查过程中登录身份变化，已停止。")
+    print("个人主页身份检查通过：", entry["name"], entry["url"], flush=True)
+    return {"target_url": entry["url"], "name": entry["name"], "method": method,
+            "session_marker": marker}
+
+
+def ensure_identity(page, entry):
+    if entry.get("type") == "personal":
+        return ensure_personal_identity(page, entry)
+    return ensure_page_identity(page, entry)
+
+
+def recheck_publish_identity(page, entry, proof):
+    checkpoint(page)
+    if entry.get("type") == "personal":
+        if personal_actor_fingerprint(page, entry) != proof.get("session_marker"):
+            raise RuntimeError("准备视频后个人登录身份已变化；未点击发布。")
+    else:
+        actor_matches = page_actor_matches(page, entry)
+        if proof["method"] == "page_actor_id_match" and not actor_matches:
+            raise RuntimeError("准备视频后当前主页身份信息已变化；未点击发布。")
+
+
 def check_identity(entry):
     from playwright.sync_api import sync_playwright
 
@@ -283,7 +344,7 @@ def check_identity(entry):
         try:
             page = context.pages[0] if context.pages else context.new_page()
             page.goto(entry["url"], wait_until="domcontentloaded", timeout=90000)
-            result = ensure_page_identity(page, entry)
+            result = ensure_identity(page, entry)
             result["checked_at"] = datetime.now().astimezone().isoformat()
             upload_log = ROOT / "logs" / ("identity-" + entry["account"] + "-" + entry["target"] + ".json")
             save_json(upload_log, result)
@@ -296,19 +357,31 @@ def prepare_reel(page, entry, video, text):
     from playwright.sync_api import expect
 
     page.goto(entry["url"], wait_until="domcontentloaded", timeout=90000)
-    identity_proof = ensure_page_identity(page, entry)
+    identity_proof = ensure_identity(page, entry)
     page.get_by_role("button", name="Facebook menu", exact=True).click()
-    page.get_by_role("dialog", name="Menu", exact=True).get_by_role("button", name="Reel", exact=True).click()
+    if entry.get("type") == "personal":
+        page.get_by_role("button", name="Reel", exact=True).click()
+    else:
+        page.get_by_role("dialog", name="Menu", exact=True).get_by_role("button", name="Reel", exact=True).click()
     form = page.get_by_role("form", name="Reels", exact=True)
     form.locator('input[type="file"]').set_input_files(str(video.resolve()))
     page.get_by_role("button", name="Next", exact=True).click(timeout=240000)
     page.get_by_role("button", name="Next", exact=True).click(timeout=240000)
     checkpoint(page)
+    if entry.get("type") == "personal":
+        # The recording already has Public selected. Verify it; do not use the
+        # generated, unstable CSS selector or silently publish to another audience.
+        audience = page.get_by_role("button", name=re.compile(r"^Public Anyone on or off"))
+        expect(audience).to_be_visible(timeout=30000)
     field = page.get_by_role("textbox", name="Describe your reel...", exact=True)
     field.fill(text, timeout=240000)
     expect(field).to_have_value(text) if field.evaluate("e => 'value' in e") else expect(field).to_have_text(text)
     # Turn the requested AI label ON, never toggle an already enabled label OFF.
-    if entry.get("ai_label", False):
+    if entry.get("ai_label", False) and entry.get("type") == "personal":
+        label = page.get_by_role("switch", name="Add AI label", exact=True)
+        label.check()
+        expect(label).to_be_checked()
+    elif entry.get("ai_label", False):
         label = page.get_by_role("button", name=re.compile(r"^Add AI label We require you"))
         current = label.get_attribute("aria-checked") or label.get_attribute("aria-pressed")
         if current is None:
@@ -382,9 +455,7 @@ def run_entry(entry, state, state_path, publish):
                     input("检查完按回车关闭浏览器；不要在这个准备模式中手动发布。")
                     return True
                 install_receipt_watch(page)
-                actor_matches = page_actor_matches(page, entry)
-                if identity_proof["method"] == "page_actor_id_match" and not actor_matches:
-                    raise RuntimeError("准备视频后当前主页身份信息已变化；未点击发布。")
+                recheck_publish_identity(page, entry, identity_proof)
                 # Persist the intent BEFORE clicking, so crashes cannot retry the Post.
                 record["identity_validation"] = identity_proof
                 record["status"] = "posting"
@@ -415,7 +486,7 @@ def run_entry(entry, state, state_path, publish):
 
 def main():
     print("本地上传程序版本：", VERSION)
-    parser = argparse.ArgumentParser(description="Windows 本地公共主页视频上传")
+    parser = argparse.ArgumentParser(description="Windows 本地公共主页和个人主页视频上传")
     parser.add_argument("action", choices=["configure", "check-identity", "prepare", "enable", "publish", "status", "confirm", "retry"])
     parser.add_argument("--account", default="fb02")
     parser.add_argument("--target", default="page01")

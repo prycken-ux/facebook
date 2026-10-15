@@ -1,4 +1,4 @@
-"""Run configured local public Page tasks sequentially, with full preflight."""
+"""Run configured local Page and personal tasks sequentially, with full preflight."""
 import argparse
 import os
 import re
@@ -68,7 +68,7 @@ def execute(entries, action):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="公共主页批量准备或发布；每个目标每次最多一条")
+    parser = argparse.ArgumentParser(description="公共主页和个人主页批量准备或发布；每个目标每次最多一条")
     parser.add_argument("action", choices=["plan", "check-identity", "prepare", "enable", "publish"], nargs="?", default="plan")
     parser.add_argument("--accounts", required=True, help="例如 fb01,fb02,fb03")
     args = parser.parse_args()
