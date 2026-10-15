@@ -13,7 +13,7 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 ROOT = Path(__file__).resolve().parent
 CONFIG = ROOT / "upload_config.json"
-VERSION = "2.11"
+VERSION = "2.12"
 SUCCESS_PATTERN = (
     r"^(?:Your reel (?:is(?: now)?|has been|was) (?:successfully )?"
     r"(?:published|shared|posted)(?: successfully)?|"
@@ -523,6 +523,101 @@ def select_reel_video(page, reel_button, video, timeout_ms=60000):
         page.remove_listener("filechooser", choose_native)
 
 
+MODERN_CAPTION_JS = r"""() => {
+    const marker = 'data-local-upload-caption';
+    for (const el of document.querySelectorAll('[' + marker + ']')) el.removeAttribute(marker);
+    const visible = el => el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden';
+    const norm = text => (text || '').replace(/\s+/g, ' ').trim();
+    const editable = '[contenteditable="true"], textarea';
+    const found = new Set();
+    for (const seed of document.querySelectorAll('div, span, [aria-placeholder], [data-placeholder]')) {
+        if (!visible(seed)) continue;
+        const label = seed.getAttribute('aria-placeholder') || seed.getAttribute('data-placeholder') || seed.textContent;
+        if (norm(label) !== 'Describe your reel...') continue;
+        let area = seed;
+        for (let depth = 0; area && area !== document.body && depth < 6; depth++, area = area.parentElement) {
+            const candidates = [...area.querySelectorAll(editable)].filter(visible);
+            if (area.matches(editable) && visible(area)) candidates.push(area);
+            if (candidates.length) {
+                for (const el of candidates) found.add(el);
+                break;
+            }
+        }
+    }
+    if (found.size === 1) [...found][0].setAttribute(marker, 'true');
+    return found.size;
+}"""
+
+
+def wait_reel_layout(page, timeout_ms=90000):
+    deadline = time.monotonic() + timeout_ms / 1000
+    while time.monotonic() < deadline:
+        checkpoint(page)
+        if urlparse(page.url).path.rstrip("/") == "/reels/create":
+            return "modern"
+        form = page.get_by_role("form", name="Reels", exact=True)
+        next_button = page.get_by_role("button", name="Next", exact=True)
+        if form.count() == 1 and form.is_visible() and next_button.count() == 1 and next_button.is_visible():
+            return "classic"
+        page.wait_for_timeout(100)
+    raise RuntimeError("选择视频后未识别到已录制的 Reel 编辑界面，未点击发布。")
+
+
+def modern_caption_field(page, timeout_ms=90000):
+    deadline = time.monotonic() + timeout_ms / 1000
+    while time.monotonic() < deadline:
+        field = page.get_by_role("textbox", name="Describe your reel...", exact=True)
+        if field.count() == 1 and field.is_visible():
+            return field
+        count = page.evaluate(MODERN_CAPTION_JS)
+        if count == 1:
+            return page.locator('[data-local-upload-caption="true"]')
+        if count > 1:
+            raise RuntimeError("新版描述位置关联多个可编辑区域，无法唯一填写，未点击发布。")
+        page.wait_for_timeout(100)
+    raise RuntimeError("未找到新版 Describe your reel 描述框，未点击发布。")
+
+
+def fill_caption(field, text):
+    from playwright.sync_api import expect
+
+    field.fill(text, timeout=240000)
+    if field.evaluate("e => 'value' in e"):
+        expect(field).to_have_value(text)
+    else:
+        # Rich editors represent line breaks as block elements or <br> nodes.
+        # Check their rendered text so multiline captions retain those breaks.
+        expect(field).to_have_text(text, use_inner_text=True)
+
+
+def prepare_modern_reel(page, entry, text):
+    from playwright.sync_api import expect
+
+    field = modern_caption_field(page)
+    fill_caption(field, text)
+    page.get_by_role("button", name="Next", exact=True).click(timeout=240000)
+    checkpoint(page)
+    audience = page.get_by_role("button", name=re.compile(r"^Post audience Post audience"))
+    expect(audience).to_be_visible(timeout=60000)
+    if entry.get("ai_label", False):
+        label = page.get_by_role("button", name=re.compile(r"^Add AI label"))
+        toggle = label.get_by_label(re.compile(r"^(Off|On)$"))
+        expect(toggle).to_be_visible(timeout=30000)
+        toggle.check()
+        expect(toggle).to_be_checked()
+    audience.click()
+    public = page.get_by_role("radio", name=re.compile(r"^Public Anyone on or off"))
+    expect(public).to_be_visible(timeout=30000)
+    public.check()
+    expect(public).to_be_checked()
+    page.get_by_role("button", name="Done", exact=True).click()
+    expect(audience).to_contain_text(re.compile(r"\bPublic\b"), timeout=30000)
+    button = page.get_by_role("button", name="Post", exact=True)
+    expect(button).to_be_enabled(timeout=240000)
+    print("新版 Reel 检查通过：TXT 文案已填写，Public 和所需 AI 标签已核对。", flush=True)
+    return button
+
+
 def prepare_reel(page, entry, video, text):
     from playwright.sync_api import expect
 
@@ -535,14 +630,17 @@ def prepare_reel(page, entry, video, text):
     else:
         reel_button = page.get_by_role("dialog", name="Menu", exact=True).get_by_role("button", name="Reel", exact=True)
     select_reel_video(page, reel_button, video)
+    layout = wait_reel_layout(page)
+    if layout == "modern":
+        button = prepare_modern_reel(page, entry, text)
+        return button, dict(identity_proof, editor_layout="modern")
     page.get_by_role("button", name="Next", exact=True).click(timeout=240000)
     page.get_by_role("button", name="Next", exact=True).click(timeout=240000)
     checkpoint(page)
     if entry.get("type") == "personal":
         ensure_personal_public_audience(page)
     field = page.get_by_role("textbox", name="Describe your reel...", exact=True)
-    field.fill(text, timeout=240000)
-    expect(field).to_have_value(text) if field.evaluate("e => 'value' in e") else expect(field).to_have_text(text)
+    fill_caption(field, text)
     # Turn the requested AI label ON, never toggle an already enabled label OFF.
     if entry.get("ai_label", False) and entry.get("type") == "personal":
         label = page.get_by_role("switch", name="Add AI label", exact=True)
