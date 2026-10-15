@@ -22,7 +22,7 @@ HTML = '''<main><section><h1>Example Person</h1><button>Edit profile</button></s
 <input type="file" accept="video/*" onchange="window.selectedFile=this.files[0].name">
 <button type="button" id="next" onclick="window.steps=(window.steps||0)+1;
 if(window.steps===2){this.hidden=true;document.querySelector('#settings').hidden=false}">Next</button>
-<div id="settings" hidden><button id="audience" type="button"
+<div id="settings" role="dialog" aria-label="Reel settings" hidden><button id="audience" type="button"
 onclick="window.audienceOpened=(window.audienceOpened||0)+1;document.querySelector('#audience-dialog').hidden=false">Public Anyone on or off Facebook</button>
 <div id="audience-dialog" role="dialog" aria-label="Choose audience" hidden>
 <input type="radio" id="public-option" aria-label="Public Anyone on or off Facebook">
@@ -32,6 +32,7 @@ onclick="window.audienceOpened=(window.audienceOpened||0)+1;document.querySelect
 <input type="checkbox" role="switch" aria-label="Add AI label" onchange="update()">
 <button id="post" type="button" disabled onclick="window.postClicks=(window.postClicks||0)+1">Post</button>
 </div></form></main><script>
+document.querySelector('form').after(document.querySelector('#settings'));
 function update(){document.querySelector('#post').disabled=!(document.querySelector('textarea').value &&
 document.querySelector('[role=switch]').checked)}
 </script>'''
@@ -155,6 +156,15 @@ class PersonalBrowserTests(unittest.TestCase):
         self.assertEqual(self.page.evaluate("window.audienceOpened"), 1)
         self.assertEqual(self.page.get_by_role("textbox").input_value(), "Fixture caption\n#Example")
         self.assertIsNone(self.page.evaluate("window.postClicks"))
+        self.assertEqual(self.page.get_by_role("form", name="Reels", exact=True).get_by_role("button", name="Public Anyone on or off Facebook", exact=True).count(), 0)
+
+    def test_audience_rendering_after_caption_field_is_waited_for(self):
+        self.html = HTML.replace('>Public Anyone on or off Facebook</button>', '>Friends Your friends on Facebook</button>', 1)
+        self.html = self.html.replace('id="audience" type="button"', 'id="audience" hidden type="button"')
+        self.html = self.html.replace("document.querySelector('#settings').hidden=false", "document.querySelector('#settings').hidden=false;setTimeout(()=>document.querySelector('#audience').hidden=false,100)")
+        self.prepare()
+        self.assertEqual(self.page.evaluate("window.audienceOpened"), 1)
+        self.assertIsNone(self.page.evaluate("window.postClicks"))
 
     def test_already_public_does_not_open_or_toggle_audience(self):
         self.prepare()
@@ -162,7 +172,14 @@ class PersonalBrowserTests(unittest.TestCase):
 
     def test_unknown_audience_stops_before_filling_or_post(self):
         self.html = HTML.replace('>Public Anyone on or off Facebook</button>', '>Only me</button>', 1)
-        with self.assertRaisesRegex(RuntimeError, "未识别到 Friends 选择入口"):
+        with self.assertRaisesRegex(RuntimeError, "未找到已加载的 Public/Friends"):
+            self.prepare()
+        self.assertEqual(self.page.get_by_role("textbox").input_value(), "")
+        self.assertIsNone(self.page.evaluate("window.postClicks"))
+
+    def test_public_button_outside_settings_is_not_audience_evidence(self):
+        self.html = '<button>Public Anyone on or off Facebook</button>' + HTML.replace('>Public Anyone on or off Facebook</button>', '>Only me</button>', 1)
+        with self.assertRaisesRegex(RuntimeError, "未找到已加载的 Public/Friends"):
             self.prepare()
         self.assertEqual(self.page.get_by_role("textbox").input_value(), "")
         self.assertIsNone(self.page.evaluate("window.postClicks"))

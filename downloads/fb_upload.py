@@ -12,7 +12,7 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 ROOT = Path(__file__).resolve().parent
 CONFIG = ROOT / "upload_config.json"
-VERSION = "2.7"
+VERSION = "2.8"
 SUCCESS_PATTERN = (
     r"^(?:Your reel (?:is(?: now)?|has been|was) (?:successfully )?"
     r"(?:published|shared|posted)(?: successfully)?|"
@@ -218,16 +218,24 @@ def require_english_interface(page):
         raise RuntimeError("Facebook 界面仍不是英语。请在此账号的 Facebook 设置中将界面语言改为 English (US)，再执行 prepare；未选择视频或点击发布。")
 
 
-def ensure_personal_public_audience(page, form):
+def ensure_personal_public_audience(page):
     from playwright.sync_api import expect
 
-    expect(form.get_by_role("textbox", name="Describe your reel...", exact=True)).to_be_visible(timeout=240000)
-    public = form.get_by_role("button", name=re.compile(r"^Public Anyone on or off"))
+    settings = page.get_by_role("dialog", name="Reel settings", exact=True)
+    expect(settings).to_be_visible(timeout=240000)
+    expect(settings.get_by_role("textbox", name="Describe your reel...", exact=True)).to_be_visible(timeout=240000)
+    # Audience controls may be outside the upload form and render later than
+    # the caption field. Wait in the settings dialog, not in the file form.
+    choice = settings.get_by_role("button", name=re.compile(r"^(Public|Friends)\b"))
+    try:
+        expect(choice).to_be_visible(timeout=60000)
+    except Exception:
+        raise RuntimeError("Reel settings 中未找到已加载的 Public/Friends 可见范围选项；未填写文案或点击发布。") from None
+    public = settings.get_by_role("button", name=re.compile(r"^Public\b"))
     if public.count() == 1 and public.is_visible():
         return
-    friends = form.get_by_role("button", name="Friends Your friends on Facebook", exact=True)
-    if friends.count() != 1 or not friends.is_visible():
-        raise RuntimeError("本条 Reel 尚未设为 Public，且未识别到 Friends 选择入口；未填写文案或点击发布。")
+    friends = settings.get_by_role("button", name=re.compile(r"^Friends\b"))
+    expect(friends).to_be_visible(timeout=30000)
     friends.click()
     option = page.get_by_role("radio", name=re.compile(r"^Public Anyone on or off"))
     expect(option).to_be_visible(timeout=30000)
@@ -433,7 +441,7 @@ def prepare_reel(page, entry, video, text):
     page.get_by_role("button", name="Next", exact=True).click(timeout=240000)
     checkpoint(page)
     if entry.get("type") == "personal":
-        ensure_personal_public_audience(page, form)
+        ensure_personal_public_audience(page)
     field = page.get_by_role("textbox", name="Describe your reel...", exact=True)
     field.fill(text, timeout=240000)
     expect(field).to_have_value(text) if field.evaluate("e => 'value' in e") else expect(field).to_have_text(text)
