@@ -7,6 +7,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 from unittest.mock import MagicMock, patch
 
 from playwright.sync_api import sync_playwright, expect as real_expect
@@ -61,6 +62,7 @@ class PersonalBrowserTests(unittest.TestCase):
         self.me_url = None
         self.me_html = None
         self.me_cookie = None
+        self.english_html = None
         self.page = self.context.new_page()
         self.cookies()
         self.silence = contextlib.redirect_stdout(io.StringIO())
@@ -69,13 +71,15 @@ class PersonalBrowserTests(unittest.TestCase):
         self.expect_patch.start()
 
     def route(self, route):
-        if route.request.url == "https://www.facebook.com/me":
+        if urlparse(route.request.url).path.rstrip("/") == "/me":
             headers = {"Content-Type": "text/html"}
             if self.me_cookie:
                 headers["Set-Cookie"] = self.me_cookie
             route.fulfill(headers=headers, body='<script>location.replace(' + json.dumps(self.me_url or self.entry["url"]) + ')</script>')
         else:
-            html = self.me_html if route.request.url == self.me_url and self.me_html else self.html
+            html = self.me_html if self.me_url and upload.target_key(route.request.url) == upload.target_key(self.me_url) and self.me_html else self.html
+            if self.english_html and parse_qs(urlparse(route.request.url).query).get("locale") == ["en_US"]:
+                html = self.english_html
             route.fulfill(body=html, content_type="text/html")
 
     def tearDown(self):
@@ -111,6 +115,25 @@ class PersonalBrowserTests(unittest.TestCase):
         self.html = HTML.replace('role="switch"', 'checked role="switch"')
         self.prepare()
         self.assertTrue(self.page.get_by_role("switch").is_checked())
+
+    def test_locale_query_overrides_chinese_ui_before_upload(self):
+        self.html = '<html lang="zh-CN">' + HTML.replace("Facebook menu", "菜单") + '</html>'
+        self.english_html = '<html lang="en-US">' + HTML + '</html>'
+        self.prepare()
+        self.assertEqual(self.page.locator("html").get_attribute("lang"), "en-US")
+        self.assertIsNone(self.page.evaluate("window.postClicks"))
+
+    def test_site_still_chinese_stops_before_opening_menu_or_selecting_file(self):
+        self.html = '<html lang="zh-CN">' + HTML.replace("Facebook menu", "菜单") + '</html>'
+        with self.assertRaisesRegex(RuntimeError, "Facebook 界面仍不是英语"):
+            self.prepare()
+        self.assertIsNone(self.page.evaluate("window.selectedFile"))
+        self.assertFalse(self.page.get_by_role("button", name="Reel", exact=True).is_visible())
+
+    def test_alternative_english_menu_name_is_supported(self):
+        self.html = HTML.replace('>Facebook menu</button>', '>Menu</button>')
+        self.prepare()
+        self.assertEqual(self.page.evaluate("window.steps"), 2)
 
     def test_page_actor_or_wrong_person_stops_before_file_selection(self):
         for person, actor in (("1003", "9000"), ("1004", None)):

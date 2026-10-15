@@ -8,11 +8,11 @@ import shutil
 import sys
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 ROOT = Path(__file__).resolve().parent
 CONFIG = ROOT / "upload_config.json"
-VERSION = "2.5"
+VERSION = "2.6"
 SUCCESS_PATTERN = (
     r"^(?:Your reel (?:is(?: now)?|has been|was) (?:successfully )?"
     r"(?:published|shared|posted)(?: successfully)?|"
@@ -205,6 +205,19 @@ def checkpoint(page):
         raise RuntimeError("遇到登录或安全验证。请本人处理，程序不会跳过验证。")
 
 
+def english_url(url):
+    parsed = urlparse(url)
+    query = parse_qs(parsed.query, keep_blank_values=True)
+    query["locale"] = ["en_US"]
+    return urlunparse(parsed._replace(query=urlencode(query, doseq=True)))
+
+
+def require_english_interface(page):
+    language = (page.locator("html").get_attribute("lang") or "").strip().lower().replace("_", "-")
+    if language and language != "en" and not language.startswith("en-"):
+        raise RuntimeError("Facebook 界面仍不是英语。请在此账号的 Facebook 设置中将界面语言改为 English (US)，再执行 prepare；未选择视频或点击发布。")
+
+
 HEADER_MANAGEMENT_JS = r"""(heading, kind) => {
     const norm = text => (text || '').replace(/\s+/g, ' ').trim();
     const controls = kind === 'personal'
@@ -303,7 +316,7 @@ def verify_personal_vanity_owner(page, entry, marker):
 
     # Facebook's /me route resolves the logged-in person's own profile. This
     # proves ownership even when a responsive layout hides Edit profile.
-    page.goto("https://www.facebook.com/me", wait_until="domcontentloaded", timeout=90000)
+    page.goto(english_url("https://www.facebook.com/me"), wait_until="domcontentloaded", timeout=90000)
     page.wait_for_url(lambda url: urlparse(str(url)).path.rstrip("/") != "/me", timeout=60000)
     checkpoint(page)
     if personal_actor_fingerprint(page, entry) != marker:
@@ -322,7 +335,7 @@ def verify_personal_vanity_owner(page, entry, marker):
                 verified = False
     if not verified:
         raise RuntimeError("无法通过 Facebook 本人主页入口确认目标短网址属于当前账号；未选择视频或点击发布。")
-    page.goto(entry["url"], wait_until="domcontentloaded", timeout=90000)
+    page.goto(english_url(entry["url"]), wait_until="domcontentloaded", timeout=90000)
     checkpoint(page)
     expect(page.get_by_role("heading", name=entry["name"], exact=True).first).to_be_visible(timeout=90000)
     if target_key(page.url) != expected_key:
@@ -373,7 +386,7 @@ def check_identity(entry):
         context = launch_context(playwright, entry)
         try:
             page = context.pages[0] if context.pages else context.new_page()
-            page.goto(entry["url"], wait_until="domcontentloaded", timeout=90000)
+            page.goto(english_url(entry["url"]), wait_until="domcontentloaded", timeout=90000)
             result = ensure_identity(page, entry)
             result["checked_at"] = datetime.now().astimezone().isoformat()
             upload_log = ROOT / "logs" / ("identity-" + entry["account"] + "-" + entry["target"] + ".json")
@@ -386,9 +399,10 @@ def check_identity(entry):
 def prepare_reel(page, entry, video, text):
     from playwright.sync_api import expect
 
-    page.goto(entry["url"], wait_until="domcontentloaded", timeout=90000)
+    page.goto(english_url(entry["url"]), wait_until="domcontentloaded", timeout=90000)
     identity_proof = ensure_identity(page, entry)
-    page.get_by_role("button", name="Facebook menu", exact=True).click()
+    require_english_interface(page)
+    page.get_by_role("button", name=re.compile(r"^(Facebook menu|Menu)$", re.I)).click()
     if entry.get("type") == "personal":
         page.get_by_role("button", name="Reel", exact=True).click()
     else:
@@ -443,10 +457,15 @@ def launch_context(playwright, entry):
     if not profile.is_dir():
         raise RuntimeError("没有该账号的登录资料：" + str(profile))
     # Use the existing installed Chrome, retain the browser security sandbox.
-    return playwright.chromium.launch_persistent_context(
+    context = playwright.chromium.launch_persistent_context(
         str(profile), channel="chrome", headless=False, chromium_sandbox=True,
         locale="en-US", accept_downloads=False,
     )
+    # Persistent profiles can retain a different Facebook site language even
+    # when the browser locale is English. This is a UI preference, not login data.
+    context.add_cookies([{"name": "locale", "value": "en_US", "domain": ".facebook.com",
+                         "path": "/", "secure": True}])
+    return context
 
 
 def run_entry(entry, state, state_path, publish):
