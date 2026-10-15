@@ -12,7 +12,7 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 ROOT = Path(__file__).resolve().parent
 CONFIG = ROOT / "upload_config.json"
-VERSION = "2.8"
+VERSION = "2.9"
 SUCCESS_PATTERN = (
     r"^(?:Your reel (?:is(?: now)?|has been|was) (?:successfully )?"
     r"(?:published|shared|posted)(?: successfully)?|"
@@ -121,6 +121,48 @@ def display_status(logs):
         print("锁文件仍存在，暂时无法读取进程编号。")
     print("本次仅查看记录，未删除锁，也未上传或发布。请先确认原任务是否还在运行。")
     return 0
+
+
+def record_manual_post(entry, state, state_path, video, reel_url):
+    validate_entry(entry)
+    if not reel_url or not re.fullmatch(r"https://(?:www\.)?facebook\.com/reel/[0-9]+/?", reel_url):
+        raise ValueError("请提供本人核对后的完整 Facebook Reel 链接。")
+    if video is None:
+        raise ValueError("请用 --video 指定这次实际发布的 MP4 文件完整路径。")
+    video = Path(video).resolve()
+    if not video.is_file() or video.suffix.lower() != ".mp4" or video.stat().st_size == 0:
+        raise ValueError("实际发布的视频文件不存在、不是 MP4 或为空文件。")
+    key = job_key(entry, video)
+    permalink = reel_url.rstrip("/")
+    for other_key, row in state.items():
+        if other_key != key and str(row.get("permalink", "")).rstrip("/") == permalink:
+            raise ValueError("此 Reel 链接已登记到另一个视频；请核对实际文件，未修改记录。")
+    existing = state.get(key)
+    if existing:
+        if (existing.get("account"), existing.get("target")) != (entry["account"], entry["target"]):
+            raise ValueError("同一目标和视频已有其他账号的任务记录；未覆盖。")
+        old_link = existing.get("permalink")
+        if old_link and old_link.rstrip("/") != permalink:
+            raise ValueError("此视频已关联不同 Reel 链接，未覆盖原记录。")
+        if existing.get("status") == "published" and old_link == permalink:
+            print("此手动发布已登记，无需重复操作：", key[:12])
+            return key
+    if state_path.exists():
+        backup = ROOT / "backups" / ("manual-record-" + datetime.now().strftime("%Y%m%d-%H%M%S-%f"))
+        backup.mkdir(parents=True, exist_ok=False)
+        shutil.copy2(state_path, backup / state_path.name)
+    now = datetime.now().astimezone().isoformat()
+    record = dict(existing or {})
+    record.setdefault("created", now)
+    record.update({"account": entry["account"], "target": entry["target"], "url": entry["url"],
+                   "video": str(video), "caption": str(video.with_suffix(".txt")),
+                   "status": "published", "permalink": permalink,
+                   "confirmation_method": "user_verified_manual_post", "confirmed_at": now})
+    state[key] = record
+    save_json(state_path, state)
+    print("已登记手动发布成功：", entry["account"], entry["target"], key[:12], video.name)
+    print("原文件保留；同一目标下相同视频内容将跳过，改文件名或文案也不会重发。")
+    return key
 
 
 def target_key(url):
@@ -561,12 +603,13 @@ def run_entry(entry, state, state_path, publish):
 def main():
     print("本地上传程序版本：", VERSION)
     parser = argparse.ArgumentParser(description="Windows 本地公共主页和个人主页视频上传")
-    parser.add_argument("action", choices=["configure", "check-identity", "prepare", "enable", "publish", "status", "confirm", "retry"])
+    parser.add_argument("action", choices=["configure", "check-identity", "prepare", "enable", "publish", "status", "confirm", "record-manual", "retry"])
     parser.add_argument("--account", default="fb02")
     parser.add_argument("--target", default="page01")
     parser.add_argument("--url")
     parser.add_argument("--name")
     parser.add_argument("--job")
+    parser.add_argument("--video", type=Path)
     parser.add_argument("--verified-absent", action="store_true")
     parser.add_argument("--ai-label", choices=["on", "off"])
     args = parser.parse_args()
@@ -638,7 +681,9 @@ def main():
         if entry is None:
             raise ValueError("没有该目标配置；先执行 configure。")
         validate_entry(entry)
-        if args.action == "check-identity":
+        if args.action == "record-manual":
+            record_manual_post(entry, state, state_path, args.video, args.url)
+        elif args.action == "check-identity":
             check_identity(entry)
         elif args.action == "enable":
             if not entry.get("prepared_at"):
