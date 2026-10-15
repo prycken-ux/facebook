@@ -22,7 +22,12 @@ HTML = '''<main><section><h1>Example Person</h1><button>Edit profile</button></s
 <input type="file" accept="video/*" onchange="window.selectedFile=this.files[0].name">
 <button type="button" id="next" onclick="window.steps=(window.steps||0)+1;
 if(window.steps===2){this.hidden=true;document.querySelector('#settings').hidden=false}">Next</button>
-<div id="settings" hidden><button type="button">Public Anyone on or off Facebook</button>
+<div id="settings" hidden><button id="audience" type="button"
+onclick="window.audienceOpened=(window.audienceOpened||0)+1;document.querySelector('#audience-dialog').hidden=false">Public Anyone on or off Facebook</button>
+<div id="audience-dialog" role="dialog" aria-label="Choose audience" hidden>
+<input type="radio" id="public-option" aria-label="Public Anyone on or off Facebook">
+<button type="button" onclick="if(document.querySelector('#public-option').checked){document.querySelector('#audience').textContent='Public Anyone on or off Facebook'};document.querySelector('#audience-dialog').hidden=true">Done</button>
+</div>
 <textarea aria-label="Describe your reel..." oninput="update()"></textarea>
 <input type="checkbox" role="switch" aria-label="Add AI label" onchange="update()">
 <button id="post" type="button" disabled onclick="window.postClicks=(window.postClicks||0)+1">Post</button>
@@ -143,8 +148,28 @@ class PersonalBrowserTests(unittest.TestCase):
                     self.prepare()
                 self.assertIsNone(self.page.evaluate("window.selectedFile"))
 
-    def test_nonpublic_audience_stops_before_filling_or_post(self):
-        self.html = HTML.replace("Public Anyone on or off Facebook", "Friends Your Facebook friends")
+    def test_friends_audience_is_changed_to_public_and_verified_before_filling(self):
+        self.html = HTML.replace('>Public Anyone on or off Facebook</button>', '>Friends Your friends on Facebook</button>', 1)
+        self.prepare()
+        self.assertTrue(self.page.get_by_role("button", name="Public Anyone on or off Facebook", exact=True).is_visible())
+        self.assertEqual(self.page.evaluate("window.audienceOpened"), 1)
+        self.assertEqual(self.page.get_by_role("textbox").input_value(), "Fixture caption\n#Example")
+        self.assertIsNone(self.page.evaluate("window.postClicks"))
+
+    def test_already_public_does_not_open_or_toggle_audience(self):
+        self.prepare()
+        self.assertIsNone(self.page.evaluate("window.audienceOpened"))
+
+    def test_unknown_audience_stops_before_filling_or_post(self):
+        self.html = HTML.replace('>Public Anyone on or off Facebook</button>', '>Only me</button>', 1)
+        with self.assertRaisesRegex(RuntimeError, "未识别到 Friends 选择入口"):
+            self.prepare()
+        self.assertEqual(self.page.get_by_role("textbox").input_value(), "")
+        self.assertIsNone(self.page.evaluate("window.postClicks"))
+
+    def test_public_selection_not_saved_stops_before_filling_or_post(self):
+        self.html = HTML.replace('>Public Anyone on or off Facebook</button>', '>Friends Your friends on Facebook</button>', 1)
+        self.html = self.html.replace("if(document.querySelector('#public-option').checked)", "if(false)")
         with self.assertRaises(AssertionError):
             self.prepare()
         self.assertEqual(self.page.get_by_role("textbox").input_value(), "")
