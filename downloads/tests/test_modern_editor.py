@@ -30,12 +30,12 @@ document.querySelector('#settings').hidden=false">Next</button></div>
 <div id="settings" hidden><h2>Settings</h2>
 <button type="button" aria-label="Add AI label Add AI label We require you to label content">
 <input id="ai" type="checkbox" aria-label="Off" onchange="window.aiChanges=(window.aiChanges||0)+1"></button>
-<button id="audience" type="button" aria-label="Post audience Post audience"
-onclick="document.querySelector('#audience-dialog').hidden=false">Post audience Friends</button>
+<button id="audience" type="button"
+onclick="document.querySelector('#audience-dialog').hidden=false"><span role="img" aria-label="Post audience"></span><span style="display:block">Post audience</span><span style="display:block" id="audience-value">Friends</span></button>
 <div id="audience-dialog" role="dialog" aria-label="Post audience" hidden>
 <input id="public-option" type="radio" aria-label="Public Anyone on or off Facebook">
 <button type="button" onclick="if(document.querySelector('#public-option').checked){
-document.querySelector('#audience').textContent='Post audience Public'};
+document.querySelector('#audience-value').textContent='Public'};
 document.querySelector('#audience-dialog').hidden=true;updatePost()">Done</button></div>
 <button id="post" disabled onclick="window.postClicks=(window.postClicks||0)+1">Post</button></div>
 <script>function updatePost(){document.querySelector('#post').disabled=!(window.savedCaption &&
@@ -91,6 +91,7 @@ class ModernEditorTests(unittest.TestCase):
         self.assertEqual(self.page.evaluate("window.nextClicks"), 1)
         self.assertEqual(self.page.get_by_role("combobox", name="Search").inner_text(), "Keep search unchanged")
         self.assertTrue(self.page.locator("#ai").is_checked())
+        self.assertEqual(self.page.locator("#audience").text_content(), "Post audiencePublic")
         self.assertIn("Public", self.page.locator("#audience").inner_text())
         self.assertTrue(button.is_enabled())
         self.assertIsNone(self.page.evaluate("window.postClicks"))

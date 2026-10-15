@@ -13,7 +13,7 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 ROOT = Path(__file__).resolve().parent
 CONFIG = ROOT / "upload_config.json"
-VERSION = "2.12"
+VERSION = "2.13"
 SUCCESS_PATTERN = (
     r"^(?:Your reel (?:is(?: now)?|has been|was) (?:successfully )?"
     r"(?:published|shared|posted)(?: successfully)?|"
@@ -611,7 +611,11 @@ def prepare_modern_reel(page, entry, text):
     public.check()
     expect(public).to_be_checked()
     page.get_by_role("button", name="Done", exact=True).click()
-    expect(audience).to_contain_text(re.compile(r"\bPublic\b"), timeout=30000)
+    # Facebook renders separate label/value nodes whose textContent is
+    # "Post audiencePublic". Its accessible name retains the separation.
+    expect(audience).to_have_accessible_name(
+        re.compile(r"^Post audience\s+Post audience\s+Public$"), timeout=30000
+    )
     button = page.get_by_role("button", name="Post", exact=True)
     expect(button).to_be_enabled(timeout=240000)
     print("新版 Reel 检查通过：TXT 文案已填写，Public 和所需 AI 标签已核对。", flush=True)
