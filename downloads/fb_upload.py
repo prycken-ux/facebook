@@ -12,7 +12,7 @@ from urllib.parse import parse_qs, urlparse
 
 ROOT = Path(__file__).resolve().parent
 CONFIG = ROOT / "upload_config.json"
-VERSION = "2.4"
+VERSION = "2.5"
 SUCCESS_PATTERN = (
     r"^(?:Your reel (?:is(?: now)?|has been|was) (?:successfully )?"
     r"(?:published|shared|posted)(?: successfully)?|"
@@ -298,6 +298,37 @@ def personal_actor_fingerprint(page, entry):
     return hashlib.sha256(("personal:" + next(iter(people))).encode("ascii")).hexdigest()
 
 
+def verify_personal_vanity_owner(page, entry, marker):
+    from playwright.sync_api import expect
+
+    # Facebook's /me route resolves the logged-in person's own profile. This
+    # proves ownership even when a responsive layout hides Edit profile.
+    page.goto("https://www.facebook.com/me", wait_until="domcontentloaded", timeout=90000)
+    page.wait_for_url(lambda url: urlparse(str(url)).path.rstrip("/") != "/me", timeout=60000)
+    checkpoint(page)
+    if personal_actor_fingerprint(page, entry) != marker:
+        raise RuntimeError("核对本人主页期间登录身份变化，已停止；未选择视频或点击发布。")
+    expect(page.get_by_role("heading", name=entry["name"], exact=True).first).to_be_visible(timeout=90000)
+    own_key = target_key(page.url)
+    expected_key = target_key(entry["url"])
+    verified = own_key == expected_key
+    if not verified and own_key.startswith("id:"):
+        own_marker = hashlib.sha256(("personal:" + own_key[3:]).encode("ascii")).hexdigest()
+        canonical = page.locator('link[rel="canonical"]')
+        if own_marker == marker and canonical.count() == 1:
+            try:
+                verified = target_key(canonical.get_attribute("href") or "") == expected_key
+            except ValueError:
+                verified = False
+    if not verified:
+        raise RuntimeError("无法通过 Facebook 本人主页入口确认目标短网址属于当前账号；未选择视频或点击发布。")
+    page.goto(entry["url"], wait_until="domcontentloaded", timeout=90000)
+    checkpoint(page)
+    expect(page.get_by_role("heading", name=entry["name"], exact=True).first).to_be_visible(timeout=90000)
+    if target_key(page.url) != expected_key:
+        raise RuntimeError("返回后目标个人主页网址变化，已停止。")
+
+
 def ensure_personal_identity(page, entry):
     from playwright.sync_api import expect
 
@@ -309,9 +340,8 @@ def ensure_personal_identity(page, entry):
         raise RuntimeError("浏览器网址与目标个人主页不同；未选择视频或点击发布。")
     method = "personal_actor_id_match"
     if target_key(entry["url"]).startswith("slug:"):
-        if heading.evaluate(HEADER_MANAGEMENT_JS, "personal") != "active_personal_header_management_control":
-            raise RuntimeError("无法确认该短网址属于当前登录者：未找到个人主页顶部的编辑个人资料或专业面板按钮。")
-        method = "personal_session_and_own_profile_header"
+        verify_personal_vanity_owner(page, entry, marker)
+        method = "personal_me_redirect_match"
     if personal_actor_fingerprint(page, entry) != marker:
         raise RuntimeError("个人主页身份检查过程中登录身份变化，已停止。")
     print("个人主页身份检查通过：", entry["name"], entry["url"], flush=True)

@@ -1,6 +1,7 @@
 """Exercise the recorded personal workflow in Chromium against local fixture HTML."""
 import contextlib
 import io
+import json
 import os
 import tempfile
 import time
@@ -55,14 +56,27 @@ class PersonalBrowserTests(unittest.TestCase):
                       "workflow": "personal_recording_v1", "name": "Example Person",
                       "url": "https://www.facebook.com/profile.php?id=1003", "ai_label": True}
         self.context = self.browser.new_context()
-        self.context.route("https://www.facebook.com/**", lambda route: route.fulfill(body=self.html, content_type="text/html"))
+        self.context.route("https://www.facebook.com/**", self.route)
         self.html = HTML
+        self.me_url = None
+        self.me_html = None
+        self.me_cookie = None
         self.page = self.context.new_page()
         self.cookies()
         self.silence = contextlib.redirect_stdout(io.StringIO())
         self.silence.__enter__()
         self.expect_patch = patch("playwright.sync_api.expect", side_effect=fast_expect)
         self.expect_patch.start()
+
+    def route(self, route):
+        if route.request.url == "https://www.facebook.com/me":
+            headers = {"Content-Type": "text/html"}
+            if self.me_cookie:
+                headers["Set-Cookie"] = self.me_cookie
+            route.fulfill(headers=headers, body='<script>location.replace(' + json.dumps(self.me_url or self.entry["url"]) + ')</script>')
+        else:
+            html = self.me_html if route.request.url == self.me_url and self.me_html else self.html
+            route.fulfill(body=html, content_type="text/html")
 
     def tearDown(self):
         self.expect_patch.stop()
@@ -113,12 +127,40 @@ class PersonalBrowserTests(unittest.TestCase):
         self.assertEqual(self.page.get_by_role("textbox").input_value(), "")
         self.assertIsNone(self.page.evaluate("window.postClicks"))
 
-    def test_vanity_profile_requires_own_header_not_friend_or_sidebar_controls(self):
+    def test_vanity_profile_verified_by_me_without_edit_button(self):
         self.entry["url"] = "https://www.facebook.com/example.person.123"
-        _, proof = self.prepare()
-        self.assertEqual(proof["method"], "personal_session_and_own_profile_header")
         self.html = HTML.replace("Edit profile", "Message")
-        with self.assertRaisesRegex(RuntimeError, "无法确认该短网址属于当前登录者"):
+        _, proof = self.prepare()
+        self.assertEqual(proof["method"], "personal_me_redirect_match")
+        self.assertIsNone(self.page.evaluate("window.postClicks"))
+
+    def test_other_profile_even_with_same_name_and_edit_control_is_rejected(self):
+        self.entry["url"] = "https://www.facebook.com/example.person.123"
+        self.me_url = "https://www.facebook.com/some.other.person"
+        with self.assertRaisesRegex(RuntimeError, "无法通过 Facebook 本人主页入口确认"):
+            self.prepare()
+        self.assertIsNone(self.page.evaluate("window.selectedFile"))
+
+    def test_me_numeric_redirect_requires_matching_actor_and_canonical(self):
+        self.entry["url"] = "https://www.facebook.com/example.person.123"
+        self.html = HTML.replace("Edit profile", "Message")
+        self.me_url = "https://www.facebook.com/profile.php?id=1003"
+        self.me_html = '<link rel="canonical" href="' + self.entry["url"] + '">' + self.html
+        _, proof = self.prepare()
+        self.assertEqual(proof["method"], "personal_me_redirect_match")
+
+    def test_wrong_numeric_redirect_not_accepted_even_if_canonical_matches(self):
+        self.entry["url"] = "https://www.facebook.com/example.person.123"
+        self.me_url = "https://www.facebook.com/profile.php?id=1004"
+        self.me_html = '<link rel="canonical" href="' + self.entry["url"] + '">' + self.html
+        with self.assertRaisesRegex(RuntimeError, "无法通过 Facebook 本人主页入口确认"):
+            self.prepare()
+        self.assertIsNone(self.page.evaluate("window.selectedFile"))
+
+    def test_identity_change_during_me_redirect_stops_before_upload(self):
+        self.entry["url"] = "https://www.facebook.com/example.person.123"
+        self.me_cookie = "c_user=1004; Domain=.facebook.com; Path=/; Secure"
+        with self.assertRaisesRegex(RuntimeError, "本人主页期间登录身份变化"):
             self.prepare()
         self.assertIsNone(self.page.evaluate("window.selectedFile"))
 
