@@ -12,7 +12,7 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 ROOT = Path(__file__).resolve().parent
 CONFIG = ROOT / "upload_config.json"
-VERSION = "2.9"
+VERSION = "2.10"
 SUCCESS_PATTERN = (
     r"^(?:Your reel (?:is(?: now)?|has been|was) (?:successfully )?"
     r"(?:published|shared|posted)(?: successfully)?|"
@@ -123,17 +123,23 @@ def display_status(logs):
     return 0
 
 
+def normalize_video_permalink(url):
+    if not url or not re.fullmatch(
+        r"https://(?:www\.)?facebook\.com/(?:reel/[0-9]+|[0-9]+/videos/[0-9]+)/?", url
+    ):
+        raise ValueError("请提供本人核对后的 Facebook /reel/数字 或 /数字/videos/数字 直接视频链接。")
+    return url.rstrip("/")
+
+
 def record_manual_post(entry, state, state_path, video, reel_url):
     validate_entry(entry)
-    if not reel_url or not re.fullmatch(r"https://(?:www\.)?facebook\.com/reel/[0-9]+/?", reel_url):
-        raise ValueError("请提供本人核对后的完整 Facebook Reel 链接。")
+    permalink = normalize_video_permalink(reel_url)
     if video is None:
         raise ValueError("请用 --video 指定这次实际发布的 MP4 文件完整路径。")
     video = Path(video).resolve()
     if not video.is_file() or video.suffix.lower() != ".mp4" or video.stat().st_size == 0:
         raise ValueError("实际发布的视频文件不存在、不是 MP4 或为空文件。")
     key = job_key(entry, video)
-    permalink = reel_url.rstrip("/")
     for other_key, row in state.items():
         if other_key != key and str(row.get("permalink", "")).rstrip("/") == permalink:
             raise ValueError("此 Reel 链接已登记到另一个视频；请核对实际文件，未修改记录。")
@@ -644,14 +650,25 @@ def main():
             key = matches[0]
             row = state[key]
             if args.action == "confirm":
-                if not args.url or not re.fullmatch(r"https://(?:www\.)?facebook\.com/reel/[0-9]+/?", args.url):
-                    raise ValueError("手动确认需提供主页上该视频的完整 Facebook Reel 链接。")
+                permalink = normalize_video_permalink(args.url)
                 if row["status"] not in {"preparing", "posting", "needs_review"}:
                     raise ValueError("此任务不处于待核对状态。")
+                owner = re.search(r"/([0-9]+)/videos/", permalink)
+                proof = row.get("identity_validation")
+                if row["target"] == "personal" and owner and isinstance(proof, dict) and proof.get("session_marker"):
+                    owner_marker = hashlib.sha256(("personal:" + owner.group(1)).encode("ascii")).hexdigest()
+                    if owner_marker != proof["session_marker"]:
+                        raise ValueError("视频链接的作者编号与原任务核对的个人账号不一致；未修改记录。")
+                backup = ROOT / "backups" / ("confirm-" + datetime.now().strftime("%Y%m%d-%H%M%S-%f"))
+                backup.mkdir(parents=True, exist_ok=False)
+                shutil.copy2(state_path, backup / state_path.name)
                 row["status"] = "published"
-                row["permalink"] = args.url
+                row["permalink"] = permalink
+                row["confirmation_method"] = "user_verified_existing_post"
+                row["confirmed_at"] = datetime.now().astimezone().isoformat()
                 save_json(state_path, state)
                 archive(Path(row["video"]), Path(row["caption"]))
+                print("已确认发布成功并归档：", row["account"], row["target"], key[:12])
             else:
                 if not args.verified_absent or row["status"] == "published":
                     raise ValueError("先确认 Facebook 上没有该视频，再加 --verified-absent；已发布任务不能重试。")
