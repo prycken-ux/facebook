@@ -26,7 +26,7 @@ EDITOR = '''<html lang="en-US"><h1>Create reel</h1>
 <div id="caption" contenteditable="true"></div></div>
 <button id="next" onclick="window.savedCaption=document.querySelector('#caption').innerText;
 window.nextClicks=(window.nextClicks||0)+1;document.querySelector('#edit').hidden=true;
-document.querySelector('#settings').hidden=false">Next</button></div>
+document.querySelector('#settings').hidden=false;updatePost()">Next</button></div>
 <div id="settings" hidden><h2>Settings</h2>
 <button type="button" aria-label="Add AI label Add AI label We require you to label content">
 <input id="ai" type="checkbox" aria-label="Off" onchange="window.aiChanges=(window.aiChanges||0)+1"></button>
@@ -121,6 +121,27 @@ class ModernEditorTests(unittest.TestCase):
         self.editor = EDITOR.replace("if(document.querySelector('#public-option').checked)", "if(false)")
         with self.assertRaises(AssertionError):
             self.prepare()
+        self.assertIsNone(self.page.evaluate("window.postClicks"))
+
+    def test_already_public_does_not_open_selector_or_reset_editor(self):
+        self.editor = EDITOR.replace('id="audience-value">Friends', 'id="audience-value">Public')
+        self.editor = self.editor.replace(
+            "document.querySelector('#audience-dialog').hidden=false",
+            "window.audienceClicks=1;location.href='https://www.facebook.com/reels/create?reset=1'"
+        )
+        button, _ = self.prepare()
+        self.assertEqual(self.page.evaluate("window.savedCaption"), self.caption)
+        self.assertIsNone(self.page.evaluate("window.audienceClicks"))
+        self.assertNotIn("reset=1", self.page.url)
+        self.assertTrue(button.is_enabled())
+        self.assertTrue(self.page.locator("#ai").is_checked())
+        self.assertIsNone(self.page.evaluate("window.postClicks"))
+
+    def test_unknown_audience_does_not_open_selector_or_post(self):
+        self.editor = EDITOR.replace('id="audience-value">Friends', 'id="audience-value">Only me')
+        with self.assertRaisesRegex(RuntimeError, "未显示已识别的 Public/Friends"):
+            self.prepare()
+        self.assertTrue(self.page.locator("#audience-dialog").is_hidden())
         self.assertIsNone(self.page.evaluate("window.postClicks"))
 
     def test_missing_description_does_not_fill_unrelated_search(self):

@@ -13,7 +13,7 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 ROOT = Path(__file__).resolve().parent
 CONFIG = ROOT / "upload_config.json"
-VERSION = "2.13"
+VERSION = "2.14"
 SUCCESS_PATTERN = (
     r"^(?:Your reel (?:is(?: now)?|has been|was) (?:successfully )?"
     r"(?:published|shared|posted)(?: successfully)?|"
@@ -605,14 +605,26 @@ def prepare_modern_reel(page, entry, text):
         expect(toggle).to_be_visible(timeout=30000)
         toggle.check()
         expect(toggle).to_be_checked()
-    audience.click()
-    public = page.get_by_role("radio", name=re.compile(r"^Public Anyone on or off"))
-    expect(public).to_be_visible(timeout=30000)
-    public.check()
-    expect(public).to_be_checked()
-    page.get_by_role("button", name="Done", exact=True).click()
     # Facebook renders separate label/value nodes whose textContent is
     # "Post audiencePublic". Its accessible name retains the separation.
+    expect(audience).to_be_enabled(timeout=240000)
+    public_audience = page.get_by_role(
+        "button", name=re.compile(r"^Post audience\s+Post audience\s+Public$")
+    )
+    if public_audience.count() == 1 and public_audience.is_visible():
+        print("本条 Reel 已是 Public，保留当前公开范围。", flush=True)
+    else:
+        friends_audience = page.get_by_role(
+            "button", name=re.compile(r"^Post audience\s+Post audience\s+Friends$")
+        )
+        if friends_audience.count() != 1 or not friends_audience.is_visible():
+            raise RuntimeError("新版 Reel 未显示已识别的 Public/Friends 范围，未点击发布。")
+        friends_audience.click()
+        public = page.get_by_role("radio", name=re.compile(r"^Public Anyone on or off"))
+        expect(public).to_be_visible(timeout=30000)
+        public.check()
+        expect(public).to_be_checked()
+        page.get_by_role("button", name="Done", exact=True).click()
     expect(audience).to_have_accessible_name(
         re.compile(r"^Post audience\s+Post audience\s+Public$"), timeout=30000
     )
