@@ -6,13 +6,14 @@ import os
 import re
 import shutil
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 ROOT = Path(__file__).resolve().parent
 CONFIG = ROOT / "upload_config.json"
-VERSION = "2.10"
+VERSION = "2.11"
 SUCCESS_PATTERN = (
     r"^(?:Your reel (?:is(?: now)?|has been|was) (?:successfully )?"
     r"(?:published|shared|posted)(?: successfully)?|"
@@ -472,6 +473,56 @@ def check_identity(entry):
             context.close()
 
 
+def select_reel_video(page, reel_button, video, timeout_ms=60000):
+    # Some Pages open a native picker directly from Reel; others first expose
+    # the recorded Reels form. Register before clicking to cover both flows.
+    selected = {"method": None, "error": None, "started": False}
+    source = str(video.resolve())
+
+    def choose_native(chooser):
+        if selected["started"]:
+            return
+        selected["started"] = True
+        try:
+            chooser.set_files(source, timeout=timeout_ms)
+            selected["method"] = "native_file_chooser"
+        except Exception as error:
+            selected["error"] = error
+
+    page.on("filechooser", choose_native)
+    try:
+        reel_button.click(timeout=timeout_ms)
+        deadline = time.monotonic() + timeout_ms / 1000
+        while not selected["method"] and selected["error"] is None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            if selected["started"]:
+                page.wait_for_timeout(min(100, max(1, int(remaining * 1000))))
+                continue
+            checkpoint(page)
+            field = page.get_by_role("form", name="Reels", exact=True).locator('input[type="file"]')
+            count = field.count()
+            if selected["started"]:
+                continue
+            if count > 1:
+                raise RuntimeError("Reels 表单有多个文件输入框，无法唯一选择，已停止。")
+            if count == 1:
+                selected["started"] = True
+                field.set_input_files(source, timeout=max(1, int(remaining * 1000)))
+                selected["method"] = "reels_form_file_input"
+                break
+            page.wait_for_timeout(min(100, max(1, int(remaining * 1000))))
+        if selected["error"] is not None:
+            raise RuntimeError("自动选择视频失败，未点击发布：" + str(selected["error"])) from selected["error"]
+        if not selected["method"]:
+            raise RuntimeError("未捕获到选文件窗口，也未找到 Reels 上传框；未点击发布。")
+        print("已自动选择视频：", video.name, selected["method"], flush=True)
+        return selected["method"]
+    finally:
+        page.remove_listener("filechooser", choose_native)
+
+
 def prepare_reel(page, entry, video, text):
     from playwright.sync_api import expect
 
@@ -480,11 +531,10 @@ def prepare_reel(page, entry, video, text):
     require_english_interface(page)
     page.get_by_role("button", name=re.compile(r"^(Facebook menu|Menu)$", re.I)).click()
     if entry.get("type") == "personal":
-        page.get_by_role("button", name="Reel", exact=True).click()
+        reel_button = page.get_by_role("button", name="Reel", exact=True)
     else:
-        page.get_by_role("dialog", name="Menu", exact=True).get_by_role("button", name="Reel", exact=True).click()
-    form = page.get_by_role("form", name="Reels", exact=True)
-    form.locator('input[type="file"]').set_input_files(str(video.resolve()))
+        reel_button = page.get_by_role("dialog", name="Menu", exact=True).get_by_role("button", name="Reel", exact=True)
+    select_reel_video(page, reel_button, video)
     page.get_by_role("button", name="Next", exact=True).click(timeout=240000)
     page.get_by_role("button", name="Next", exact=True).click(timeout=240000)
     checkpoint(page)
