@@ -99,6 +99,67 @@ class VerifiedPostTests(unittest.TestCase):
         self.mark(correct=False)
         self.assertEqual(upload.read_json(self.state_path, {})[self.key]['status'], 'published')
 
+    def test_without_link_requires_explicit_user_confirmation(self):
+        previous = self.state_path.read_bytes()
+        with self.assertRaisesRegex(ValueError, '明确确认'):
+            marker.mark_verified(self.entry, self.video.name)
+        self.assertEqual(self.state_path.read_bytes(), previous)
+        self.assertTrue(self.video.exists())
+
+    def test_explicit_user_confirmation_preserves_errors_other_records_and_backup(self):
+        previous = self.state_path.read_bytes()
+        marker.mark_verified(self.entry, self.video.name, verified_published=True)
+        state = upload.read_json(self.state_path, {})
+        row = state[self.key]
+        self.assertEqual(row['status'], 'published')
+        self.assertEqual(row['confirmation_method'], 'user_confirmed_existing_post_no_link')
+        self.assertEqual(row['error'], 'receipt timeout')
+        self.assertNotIn('permalink', row)
+        for key in self.state.keys() - {self.key}:
+            self.assertEqual(state[key], self.state[key])
+        self.assertEqual(next((self.root / 'backups').glob('*/publish_state.json')).read_bytes(), previous)
+        self.assertFalse(self.video.exists())
+        self.assertTrue((self.video.parent.parent / 'completed' / self.video.name).exists())
+        saved = self.state_path.read_bytes()
+        marker.mark_verified(self.entry, self.video.name, verified_published=True)
+        self.assertEqual(self.state_path.read_bytes(), saved)
+        self.assertEqual(len(list((self.root / 'backups').iterdir())), 1)
+
+    def test_confirmation_without_link_preserves_existing_permalink_and_published_proof(self):
+        self.state[self.key]['permalink'] = 'https://www.facebook.com/reel/12345'
+        upload.save_json(self.state_path, self.state)
+        marker.mark_verified(self.entry, self.video.name, verified_published=True)
+        self.assertEqual(upload.read_json(self.state_path, {})[self.key]['permalink'],
+                         self.state[self.key]['permalink'])
+        state = upload.read_json(self.state_path, {})
+        state[self.key]['confirmation_method'] = 'detected_success_receipt'
+        upload.save_json(self.state_path, state)
+        previous = self.state_path.read_bytes()
+        marker.mark_verified(self.entry, self.video.name, verified_published=True)
+        self.assertEqual(self.state_path.read_bytes(), previous)
+
+    def test_link_correction_without_link_is_rejected(self):
+        previous = self.state_path.read_bytes()
+        with self.assertRaisesRegex(ValueError, '必须提供 --url'):
+            marker.mark_verified(self.entry, self.video.name,
+                                 correct_from_filename='2026-10-14_01.mp4', verified_published=True)
+        self.assertEqual(self.state_path.read_bytes(), previous)
+
+    def test_no_link_confirmation_still_checks_source_content(self):
+        self.video.write_bytes(b'replaced video content')
+        previous = self.state_path.read_bytes()
+        with self.assertRaisesRegex(ValueError, '内容指纹不同'):
+            marker.mark_verified(self.entry, self.video.name, verified_published=True)
+        self.assertEqual(self.state_path.read_bytes(), previous)
+
+    def test_cli_without_link_is_local_only(self):
+        args = ['mark_verified_post.py', '--account', 'fb07', '--target', 'personal',
+                '--filename', self.video.name, '--verified-published']
+        with patch('sys.argv', args), patch.object(upload, 'launch_context') as launch:
+            self.assertEqual(marker.main(), 0)
+        launch.assert_not_called()
+        self.assertFalse((self.root / 'logs/upload.lock').exists())
+
     def test_archive_collision_does_not_overwrite_media_or_lose_success_record(self):
         completed = self.video.parent.parent / 'completed'
         completed.mkdir()

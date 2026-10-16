@@ -17,15 +17,19 @@ def validate_filename(filename):
         raise ValueError('需指定 MP4 文件名，不能包含路径。')
 
 
-def mark_verified(entry, filename, url, correct_from_filename=None):
+def mark_verified(entry, filename, url=None, correct_from_filename=None, verified_published=False):
     """Caller must hold upload.lock. Confirmation is supplied by the user."""
     upload.validate_entry(entry)
     validate_filename(filename)
+    if not url and not verified_published:
+        raise ValueError('需提供已核实的链接，或用 --verified-published 明确确认该视频已经发布。')
+    if correct_from_filename and not url:
+        raise ValueError('更正链接关联时必须提供 --url。')
     if correct_from_filename:
         validate_filename(correct_from_filename)
         if correct_from_filename == filename:
             raise ValueError('更正来源不能与实际发布的文件同名。')
-    link = upload.normalize_video_permalink(url)
+    link = upload.normalize_video_permalink(url) if url else None
     inbox = upload.inbox_for(entry)
     video = next((path for path in (inbox / filename, inbox.parent / 'completed' / filename)
                   if path.is_file() and path.stat().st_size), None)
@@ -44,9 +48,9 @@ def mark_verified(entry, filename, url, correct_from_filename=None):
     row = state.get(key, {})
     if row and (row.get('account'), row.get('target')) != identity:
         raise ValueError('任务属于其他账号或目标，未修改记录。')
-    if row.get('permalink') and str(row['permalink']).rstrip('/') != link:
+    if link and row.get('permalink') and str(row['permalink']).rstrip('/') != link:
         raise ValueError('指定视频已有不同链接，未覆盖。')
-    owner = re.search(r'/([0-9]+)/videos/', link)
+    owner = re.search(r'/([0-9]+)/videos/', link) if link else None
     proof = row.get('identity_validation') or {}
     if entry['type'] == 'personal' and owner and proof.get('session_marker'):
         if hashlib.sha256(('personal:' + owner.group(1)).encode('ascii')).hexdigest() != proof['session_marker']:
@@ -54,7 +58,7 @@ def mark_verified(entry, filename, url, correct_from_filename=None):
     now = datetime.now().astimezone().isoformat()
     corrected = []
     for other_key, other in state.items():
-        if other_key == key or str(other.get('permalink', '')).rstrip('/') != link:
+        if not link or other_key == key or str(other.get('permalink', '')).rstrip('/') != link:
             continue
         if (not correct_from_filename or (other.get('account'), other.get('target')) != identity
                 or Path(other.get('video', '')).name != correct_from_filename
@@ -63,12 +67,15 @@ def mark_verified(entry, filename, url, correct_from_filename=None):
         other['misidentified_permalink'] = other.pop('permalink')
         other.update(status='misidentified_post', corrected_to_job=key, corrected_at=now)
         corrected.append(other_key)
-    if row.get('status') != 'published' or row.get('permalink') != link:
+    if row.get('status') != 'published' or (link and row.get('permalink') != link):
         row = dict(row)
         row.setdefault('created', now)
         row.update(account=entry['account'], target=entry['target'], url=entry['url'],
                    video=str(video), caption=str(video.with_suffix('.txt')), status='published',
-                   permalink=link, confirmation_method='user_verified_existing_post', confirmed_at=now)
+                   confirmation_method=('user_verified_existing_post' if link
+                                        else 'user_confirmed_existing_post_no_link'), confirmed_at=now)
+        if link:
+            row['permalink'] = link
         state[key] = row
     if state != original:
         backup = upload.ROOT / 'backups' / ('verified-post-' + datetime.now().strftime('%Y%m%d-%H%M%S-%f'))
@@ -78,7 +85,8 @@ def mark_verified(entry, filename, url, correct_from_filename=None):
         upload.save_json(state_path, state)
     for other_key in corrected:
         print('已更正误认的链接关联，保留原记录历史：', other_key[:12])
-    print('已标记发布成功：', entry['account'], entry['target'], filename, link)
+    print('已标记发布成功：', entry['account'], entry['target'], filename,
+          link or row.get('permalink') or '依据用户明确确认，未提供链接')
     if video.parent == inbox:
         caption = video.with_suffix('.txt')
         if caption.is_file():
@@ -97,7 +105,9 @@ def main():
     parser.add_argument('--account', required=True)
     parser.add_argument('--target', required=True)
     parser.add_argument('--filename', required=True)
-    parser.add_argument('--url', required=True)
+    parser.add_argument('--url')
+    parser.add_argument('--verified-published', action='store_true',
+                        help='用户已核实该文件实际发布成功；仅补记本地状态，不联网核验')
     parser.add_argument('--correct-from-filename')
     args = parser.parse_args()
     lock = upload.ROOT / 'logs' / 'upload.lock'
@@ -115,7 +125,8 @@ def main():
                    if (row.get('account'), row.get('target')) == (args.account, args.target)]
         if len(entries) != 1:
             raise ValueError('没有唯一匹配的目标配置。')
-        mark_verified(entries[0], args.filename, args.url, args.correct_from_filename)
+        mark_verified(entries[0], args.filename, args.url, args.correct_from_filename,
+                      args.verified_published)
         return 0
     except Exception as error:
         print('STOP：', error)
