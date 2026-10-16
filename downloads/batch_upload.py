@@ -12,7 +12,7 @@ import fb_upload as upload
 ROOT = Path(__file__).resolve().parent
 
 
-def select_targets(config, accounts, action, state):
+def select_targets(config, accounts, action, state, filename=None):
     selected = []
     errors = []
     urls = set()
@@ -44,18 +44,24 @@ def select_targets(config, accounts, action, state):
                     for row in state.values()
                 ):
                     errors.append(label + "：有待核对的发布任务，先处理该记录")
+                if filename:
+                    job = upload.named_job(entry, state, filename)
+                    if job:
+                        print("本轮指定：", label, job[1].name, "文案：", job[2].name)
                 selected.append(entry)
             except (ValueError, KeyError) as error:
                 errors.append(label + "：" + str(error))
     return selected, errors
 
 
-def execute(entries, action):
+def execute(entries, action, filename=None):
     results = []
     for entry in entries:
         print("\n正在执行：", entry["account"], entry["target"], entry["name"], flush=True)
         command = [sys.executable, str(ROOT / "fb_upload.py"), action,
                    "--account", entry["account"], "--target", entry["target"]]
+        if filename:
+            command += ["--filename", filename]
         # Inherit stdin/stdout so prepare can pause for local review.
         child = subprocess.run(command, cwd=str(ROOT), check=False)
         results.append({"account": entry["account"], "target": entry["target"],
@@ -71,13 +77,16 @@ def main():
     parser = argparse.ArgumentParser(description="公共主页和个人主页批量准备或发布；每个目标每次最多一条")
     parser.add_argument("action", choices=["plan", "check-identity", "prepare", "enable", "publish"], nargs="?", default="plan")
     parser.add_argument("--accounts", required=True, help="例如 fb01,fb02,fb03")
+    parser.add_argument("--filename", help="plan/prepare/publish 只处理指定 MP4 文件名")
     args = parser.parse_args()
+    if args.filename and args.action not in {"plan", "prepare", "publish"}:
+        parser.error("--filename 仅用于 plan、prepare 或 publish")
     accounts = list(dict.fromkeys(value.strip() for value in args.accounts.split(",") if value.strip()))
     if not accounts:
         parser.error("至少指定一个账号编号")
     config = upload.read_json(ROOT / "upload_config.json", {"targets": []})
     state = upload.read_json(ROOT / "logs" / "publish_state.json", {})
-    entries, errors = select_targets(config, accounts, args.action, state)
+    entries, errors = select_targets(config, accounts, args.action, state, filename=args.filename)
     for entry in entries:
         print(entry["account"], entry["target"], entry["name"], entry["url"])
     if errors:
@@ -99,7 +108,7 @@ def main():
     try:
         with os.fdopen(fd, "w") as file:
             file.write(str(os.getpid()))
-        results = execute(entries, args.action)
+        results = execute(entries, args.action, filename=args.filename)
         filename = "batch-" + datetime.now().strftime("%Y%m%d-%H%M%S-%f") + ".json"
         upload.save_json(logs / filename, {"results": results})
         print("执行记录：", logs / filename)

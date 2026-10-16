@@ -13,7 +13,7 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 ROOT = Path(__file__).resolve().parent
 CONFIG = ROOT / "upload_config.json"
-VERSION = "2.14"
+VERSION = "2.15"
 SUCCESS_PATTERN = (
     r"^(?:Your reel (?:is(?: now)?|has been|was) (?:successfully )?"
     r"(?:published|shared|posted)(?: successfully)?|"
@@ -247,6 +247,44 @@ def pending_jobs(entry, state):
             yield key, video, caption, text
         else:
             print("已有任务记录，不重复发布：", video.name, state[key]["status"])
+
+
+def named_job(entry, state, filename):
+    """Resolve exactly one inbox file; never fall back to another queued video."""
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._ -]*\.mp4", filename, re.I):
+        raise ValueError("--filename 需填写 MP4 文件名，例如 2026-10-15_01.mp4，不能包含路径。")
+    folder = inbox_for(entry)
+    video = folder / filename
+    if not video.is_file():
+        completed = folder.parent / "completed" / filename
+        if completed.is_file():
+            row = state.get(job_key(entry, completed), {})
+            if (row.get("account"), row.get("target"), row.get("status")) == (
+                    entry["account"], entry["target"], "published"):
+                print("指定视频已发布并归档，跳过：", entry["account"], filename)
+                return None
+        raise ValueError("待发布文件夹缺少指定视频：" + str(video))
+    if video.stat().st_size == 0:
+        raise ValueError("指定视频为空：" + str(video))
+    key = job_key(entry, video)
+    if key in state:
+        row = state[key]
+        if (row.get("account"), row.get("target"), row.get("status")) == (
+                entry["account"], entry["target"], "published"):
+            print("指定视频内容已有成功记录，跳过：", entry["account"], filename)
+            return None
+        raise ValueError("指定视频已有任务记录（" + str(row.get("status")) + "），请先核对；不会重发。")
+    if filename.lower() in {name.lower() for name in entry.get("excluded_files", [])}:
+        raise ValueError("指定视频在排除名单中：" + filename)
+    caption = video.with_suffix(".txt")
+    if not caption.is_file():
+        raise ValueError("指定视频缺少同名 TXT：" + str(caption))
+    if datetime.now().timestamp() - max(video.stat().st_mtime, caption.stat().st_mtime) < 60:
+        raise ValueError("指定文件刚刚更新，请复制完成至少 60 秒后再运行：" + filename)
+    text = caption.read_text(encoding="utf-8-sig").strip()
+    if not text:
+        raise ValueError("指定视频的文案为空：" + str(caption))
+    return key, video, caption, text
 
 
 def checkpoint(page):
@@ -705,7 +743,7 @@ def launch_context(playwright, entry):
     return context
 
 
-def run_entry(entry, state, state_path, publish):
+def run_entry(entry, state, state_path, publish, filename=None):
     from playwright.sync_api import sync_playwright
 
     validate_entry(entry)
@@ -715,7 +753,11 @@ def run_entry(entry, state, state_path, publish):
     if any((row["account"], row["target"]) == identity and row["status"] in
            {"preparing", "posting", "needs_review"} for row in state.values()):
         raise RuntimeError("该目标有待核对任务。先检查主页并 confirm 或 retry，避免重复发布。")
-    jobs = list(pending_jobs(entry, state))
+    if filename:
+        selected = named_job(entry, state, filename)
+        jobs = [selected] if selected else []
+    else:
+        jobs = list(pending_jobs(entry, state))
     if not jobs:
         print("没有新的待发布视频：", identity)
         return False
@@ -780,9 +822,12 @@ def main():
     parser.add_argument("--name")
     parser.add_argument("--job")
     parser.add_argument("--video", type=Path)
+    parser.add_argument("--filename", help="prepare/publish 只处理指定 MP4 文件名，不处理其他排队视频")
     parser.add_argument("--verified-absent", action="store_true")
     parser.add_argument("--ai-label", choices=["on", "off"])
     args = parser.parse_args()
+    if args.filename and args.action not in {"prepare", "publish"}:
+        parser.error("--filename 仅用于 prepare 或 publish")
     logs = ROOT / "logs"
     if args.action == "status":
         try:
@@ -873,7 +918,10 @@ def main():
             save_json(CONFIG, configuration)
             print("已启用该目标。publish 和定时任务将实际发布新视频。")
         else:
-            prepared = run_entry(entry, state, state_path, args.action == "publish")
+            if args.filename:
+                prepared = run_entry(entry, state, state_path, args.action == "publish", filename=args.filename)
+            else:
+                prepared = run_entry(entry, state, state_path, args.action == "publish")
             if args.action == "prepare" and prepared:
                 entry["prepared_at"] = datetime.now().astimezone().isoformat()
                 save_json(CONFIG, configuration)
