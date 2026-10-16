@@ -13,7 +13,7 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 ROOT = Path(__file__).resolve().parent
 CONFIG = ROOT / "upload_config.json"
-VERSION = "2.16"
+VERSION = "2.17"
 SUCCESS_PATTERN = (
     r"^(?:Your reel (?:is(?: now)?|has been|was) (?:successfully )?"
     r"(?:published|shared|posted)(?: successfully)?|"
@@ -754,10 +754,12 @@ def launch_context(playwright, entry):
     return context
 
 
-def run_entry(entry, state, state_path, publish, filename=None):
+def run_entry(entry, state, state_path, publish, filename=None, review_before_post=False):
     from playwright.sync_api import sync_playwright
 
     validate_entry(entry)
+    if review_before_post and (not publish or not filename):
+        raise ValueError("发布前预览核对必须用于 publish，并用 --filename 指定视频。")
     identity = (entry["account"], entry["target"])
     if publish and not entry.get("enabled", False):
         raise RuntimeError("尚未启用发布。先完成 prepare 检查，再执行 enable。")
@@ -793,6 +795,19 @@ def run_entry(entry, state, state_path, publish, filename=None):
                     print("PREPARE：未点击 Post。请在浏览器检查目标、视频、文案和设置。")
                     input("检查完按回车关闭浏览器；不要在这个准备模式中手动发布。")
                     return True
+                if review_before_post:
+                    print("待核对源文件：", str(video.resolve()), flush=True)
+                    print("尚未点击 Post。请播放浏览器中的预览，核对实际画面、文案、Public 和 AI 标签。", flush=True)
+                    try:
+                        decision = input("确认预览就是上述文件的内容后，输入 POST 并回车；其他输入取消本次发布：").strip()
+                    except (EOFError, KeyboardInterrupt) as error:
+                        raise RuntimeError("预览核对已取消，未点击 Post。") from error
+                    if decision != "POST":
+                        raise RuntimeError("未输入 POST，已取消本次发布，未点击 Post。")
+                    if job_key(entry, video) != key:
+                        raise RuntimeError("核对期间源视频内容发生变化，未点击 Post。")
+                    record["preview_review_method"] = "user_entered_POST"
+                    record["preview_reviewed_at"] = datetime.now().astimezone().isoformat()
                 install_receipt_watch(page)
                 recheck_publish_identity(page, entry, identity_proof)
                 # Persist the intent BEFORE clicking, so crashes cannot retry the Post.
@@ -837,11 +852,14 @@ def main():
     parser.add_argument("--job")
     parser.add_argument("--video", type=Path)
     parser.add_argument("--filename", help="prepare/publish 只处理指定 MP4 文件名，不处理其他排队视频")
+    parser.add_argument("--review-before-post", action="store_true", help="publish 在最终预览暂停，输入 POST 后在同一窗口继续发布")
     parser.add_argument("--verified-absent", action="store_true")
     parser.add_argument("--ai-label", choices=["on", "off"])
     args = parser.parse_args()
     if args.filename and args.action not in {"prepare", "publish"}:
         parser.error("--filename 仅用于 prepare 或 publish")
+    if args.review_before_post and (args.action != "publish" or not args.filename):
+        parser.error("--review-before-post 仅用于 publish，且需指定 --filename")
     logs = ROOT / "logs"
     if args.action == "status":
         try:
@@ -895,8 +913,12 @@ def main():
             else:
                 if not args.verified_absent or row["status"] == "published":
                     raise ValueError("先确认 Facebook 上没有该视频，再加 --verified-absent；已发布任务不能重试。")
+                backup = ROOT / "backups" / ("retry-" + datetime.now().strftime("%Y%m%d-%H%M%S-%f"))
+                backup.mkdir(parents=True, exist_ok=False)
+                shutil.copy2(state_path, backup / state_path.name)
                 del state[key]
                 save_json(state_path, state)
+                print("原任务记录已备份，已解除本次重试限制：", key[:12])
             return 0
         if args.action == "configure":
             if entry is None:
@@ -932,7 +954,9 @@ def main():
             save_json(CONFIG, configuration)
             print("已启用该目标。publish 和定时任务将实际发布新视频。")
         else:
-            if args.filename:
+            if args.review_before_post:
+                prepared = run_entry(entry, state, state_path, True, filename=args.filename, review_before_post=True)
+            elif args.filename:
                 prepared = run_entry(entry, state, state_path, args.action == "publish", filename=args.filename)
             else:
                 prepared = run_entry(entry, state, state_path, args.action == "publish")
