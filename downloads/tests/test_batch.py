@@ -77,6 +77,64 @@ class BatchTests(unittest.TestCase):
             self.assertEqual(batch.main(), 1)
         run.assert_not_called()
 
+    def test_opt_in_continues_after_receipt_review_to_next_account(self):
+        with patch("batch_upload.subprocess.run", side_effect=[SimpleNamespace(returncode=3), SimpleNamespace(returncode=0)]) as run, \
+                contextlib.redirect_stdout(io.StringIO()):
+            results = batch.execute(self.entries, "publish", continue_on_review=True)
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual([row["exit_code"] for row in results], [3, 0])
+        self.assertEqual([row["account"] for row in results], ["fb01", "fb02"])
+
+    def test_default_still_stops_at_receipt_review(self):
+        with patch("batch_upload.subprocess.run", return_value=SimpleNamespace(returncode=3)) as run, \
+                contextlib.redirect_stdout(io.StringIO()):
+            batch.execute(self.entries, "publish")
+        self.assertEqual(run.call_count, 1)
+
+    def test_opt_in_still_stops_on_operational_or_lock_error(self):
+        for code in (1, 2):
+            with self.subTest(code=code), \
+                    patch("batch_upload.subprocess.run", return_value=SimpleNamespace(returncode=code)) as run, \
+                    contextlib.redirect_stdout(io.StringIO()):
+                batch.execute(self.entries, "publish", continue_on_review=True)
+            self.assertEqual(run.call_count, 1)
+
+    def test_opt_in_skips_existing_review_target_without_modifying_record(self):
+        state = {"job": {"account": "fb01", "target": "page01", "status": "needs_review", "error": "old timeout"}}
+        original = repr(state)
+        with contextlib.redirect_stdout(io.StringIO()), patch.object(batch.upload, "named_job", return_value=None) as named:
+            selected, errors = batch.select_targets({"targets": self.entries}, ["fb01", "fb02"], "publish", state,
+                                                     filename="today.mp4", continue_on_review=True)
+        self.assertEqual(errors, [])
+        self.assertEqual([entry["account"] for entry in selected], ["fb02"])
+        self.assertEqual(named.call_count, 1)
+        self.assertEqual(named.call_args.args[0]["account"], "fb02")
+        self.assertEqual(repr(state), original)
+
+    def test_opt_in_does_not_skip_preparing_or_posting_targets(self):
+        for status in ("preparing", "posting"):
+            state = {"job": {"account": "fb01", "target": "page01", "status": status}}
+            _, errors = batch.select_targets({"targets": self.entries}, ["fb01", "fb02"], "publish", state,
+                                              continue_on_review=True)
+            self.assertTrue(errors)
+
+    def test_opt_in_does_not_bypass_prepare_or_enable(self):
+        self.entries[1].pop("prepared_at")
+        self.entries[1]["enabled"] = False
+        _, errors = batch.select_targets({"targets": self.entries}, ["fb01", "fb02"], "publish", {},
+                                          continue_on_review=True)
+        self.assertTrue(any("prepare" in error for error in errors))
+        self.assertTrue(any("启用" in error for error in errors))
+
+    def test_batch_exit_still_reports_review_after_continuing(self):
+        with patch.object(batch.upload, "read_json", side_effect=[{"targets": self.entries}, {}]), \
+                patch("sys.argv", ["batch_upload.py", "publish", "--accounts=fb01,fb02", "--continue-on-review"]), \
+                patch("batch_upload.subprocess.run", side_effect=[SimpleNamespace(returncode=3), SimpleNamespace(returncode=0)]) as run, \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(batch.main(), 3)
+        self.assertEqual(run.call_count, 2)
+        self.assertFalse((self.root / "logs/batch.lock").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

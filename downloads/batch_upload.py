@@ -12,7 +12,7 @@ import fb_upload as upload
 ROOT = Path(__file__).resolve().parent
 
 
-def select_targets(config, accounts, action, state, filename=None):
+def select_targets(config, accounts, action, state, filename=None, continue_on_review=False):
     selected = []
     errors = []
     urls = set()
@@ -34,6 +34,13 @@ def select_targets(config, accounts, action, state, filename=None):
                 if key in urls:
                     errors.append(label + "：同一个目标主页在本批次中重复配置")
                 urls.add(key)
+                blocking = [row for row in state.values()
+                            if row.get("account") == account and row.get("target") == entry["target"]
+                            and row.get("status") in {"preparing", "posting", "needs_review"}]
+                if (continue_on_review and action == "publish" and blocking
+                        and all(row.get("status") == "needs_review" for row in blocking)):
+                    print("跳过待核对账号，不重发：", label, flush=True)
+                    continue
                 if action in {"enable", "publish"} and not entry.get("prepared_at"):
                     errors.append(label + "：尚未完成 prepare 检查")
                 if action == "publish" and not entry.get("enabled", False):
@@ -54,7 +61,7 @@ def select_targets(config, accounts, action, state, filename=None):
     return selected, errors
 
 
-def execute(entries, action, filename=None):
+def execute(entries, action, filename=None, continue_on_review=False):
     results = []
     for entry in entries:
         print("\n正在执行：", entry["account"], entry["target"], entry["name"], flush=True)
@@ -68,6 +75,9 @@ def execute(entries, action, filename=None):
                         "action": action, "exit_code": child.returncode,
                         "finished": datetime.now().astimezone().isoformat()})
         if child.returncode != 0:
+            if continue_on_review and action == "publish" and child.returncode == 3:
+                print("当前账号等待核对，不会重发；继续下一个账号。", flush=True)
+                continue
             print("本批次已停止；未开始后面的账号。请核对当前账号结果，不要直接重复发布。", flush=True)
             break
     return results
@@ -78,15 +88,20 @@ def main():
     parser.add_argument("action", choices=["plan", "check-identity", "prepare", "enable", "publish"], nargs="?", default="plan")
     parser.add_argument("--accounts", required=True, help="例如 fb01,fb02,fb03")
     parser.add_argument("--filename", help="plan/prepare/publish 只处理指定 MP4 文件名")
+    parser.add_argument("--continue-on-review", action="store_true",
+                        help="publish 跳过待核对账号；发布回执超时则保留记录并继续其他账号")
     args = parser.parse_args()
     if args.filename and args.action not in {"plan", "prepare", "publish"}:
         parser.error("--filename 仅用于 plan、prepare 或 publish")
+    if args.continue_on_review and args.action != "publish":
+        parser.error("--continue-on-review 仅用于 publish")
     accounts = list(dict.fromkeys(value.strip() for value in args.accounts.split(",") if value.strip()))
     if not accounts:
         parser.error("至少指定一个账号编号")
     config = upload.read_json(ROOT / "upload_config.json", {"targets": []})
     state = upload.read_json(ROOT / "logs" / "publish_state.json", {})
-    entries, errors = select_targets(config, accounts, args.action, state, filename=args.filename)
+    entries, errors = select_targets(config, accounts, args.action, state, filename=args.filename,
+                                     continue_on_review=args.continue_on_review)
     for entry in entries:
         print(entry["account"], entry["target"], entry["name"], entry["url"])
     if errors:
@@ -108,12 +123,18 @@ def main():
     try:
         with os.fdopen(fd, "w") as file:
             file.write(str(os.getpid()))
-        results = execute(entries, args.action, filename=args.filename)
+        results = execute(entries, args.action, filename=args.filename, continue_on_review=args.continue_on_review)
         filename = "batch-" + datetime.now().strftime("%Y%m%d-%H%M%S-%f") + ".json"
         upload.save_json(logs / filename, {"results": results})
         print("执行记录：", logs / filename)
         print("实际发布状态请查看 publish_state.json；返回 0 也可能表示没有新视频。")
-        return 0 if all(row["exit_code"] == 0 for row in results) else 1
+        if any(row["exit_code"] not in {0, 3} for row in results):
+            return 1
+        if any(row["exit_code"] == 3 for row in results) or (args.continue_on_review and any(
+                row.get("account") in accounts and row.get("status") == "needs_review" for row in state.values())):
+            print("仍有待核对记录，请稍后检查对应视频；未将这些记录标为发布成功。")
+            return 3
+        return 0
     finally:
         lock.unlink(missing_ok=True)
 

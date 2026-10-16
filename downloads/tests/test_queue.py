@@ -177,6 +177,51 @@ class QueueTests(unittest.TestCase):
             self.run_browser(button=button)
         self.assertEqual(next(iter(self.state.values()))["status"], "needs_review")
 
+    def test_receipt_timeout_is_deferred_without_success_or_archiving(self):
+        with self.assertRaises(uploader.ReceiptNeedsReview):
+            self.run_browser(notification_error=uploader.ReceiptNeedsReview("receipt timeout"))
+        row = next(iter(self.state.values()))
+        self.assertEqual(row["status"], "needs_review")
+        self.assertEqual(row["review_reason"], "publication_receipt_timeout")
+        self.assertTrue(self.video.exists())
+        self.assertFalse((self.folder.parent / "completed").exists())
+
+    def test_receipt_wait_timeout_has_distinct_type(self):
+        from playwright.sync_api import TimeoutError
+        page, button = MagicMock(), MagicMock()
+        page.url = self.entry["url"]
+        page.wait_for_function.side_effect = TimeoutError("Timeout 120000ms exceeded")
+        with self.assertRaises(uploader.ReceiptNeedsReview):
+            uploader.wait_for_receipt(page, button)
+        button.wait_for.assert_not_called()
+
+    def test_receipt_timeout_during_login_is_an_operational_stop(self):
+        from playwright.sync_api import TimeoutError
+        page = MagicMock()
+        page.url = "https://www.facebook.com/checkpoint/"
+        page.wait_for_function.side_effect = TimeoutError("Timeout")
+        with self.assertRaises(RuntimeError) as raised:
+            uploader.wait_for_receipt(page, MagicMock())
+        self.assertNotIsInstance(raised.exception, uploader.ReceiptNeedsReview)
+
+    def test_post_click_timeout_is_not_a_deferred_receipt(self):
+        from playwright.sync_api import TimeoutError
+        button = MagicMock()
+        button.click.side_effect = TimeoutError("Click timed out")
+        with self.assertRaises(RuntimeError) as raised:
+            self.run_browser(button=button)
+        self.assertNotIsInstance(raised.exception, uploader.ReceiptNeedsReview)
+        self.assertNotIn("review_reason", next(iter(self.state.values())))
+
+    def test_cli_returns_review_code_and_releases_lock(self):
+        config = self.root / "upload_config.json"
+        uploader.save_json(config, {"targets": [self.entry]})
+        with patch.object(uploader, "CONFIG", config), \
+                patch("sys.argv", ["fb_upload.py", "publish", "--account", "fb02"]), \
+                patch.object(uploader, "run_entry", side_effect=uploader.ReceiptNeedsReview("receipt timeout")):
+            self.assertEqual(uploader.main(), 3)
+        self.assertFalse((self.state_path.parent / "upload.lock").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

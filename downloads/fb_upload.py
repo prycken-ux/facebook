@@ -13,7 +13,7 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 ROOT = Path(__file__).resolve().parent
 CONFIG = ROOT / "upload_config.json"
-VERSION = "2.15"
+VERSION = "2.16"
 SUCCESS_PATTERN = (
     r"^(?:Your reel (?:is(?: now)?|has been|was) (?:successfully )?"
     r"(?:published|shared|posted)(?: successfully)?|"
@@ -79,8 +79,19 @@ def install_receipt_watch(page):
     page.evaluate(RECEIPT_WATCH_JS, SUCCESS_PATTERN)
 
 
+class ReceiptNeedsReview(RuntimeError):
+    """Post was clicked, but no fresh success receipt could be established."""
+
+
 def wait_for_receipt(page, button):
-    page.wait_for_function("() => Boolean(window.__fbUploadWatch && window.__fbUploadWatch.message)", timeout=120000)
+    from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
+    try:
+        page.wait_for_function("() => Boolean(window.__fbUploadWatch && window.__fbUploadWatch.message)", timeout=120000)
+    except PlaywrightTimeoutError as error:
+        # A login/checkpoint is an operational stop, not a deferred receipt.
+        checkpoint(page)
+        raise ReceiptNeedsReview("已点击发布，120 秒内未识别到成功回执；保留待核对，不会自动重发。") from error
     message = page.evaluate("() => window.__fbUploadWatch.message")
     if not isinstance(message, str) or not re.fullmatch(SUCCESS_PATTERN, message, re.I):
         raise RuntimeError("没有收到本次发布的有效成功提示。")
@@ -800,6 +811,8 @@ def run_entry(entry, state, state_path, publish, filename=None):
             except Exception as error:
                 if publish and record["status"] != "published":
                     record["status"] = "needs_review" if posted else "failed_before_post"
+                    if posted and isinstance(error, ReceiptNeedsReview):
+                        record["review_reason"] = "publication_receipt_timeout"
                     record["error"] = str(error)[:1600]
                     save_json(state_path, state)
                 shot = ROOT / "logs" / ("review-" + key[:12] + ".png")
@@ -807,7 +820,8 @@ def run_entry(entry, state, state_path, publish, filename=None):
                     page.screenshot(path=str(shot))
                 except Exception:
                     pass
-                raise RuntimeError("操作未完成或结果需核对。记录：" + key[:12] + "；" + str(error)) from error
+                exception_type = ReceiptNeedsReview if posted and isinstance(error, ReceiptNeedsReview) else RuntimeError
+                raise exception_type("操作未完成或结果需核对。记录：" + key[:12] + "；" + str(error)) from error
         finally:
             context.close()
 
@@ -926,6 +940,9 @@ def main():
                 entry["prepared_at"] = datetime.now().astimezone().isoformat()
                 save_json(CONFIG, configuration)
         return 0
+    except ReceiptNeedsReview as error:
+        print("REVIEW：", error)
+        return 3
     except Exception as error:
         print("STOP：", error)
         return 1
