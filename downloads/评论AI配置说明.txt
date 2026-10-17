@@ -1,0 +1,53 @@
+评论 AI：本地配置、连接测试和界面录制
+
+本包仅新增 comment_ai.py、record_comment_flow.py 和本说明，不替换上传程序、登录资料、视频或发布记录。
+AI 自动发送评论尚未实现/启用。本包 check 只生成草稿，不打开 Facebook、不发送评论。
+
+一、已有视频无需改内容或日期名
+当前上传程序支持每条 MP4 对应同名 TXT。TXT 为 UTF-8，可带 BOM；文案原样读取，视频原样上传。
+AI 测试也能读取同一份 TXT 作为回复背景，不会修改原文。当前不分析视频画面或语音。
+
+二、先开通 OpenAI API
+在 https://platform.openai.com/ 创建或登录账号，在 API Billing 页面开通可用额度，再在
+https://platform.openai.com/api-keys 创建 API 密钥。API 用量费用和 ChatGPT 订阅分开。
+默认模型 gpt-4.1-mini；实际可用模型以你的项目为准，可在 comment_ai_config.json 的 model 中调整。
+密钥只在本机的隐藏输入提示中粘贴，不发送到聊天，不放进视频文案或录制脚本。
+
+三、配置本地密钥（Windows）
+解压本包到 E:\FB-AutoUpload。
+在 PowerShell 运行以下单行，在新窗口进行配置，避免粘贴的其他命令混入密钥输入：
+Start-Process -FilePath 'cmd.exe' -ArgumentList '/k E:\FB-AutoUpload\.venv\Scripts\python.exe E:\FB-AutoUpload\comment_ai.py setup'
+
+只有看到“在这里粘贴 OpenAI API 密钥”提示时才粘贴密钥并回车。输入不会显示。
+工具用 Windows 当前用户 DPAPI 加密，并进行本机加解密校验后保存到 .secrets\comment_ai.dpapi。
+旧配置和旧加密密钥会先备份。不会保存明文密钥，也不更改七个 Facebook 登录资料。
+换 Windows 用户或电脑后通常需要重新配置。请不要上传 .secrets 或备份中的密钥文件。
+
+四、测试一次 AI 调用（会产生少量 API 用量）
+E:\FB-AutoUpload\.venv\Scripts\python.exe E:\FB-AutoUpload\comment_ai.py check
+
+输出 action=reply 代表生成了可供后续发送程序使用的草稿，review 表示需要核对，skip 表示无需回复。
+所有结果都只是终端测试输出，不会发到 Facebook。默认仅测试 “Great video!” 和虚构故事背景。
+也可使用已发布视频的原文案：
+E:\FB-AutoUpload\.venv\Scripts\python.exe E:\FB-AutoUpload\comment_ai.py check --caption-file E:\FB-AutoUpload\videos\fb01\page01\completed\2026-10-16_01.txt --comment "Great video!"
+
+HTTP 401：检查密钥和项目权限；HTTP 429：检查 API 可用额度及频率；HTTP 404：检查模型名称。
+连接失败：检查本机到 OpenAI API 的网络是否可用。报错时只发送错误文字或截图，不发送密钥。
+
+五、录制评论界面，供下一步适配自动读取和发送
+公共主页（fb01/fb02/fb05/fb06）和个人主页（fb03/fb04/fb07）需要分别验证。
+先关闭要录制账号的 Chrome 窗口，确认没有上传任务运行，再运行：
+E:\FB-AutoUpload\.venv\Scripts\python.exe E:\FB-AutoUpload\record_comment_flow.py --account fb01
+
+工具沿用原 profiles\fb01，检查目标身份后打开 Playwright Inspector。
+在 Inspector 点 Record，手动打开自己的一条视频、展开评论、点击一条评论的 Reply，并输入测试文字。
+录制到回复输入框即可，不用发送。在 Inspector 复制录制代码，保存为 recorded_fb01_comments.py。
+随后点 Resume 结束录制。个人账号再用 --account fb03 录一份，保存为 recorded_fb03_comments.py。
+如果遇到登录或身份不匹配，工具会停下；完成正常登录后再录，避免把登录密码录进脚本。
+这些录制用于确定真实界面选择器；本包不会自动执行录制中的评论操作。
+
+六、当前验证边界
+21 项本地测试通过，含真实本地 HTTP 请求/响应、拒绝带密钥的重定向、错误信息不回显密钥、
+草稿结构检查、配置备份和录制前账号检查。没有使用你的实际 API 密钥，也未发送真实评论。
+Windows 原生加密和真实 OpenAI 项目连接需在本机配置后验证。
+后续自动评论还需接入录制界面、评论编号去重、发送回执及结果不明时停止重发等流程。
