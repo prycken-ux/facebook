@@ -167,7 +167,11 @@ class VerifiedPostTests(unittest.TestCase):
         destination.write_bytes(b'pre-existing different media')
         self.mark()
         self.assertEqual(destination.read_bytes(), b'pre-existing different media')
-        self.assertTrue(self.video.is_file())
+        self.assertFalse(self.video.exists())
+        archived = list(completed.glob('*/' + self.video.name))
+        self.assertEqual(len(archived), 1)
+        self.assertEqual(archived[0].read_bytes(), b'actual fifteen bytes')
+        self.assertTrue(archived[0].with_suffix('.txt').exists())
         self.assertEqual(upload.read_json(self.state_path, {})[self.key]['status'], 'published')
 
     def test_cli_is_local_only_and_respects_other_upload_lock(self):

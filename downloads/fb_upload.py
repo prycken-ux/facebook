@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import sys
+import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
@@ -13,7 +14,7 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 ROOT = Path(__file__).resolve().parent
 CONFIG = ROOT / "upload_config.json"
-VERSION = "2.20"
+VERSION = "2.21"
 SUCCESS_PATTERN = (
     r"^(?:Your reel (?:is(?: now)?|has been|was) (?:successfully )?"
     r"(?:published|shared|posted)(?: successfully)?|"
@@ -231,10 +232,16 @@ def job_key(entry, video):
     return digest.hexdigest()
 
 
+def queue_order(path):
+    parts = tuple((1, int(part)) if part.isdecimal() else (0, part.casefold())
+                  for part in re.split(r'([0-9]+)', path.name))
+    return parts, path.name.casefold(), path.name
+
+
 def pending_jobs(entry, state):
     folder = inbox_for(entry)
     excluded = {name.lower() for name in entry.get("excluded_files", [])}
-    for video in sorted(folder.glob("*.mp4")):
+    for video in sorted(folder.glob("*.mp4"), key=queue_order):
         if video.name.lower() in excluded:
             print("跳过录制时使用的视频：", video.name)
             continue
@@ -267,9 +274,11 @@ def named_job(entry, state, filename):
     folder = inbox_for(entry)
     video = folder / filename
     if not video.is_file():
-        completed = folder.parent / "completed" / filename
-        if completed.is_file():
-            row = state.get(job_key(entry, completed), {})
+        completed = folder.parent / "completed"
+        for archived in completed.rglob(filename):
+            if not archived.is_file() or not archived.stat().st_size:
+                continue
+            row = state.get(job_key(entry, archived), {})
             if (row.get("account"), row.get("target"), row.get("status")) == (
                     entry["account"], entry["target"], "published"):
                 print("指定视频已发布并归档，跳过：", entry["account"], filename)
@@ -783,12 +792,14 @@ def prepare_reel(page, entry, video, text, pause_before_reel=False):
 def archive(video, caption):
     completed = video.parent.parent / "completed"
     completed.mkdir(parents=True, exist_ok=True)
-    for source in (video, caption):
-        destination = completed / source.name
-        if destination.exists():
-            raise RuntimeError("completed 已有同名文件；已保留发布记录，请手动整理，程序不会再次发布。")
+    if any((completed / source.name).exists() for source in (video, caption)):
+        # Keep original filenames together while retaining previous numbered
+        # batches. New source contents can reuse 1.mp4 without replacing history.
+        completed = Path(tempfile.mkdtemp(prefix=datetime.now().strftime('%Y%m%d-%H%M%S-'),
+                                          dir=str(completed)))
     for source in (video, caption):
         shutil.move(str(source), str(completed / source.name))
+    return completed
 
 
 def launch_context(playwright, entry):
