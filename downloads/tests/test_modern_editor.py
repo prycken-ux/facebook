@@ -110,16 +110,25 @@ class ModernEditorTests(unittest.TestCase):
             self.page.get_by_role('button', name='Dismiss overlay', exact=True).click()
             return 'READY'
 
-        with patch.dict(globals(), {'PROFILE': profile}), patch('builtins.input', side_effect=assist) as decision:
+        answers = iter(['', 'pasted command', 'READY'])
+
+        def with_blanks(prompt):
+            answer = next(answers)
+            self.assertEqual(self.page.locator('#file').evaluate('e=>e.files.length'), 0)
+            if answer == 'READY':
+                return assist(prompt)
+            return answer
+
+        with patch.dict(globals(), {'PROFILE': profile}), patch('builtins.input', side_effect=with_blanks) as decision:
             button, proof = upload.prepare_reel(self.page, self.entry, self.video, self.caption,
                                                pause_before_reel=True)
-        decision.assert_called_once()
+        self.assertEqual(decision.call_count, 3)
         self.assertEqual(self.page.evaluate('window.savedCaption'), self.caption)
         self.assertTrue(button.is_enabled())
         self.assertIsNone(self.page.evaluate('window.postClicks'))
 
     def test_cancel_entry_pause_selects_no_file_and_never_reaches_editor(self):
-        with patch('builtins.input', return_value='CANCEL'), self.assertRaisesRegex(RuntimeError, '未输入 READY'):
+        with patch('builtins.input', return_value='CANCEL'), self.assertRaisesRegex(RuntimeError, '协助已取消'):
             upload.prepare_reel(self.page, self.entry, self.video, self.caption, pause_before_reel=True)
         self.assertEqual(self.page.locator('#file').evaluate('e=>e.files.length'), 0)
         self.assertNotIn('/reels/create', self.page.url)

@@ -13,7 +13,7 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 ROOT = Path(__file__).resolve().parent
 CONFIG = ROOT / "upload_config.json"
-VERSION = "2.19"
+VERSION = "2.20"
 SUCCESS_PATTERN = (
     r"^(?:Your reel (?:is(?: now)?|has been|was) (?:successfully )?"
     r"(?:published|shared|posted)(?: successfully)?|"
@@ -717,12 +717,16 @@ def assist_reel_entry(page, entry, video, identity_proof):
     original_key = job_key(entry, video)
     print("已暂停，尚未选择或发布视频。请在实时 Chrome 页面关闭遮罩，并保留菜单里的 Reel 按钮。", flush=True)
     print("不要手动选择视频或点击发布；待上传文件：", str(video.resolve()), flush=True)
-    try:
-        decision = input("处理完成后在这里输入 READY 并回车；其他输入取消：").strip()
-    except (EOFError, KeyboardInterrupt) as error:
-        raise RuntimeError("菜单协助已取消，尚未选择视频或点击发布。") from error
-    if decision != "READY":
-        raise RuntimeError("未输入 READY，已取消；尚未选择视频或点击发布。")
+    while True:
+        try:
+            decision = input("处理完成后输入 READY 并回车；取消请输入 CANCEL：").strip()
+        except (EOFError, KeyboardInterrupt) as error:
+            raise RuntimeError("菜单协助已取消，尚未选择视频或点击发布。") from error
+        if decision == "READY":
+            break
+        if decision == "CANCEL":
+            raise RuntimeError("菜单协助已取消，尚未选择视频或点击发布。")
+        print("仍在等待 READY，尚未选择视频。空行或其他文字不会退出；取消请输入 CANCEL。", flush=True)
     if job_key(entry, video) != original_key:
         raise RuntimeError("菜单协助期间源视频内容发生变化，未选择视频或点击发布。")
     if target_key(page.url) != target_key(entry['url']):

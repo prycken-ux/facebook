@@ -50,12 +50,25 @@ class MenuAssistanceTests(unittest.TestCase):
         identity.assert_called_once_with(self.page, self.entry, self.proof)
 
     def test_cancellation_and_interruptions_stop_before_actor_or_upload(self):
-        for answer in ('', 'ready', 'CANCEL'):
-            with self.subTest(answer=answer), self.assertRaisesRegex(RuntimeError, '未输入 READY'):
-                self.assist(answer)
+        with self.assertRaisesRegex(RuntimeError, '协助已取消'):
+            self.assist('CANCEL')
         for error in (EOFError(), KeyboardInterrupt()):
             with patch('builtins.input', side_effect=error), self.assertRaisesRegex(RuntimeError, '协助已取消'):
                 upload.assist_reel_entry(self.page, self.entry, self.video, self.proof)
+
+    def test_blank_lines_and_stray_pasted_commands_keep_waiting_until_ready(self):
+        with patch('builtins.input', side_effect=['', '  ', '& python status', 'ready', 'READY']) as answer, \
+                patch.object(upload, 'recheck_publish_identity') as identity:
+            upload.assist_reel_entry(self.page, self.entry, self.video, self.proof)
+        self.assertEqual(answer.call_count, 5)
+        identity.assert_called_once_with(self.page, self.entry, self.proof)
+
+    def test_blanks_do_not_prevent_explicit_cancel(self):
+        with patch('builtins.input', side_effect=['', 'CANCEL']), \
+                patch.object(upload, 'recheck_publish_identity') as identity:
+            with self.assertRaisesRegex(RuntimeError, '协助已取消'):
+                upload.assist_reel_entry(self.page, self.entry, self.video, self.proof)
+        identity.assert_not_called()
 
     def test_changed_source_while_browser_is_paused_is_rejected(self):
         def change(prompt):
