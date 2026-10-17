@@ -13,7 +13,7 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 ROOT = Path(__file__).resolve().parent
 CONFIG = ROOT / "upload_config.json"
-VERSION = "2.18"
+VERSION = "2.19"
 SUCCESS_PATTERN = (
     r"^(?:Your reel (?:is(?: now)?|has been|was) (?:successfully )?"
     r"(?:published|shared|posted)(?: successfully)?|"
@@ -713,13 +713,32 @@ def open_facebook_menu(page):
         page.remove_locator_handler(prompt)
 
 
-def prepare_reel(page, entry, video, text):
+def assist_reel_entry(page, entry, video, identity_proof):
+    original_key = job_key(entry, video)
+    print("已暂停，尚未选择或发布视频。请在实时 Chrome 页面关闭遮罩，并保留菜单里的 Reel 按钮。", flush=True)
+    print("不要手动选择视频或点击发布；待上传文件：", str(video.resolve()), flush=True)
+    try:
+        decision = input("处理完成后在这里输入 READY 并回车；其他输入取消：").strip()
+    except (EOFError, KeyboardInterrupt) as error:
+        raise RuntimeError("菜单协助已取消，尚未选择视频或点击发布。") from error
+    if decision != "READY":
+        raise RuntimeError("未输入 READY，已取消；尚未选择视频或点击发布。")
+    if job_key(entry, video) != original_key:
+        raise RuntimeError("菜单协助期间源视频内容发生变化，未选择视频或点击发布。")
+    if target_key(page.url) != target_key(entry['url']):
+        raise RuntimeError("菜单协助期间页面已离开目标主页，未选择视频或点击发布。")
+    recheck_publish_identity(page, entry, identity_proof)
+
+
+def prepare_reel(page, entry, video, text, pause_before_reel=False):
     from playwright.sync_api import expect
 
     page.goto(english_url(entry["url"]), wait_until="domcontentloaded", timeout=90000)
     identity_proof = ensure_identity(page, entry)
     require_english_interface(page)
     open_facebook_menu(page)
+    if pause_before_reel:
+        assist_reel_entry(page, entry, video, identity_proof)
     if entry.get("type") == "personal":
         reel_button = page.get_by_role("button", name="Reel", exact=True)
     else:
@@ -784,12 +803,14 @@ def launch_context(playwright, entry):
     return context
 
 
-def run_entry(entry, state, state_path, publish, filename=None, review_before_post=False):
+def run_entry(entry, state, state_path, publish, filename=None, review_before_post=False, pause_before_reel=False):
     from playwright.sync_api import sync_playwright
 
     validate_entry(entry)
     if review_before_post and (not publish or not filename):
         raise ValueError("发布前预览核对必须用于 publish，并用 --filename 指定视频。")
+    if pause_before_reel and not filename:
+        raise ValueError("菜单协助必须用 --filename 指定视频。")
     identity = (entry["account"], entry["target"])
     if publish and not entry.get("enabled", False):
         raise RuntimeError("尚未启用发布。先完成 prepare 检查，再执行 enable。")
@@ -819,7 +840,10 @@ def run_entry(entry, state, state_path, publish, filename=None, review_before_po
                 save_json(state_path, state)
             posted = False
             try:
-                button, identity_proof = prepare_reel(page, entry, video, text)
+                if pause_before_reel:
+                    button, identity_proof = prepare_reel(page, entry, video, text, pause_before_reel=True)
+                else:
+                    button, identity_proof = prepare_reel(page, entry, video, text)
                 print("视频：", video.name, "目标：", entry["name"], entry["url"])
                 if not publish:
                     print("PREPARE：未点击 Post。请在浏览器检查目标、视频、文案和设置。")
@@ -883,6 +907,7 @@ def main():
     parser.add_argument("--video", type=Path)
     parser.add_argument("--filename", help="prepare/publish 只处理指定 MP4 文件名，不处理其他排队视频")
     parser.add_argument("--review-before-post", action="store_true", help="publish 在最终预览暂停，输入 POST 后在同一窗口继续发布")
+    parser.add_argument("--pause-before-reel", action="store_true", help="选择视频前暂停，在实时页面处理遮罩后输入 READY 继续")
     parser.add_argument("--verified-absent", action="store_true")
     parser.add_argument("--ai-label", choices=["on", "off"])
     args = parser.parse_args()
@@ -890,6 +915,8 @@ def main():
         parser.error("--filename 仅用于 prepare 或 publish")
     if args.review_before_post and (args.action != "publish" or not args.filename):
         parser.error("--review-before-post 仅用于 publish，且需指定 --filename")
+    if args.pause_before_reel and (args.action not in {"prepare", "publish"} or not args.filename):
+        parser.error("--pause-before-reel 仅用于 prepare/publish，且需指定 --filename")
     logs = ROOT / "logs"
     if args.action == "status":
         try:
@@ -984,7 +1011,11 @@ def main():
             save_json(CONFIG, configuration)
             print("已启用该目标。publish 和定时任务将实际发布新视频。")
         else:
-            if args.review_before_post:
+            if args.pause_before_reel:
+                prepared = run_entry(entry, state, state_path, args.action == "publish",
+                                     filename=args.filename, review_before_post=args.review_before_post,
+                                     pause_before_reel=True)
+            elif args.review_before_post:
                 prepared = run_entry(entry, state, state_path, True, filename=args.filename, review_before_post=True)
             elif args.filename:
                 prepared = run_entry(entry, state, state_path, args.action == "publish", filename=args.filename)

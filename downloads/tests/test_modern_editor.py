@@ -96,6 +96,34 @@ class ModernEditorTests(unittest.TestCase):
         self.assertTrue(button.is_enabled())
         self.assertIsNone(self.page.evaluate("window.postClicks"))
 
+    def test_manual_entry_pause_precedes_file_selection_and_real_overlay_can_be_closed(self):
+        overlay = '''<div id="veil" hidden style="position:fixed;inset:0;background:#0008;z-index:999">
+        <button onclick="document.querySelector('#veil').hidden=true">Dismiss overlay</button></div>'''
+        profile = PROFILE.replace("document.querySelector('#menu').hidden=false",
+                                  "document.querySelector('#menu').hidden=false;document.querySelector('#veil').hidden=false")
+        profile = profile.replace('</html>', overlay + '</html>')
+
+        def assist(prompt):
+            self.assertIn('READY', prompt)
+            self.assertTrue(self.page.locator('#veil').is_visible())
+            self.assertEqual(self.page.locator('#file').evaluate('e=>e.files.length'), 0)
+            self.page.get_by_role('button', name='Dismiss overlay', exact=True).click()
+            return 'READY'
+
+        with patch.dict(globals(), {'PROFILE': profile}), patch('builtins.input', side_effect=assist) as decision:
+            button, proof = upload.prepare_reel(self.page, self.entry, self.video, self.caption,
+                                               pause_before_reel=True)
+        decision.assert_called_once()
+        self.assertEqual(self.page.evaluate('window.savedCaption'), self.caption)
+        self.assertTrue(button.is_enabled())
+        self.assertIsNone(self.page.evaluate('window.postClicks'))
+
+    def test_cancel_entry_pause_selects_no_file_and_never_reaches_editor(self):
+        with patch('builtins.input', return_value='CANCEL'), self.assertRaisesRegex(RuntimeError, '未输入 READY'):
+            upload.prepare_reel(self.page, self.entry, self.video, self.caption, pause_before_reel=True)
+        self.assertEqual(self.page.locator('#file').evaluate('e=>e.files.length'), 0)
+        self.assertNotIn('/reels/create', self.page.url)
+
     def test_already_enabled_ai_is_not_toggled_off(self):
         self.editor = EDITOR.replace('id="ai" type="checkbox"', 'id="ai" checked type="checkbox"')
         self.prepare()
