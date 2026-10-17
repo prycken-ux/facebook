@@ -13,7 +13,7 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 ROOT = Path(__file__).resolve().parent
 CONFIG = ROOT / "upload_config.json"
-VERSION = "2.17"
+VERSION = "2.18"
 SUCCESS_PATTERN = (
     r"^(?:Your reel (?:is(?: now)?|has been|was) (?:successfully )?"
     r"(?:published|shared|posted)(?: successfully)?|"
@@ -683,13 +683,43 @@ def prepare_modern_reel(page, entry, text):
     return button
 
 
+def open_facebook_menu(page):
+    """Dismiss only the observed site push prompt while opening the menu."""
+    prompt = page.get_by_role("alertdialog", name="Push notifications request", exact=True)
+
+    def dismiss_prompt():
+        from playwright.sync_api import expect
+
+        if prompt.count() != 1:
+            raise RuntimeError("通知请求弹窗不唯一，需手动处理，未打开上传入口。")
+        decline = prompt.get_by_role("button", name=re.compile(r"^(?:Not now|Don't allow|Close)$", re.I))
+        visible = [decline.nth(index) for index in range(decline.count()) if decline.nth(index).is_visible()]
+        # Leave ambiguous choices to the user. Never press Allow/Turn on or
+        # dismiss an unrelated modal.
+        if len(visible) != 1:
+            raise RuntimeError("推送通知弹窗没有唯一的 Not now / Don't allow / Close 按钮；请手动关闭后重试。")
+        visible[0].click()
+        expect(prompt).to_be_hidden(timeout=5000)
+        print("已关闭 Facebook 推送通知请求，继续打开菜单。", flush=True)
+
+    if prompt.is_visible():
+        dismiss_prompt()
+    # Also handle a prompt appearing between the check above and menu.click().
+    # Scope this handler to the menu step; it must not act during Post/receipt.
+    page.add_locator_handler(prompt, dismiss_prompt)
+    try:
+        page.get_by_role("button", name=re.compile(r"^(Facebook menu|Menu)$", re.I)).click()
+    finally:
+        page.remove_locator_handler(prompt)
+
+
 def prepare_reel(page, entry, video, text):
     from playwright.sync_api import expect
 
     page.goto(english_url(entry["url"]), wait_until="domcontentloaded", timeout=90000)
     identity_proof = ensure_identity(page, entry)
     require_english_interface(page)
-    page.get_by_role("button", name=re.compile(r"^(Facebook menu|Menu)$", re.I)).click()
+    open_facebook_menu(page)
     if entry.get("type") == "personal":
         reel_button = page.get_by_role("button", name="Reel", exact=True)
     else:

@@ -141,6 +141,25 @@ class PersonalBrowserTests(unittest.TestCase):
         self.prepare()
         self.assertEqual(self.page.evaluate("window.steps"), 2)
 
+    def test_push_notification_overlay_is_dismissed_before_menu_and_file_selection(self):
+        from test_notification_prompt import FIXTURE
+        self.html = HTML + FIXTURE[FIXTURE.index('<div'):FIXTURE.index('</div>') + 6]
+        self.prepare()
+        self.assertEqual(self.page.evaluate('window.declineClicks'), 1)
+        self.assertEqual(self.page.evaluate('window.selectedFile'), Path(__file__).name)
+        self.assertIsNone(self.page.evaluate('window.allowClicks'))
+        self.assertIsNone(self.page.evaluate('window.postClicks'))
+
+    def test_unknown_push_prompt_stops_before_upload(self):
+        from test_notification_prompt import FIXTURE
+        prompt = FIXTURE[FIXTURE.index('<div'):FIXTURE.index('</div>') + 6]
+        self.html = HTML + prompt.replace('>Not now<', '>Continue<')
+        with self.assertRaisesRegex(RuntimeError, '没有唯一'):
+            self.prepare()
+        self.assertIsNone(self.page.evaluate('window.selectedFile'))
+        self.assertIsNone(self.page.evaluate('window.allowClicks'))
+        self.assertIsNone(self.page.evaluate('window.postClicks'))
+
     def test_page_actor_or_wrong_person_stops_before_file_selection(self):
         for person, actor in (("1003", "9000"), ("1004", None)):
             with self.subTest(person=person, actor=actor):
