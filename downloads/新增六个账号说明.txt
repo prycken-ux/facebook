@@ -1,0 +1,47 @@
+新增六个账号，总共十三个
+
+原有 fb01～fb07 保留；新增 fb08～fb13。
+请在原 Windows 安装目录 E:\FB-AutoUpload 使用 add_fb_accounts.py。
+工具不读取密码、Cookie 或登录信息，不上传、不发布、不设置定时任务。
+
+第一步：创建六个独立登录入口
+在 PowerShell 执行：
+& E:\FB-AutoUpload\.venv\Scripts\python.exe E:\FB-AutoUpload\add_fb_accounts.py prepare
+
+会打开 E:\FB-AutoUpload\新增账号登录 文件夹。
+逐个双击 fb08 登录、fb09 登录……fb13 登录快捷方式。
+在 Facebook 网页正常登录对应账号，无需登录 Google/Chrome 同步。
+公共主页账号请切换到要发布的 Page，核对显示名称与主页链接。
+每个窗口检查完后关闭，再登录下一个，避免混淆编号。
+
+记下六行对应关系，例如：
+fb08 | 个人主页 | 实际名称 | 实际主页链接
+fb09 | 公共主页 | 实际名称 | 实际主页链接
+……直到 fb13。类型可任意混合，不预设每个编号的类型。
+不要提供密码或 Cookie。此时只保留登录资料，尚未加入发布配置。
+
+如中途停止，可重复 prepare；本工具创建的待登记资料不会被清空。
+如果编号已在原配置中使用，或原来已有未登记的同名资料，工具会停止而不是覆盖。
+若看到 upload.lock / batch.lock 错误，先核对仍在运行的任务，勿直接删除锁。
+
+第二步：登记实际主页对应关系
+整理确认后，把新六个账号保存为 JSON，对应表只包含 account、type、name、url。
+type 使用 personal（个人主页）或 page（公共主页）。不填写任何密码。
+示例结构（仅示意，不要直接用示例网址登记）：
+{"accounts":[{"account":"fb08","type":"personal","name":"实际名称","url":"https://www.facebook.com/实际主页"}]}
+
+随后可执行：
+& E:\FB-AutoUpload\.venv\Scripts\python.exe E:\FB-AutoUpload\add_fb_accounts.py register --mapping E:\FB-AutoUpload\new_accounts.json
+
+登记前会备份 upload_config.json、account_registry.json 和新增登记文件。
+仅追加新增账号；重复登记同一对应关系会保留其后续 prepare/enabled 设置。
+个人主页视频目录为 videos\fbXX\personal\inbox。
+公共主页视频目录为 videos\fbXX\page01\inbox。
+每条 MP4 与 TXT 同名，各账号使用自己的 inbox；不用重命名为日期。
+
+登记不是在线身份验证。新增目标默认 enabled=false，仍需逐个运行既有
+fb_upload.py check-identity 和 prepare，检查视频、文案、目标主页后才能 enable。
+prepare 不会点击发布。请在已有上传流程中完成检查后再决定实际发布。
+
+本工具已在 Linux 临时目录中测试账号追加、冲突拒绝、锁、备份与回滚；
+Windows 快捷方式创建、Chrome 启动及真实 Facebook 登录需在本机验证。
