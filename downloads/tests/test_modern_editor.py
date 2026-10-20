@@ -146,6 +146,32 @@ class ModernEditorTests(unittest.TestCase):
         self.prepare()
         self.assertEqual(self.page.evaluate("window.savedCaption"), self.caption)
 
+    def test_hashtag_overlay_is_blurred_before_next_with_text_and_link_preserved(self):
+        self.caption = 'A perspective\nhttps://example.com/?a=1&b=2\n#LifeLessons'
+        self.editor = EDITOR.replace('id="caption" contenteditable="true"',
+            'id="caption" contenteditable="true" '
+            'oninput="document.querySelector(\'#tags\').hidden=false" '
+            'onblur="document.querySelector(\'#tags\').hidden=true"')
+        self.editor = self.editor.replace('</html>', '''
+        <div id="tags" hidden style="position:fixed;inset:0;z-index:999">#lifelessonslearned 47K posts</div>
+        <script>document.addEventListener('keydown',e=>{if(e.key==='Escape'){
+        window.escapePressed=true;document.querySelector('#edit').hidden=true}})</script></html>''')
+        button, _ = self.prepare()
+        self.assertEqual(self.page.evaluate('window.savedCaption'), self.caption)
+        self.assertEqual(self.page.evaluate('window.nextClicks'), 1)
+        self.assertTrue(self.page.locator('#tags').is_hidden())
+        self.assertTrue(button.is_enabled())
+        self.assertIsNone(self.page.evaluate('window.escapePressed'))
+        self.assertIsNone(self.page.evaluate('window.postClicks'))
+
+    def test_blur_mutation_of_rich_caption_stops_before_next(self):
+        self.editor = EDITOR.replace('id="caption" contenteditable="true"',
+                                    'id="caption" contenteditable="true" onblur="this.innerText+=\' changed\'"')
+        with self.assertRaises(AssertionError):
+            self.prepare()
+        self.assertIsNone(self.page.evaluate('window.nextClicks'))
+        self.assertIsNone(self.page.evaluate('window.postClicks'))
+
     def test_ambiguous_description_never_advances_or_posts(self):
         self.editor = EDITOR.replace('<div id="caption" contenteditable="true"></div>',
                                      '<div id="caption" contenteditable="true"></div><div contenteditable="true"></div>')

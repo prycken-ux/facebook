@@ -14,7 +14,7 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 ROOT = Path(__file__).resolve().parent
 CONFIG = ROOT / "upload_config.json"
-VERSION = "2.21"
+VERSION = "2.22"
 SUCCESS_PATTERN = (
     r"^(?:Your reel (?:is(?: now)?|has been|was) (?:successfully )?"
     r"(?:published|shared|posted)(?: successfully)?|"
@@ -636,16 +636,29 @@ def modern_caption_field(page, timeout_ms=90000):
     raise RuntimeError("未找到新版 Describe your reel 描述框，未点击发布。")
 
 
-def fill_caption(field, text):
+def verify_caption(field, text):
     from playwright.sync_api import expect
 
-    field.fill(text, timeout=240000)
     if field.evaluate("e => 'value' in e"):
         expect(field).to_have_value(text)
     else:
         # Rich editors represent line breaks as block elements or <br> nodes.
         # Check their rendered text so multiline captions retain those breaks.
         expect(field).to_have_text(text, use_inner_text=True)
+
+
+def fill_caption(field, text):
+    from playwright.sync_api import expect
+
+    field.fill(text, timeout=240000)
+    verify_caption(field, text)
+    # Facebook's hashtag suggestions can cover AI/Next controls while the
+    # caption retains focus. Blur just this editor instead of selecting a
+    # suggestion, pressing Escape (which can close the composer), or bypassing
+    # pointer checks. Verify the committed text, including links, afterward.
+    field.blur(timeout=30000)
+    expect(field).not_to_be_focused()
+    verify_caption(field, text)
 
 
 def prepare_modern_reel(page, entry, text):

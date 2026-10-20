@@ -11,6 +11,7 @@ from urllib.parse import parse_qs, urlparse
 from unittest.mock import MagicMock, patch
 
 from playwright.sync_api import sync_playwright, expect as real_expect
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 import fb_upload as upload
 
@@ -121,6 +122,65 @@ class PersonalBrowserTests(unittest.TestCase):
         self.html = HTML.replace('role="switch"', 'checked role="switch"')
         self.prepare()
         self.assertTrue(self.page.get_by_role("switch").is_checked())
+
+    def hashtag_overlay(self):
+        self.html = self.html.replace('oninput="update()"',
+            'oninput="update();document.querySelector(\'#tags\').hidden=false" '
+            'onblur="document.querySelector(\'#tags\').hidden=true"')
+        self.html += '''<div id="tags" hidden style="position:fixed;inset:0;z-index:999;background:white">
+        <span>#lifelessonslearned</span><span>47K posts</span></div>
+        <script>document.addEventListener('keydown',e=>{if(e.key==='Escape'){
+        window.escapePressed=true;document.querySelector('#settings').hidden=true}})</script>'''
+
+    def test_hashtag_overlay_reproduces_click_failure_then_blur_fixes_without_post(self):
+        self.hashtag_overlay()
+        caption = 'A perspective\nhttps://example.com/?a=1&b=2\n#LifeLessons'
+
+        def old_fill(field, text):
+            field.fill(text)
+            upload.verify_caption(field, text)
+
+        self.page.set_default_timeout(350)
+        with patch.object(upload, 'fill_caption', side_effect=old_fill):
+            with self.assertRaises(PlaywrightTimeoutError):
+                upload.prepare_reel(self.page, self.entry, Path(__file__), caption)
+        self.assertTrue(self.page.locator('#tags').is_visible())
+        self.assertFalse(self.page.get_by_role('switch').is_checked())
+        self.assertIsNone(self.page.evaluate('window.postClicks'))
+        button, _ = upload.prepare_reel(self.page, self.entry, Path(__file__), caption)
+        self.assertTrue(button.is_enabled())
+        self.assertTrue(self.page.get_by_role('switch').is_checked())
+        self.assertTrue(self.page.locator('#tags').is_hidden())
+        self.assertEqual(self.page.get_by_role('textbox').input_value(), caption)
+        self.assertIsNone(self.page.evaluate('window.postClicks'))
+        self.assertIsNone(self.page.evaluate('window.escapePressed'))
+
+    def test_blur_modified_caption_stops_before_ai_or_post(self):
+        self.html = HTML.replace('oninput="update()"',
+                                 'oninput="update()" onblur="this.value+=\' changed\'"')
+        with self.assertRaises(AssertionError):
+            self.prepare()
+        self.assertFalse(self.page.get_by_role('switch').is_checked())
+        self.assertIsNone(self.page.evaluate('window.postClicks'))
+
+    def test_blur_does_not_toggle_already_enabled_ai_with_hashtag_overlay(self):
+        self.html = HTML.replace('role="switch"', 'checked role="switch"')
+        self.hashtag_overlay()
+        self.prepare()
+        self.assertTrue(self.page.get_by_role('switch').is_checked())
+        self.assertTrue(self.page.locator('#tags').is_hidden())
+        self.assertIsNone(self.page.evaluate('window.postClicks'))
+
+    def test_unrelated_overlay_still_blocks_ai_without_force_or_post(self):
+        self.html = HTML.replace('oninput="update()"',
+                                 'oninput="update();document.querySelector(\'#unknown\').hidden=false"')
+        self.html += '<div id="unknown" hidden style="position:fixed;inset:0;z-index:999">Unknown overlay</div>'
+        self.page.set_default_timeout(350)
+        with self.assertRaises(PlaywrightTimeoutError):
+            self.prepare()
+        self.assertTrue(self.page.locator('#unknown').is_visible())
+        self.assertFalse(self.page.get_by_role('switch').is_checked())
+        self.assertIsNone(self.page.evaluate('window.postClicks'))
 
     def test_locale_query_overrides_chinese_ui_before_upload(self):
         self.html = '<html lang="zh-CN">' + HTML.replace("Facebook menu", "菜单") + '</html>'
