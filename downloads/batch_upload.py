@@ -61,7 +61,7 @@ def select_targets(config, accounts, action, state, filename=None, continue_on_r
     return selected, errors
 
 
-def execute(entries, action, filename=None, continue_on_review=False):
+def execute(entries, action, filename=None, continue_on_review=False, ai_label=None):
     results = []
     for entry in entries:
         print("\n正在执行：", entry["account"], entry["target"], entry["name"], flush=True)
@@ -69,6 +69,8 @@ def execute(entries, action, filename=None, continue_on_review=False):
                    "--account", entry["account"], "--target", entry["target"]]
         if filename:
             command += ["--filename", filename]
+        if ai_label is not None:
+            command += ["--ai-label", ai_label]
         # Inherit stdin/stdout so prepare can pause for local review.
         child = subprocess.run(command, cwd=str(ROOT), check=False)
         results.append({"account": entry["account"], "target": entry["target"],
@@ -90,11 +92,14 @@ def main():
     parser.add_argument("--filename", help="plan/prepare/publish 只处理指定 MP4 文件名")
     parser.add_argument("--continue-on-review", action="store_true",
                         help="publish 跳过待核对账号；发布回执超时则保留记录并继续其他账号")
+    parser.add_argument("--ai-label", choices=["on", "off"], help="仅覆盖本轮 AI 标签，不更改默认配置")
     args = parser.parse_args()
     if args.filename and args.action not in {"plan", "prepare", "publish"}:
         parser.error("--filename 仅用于 plan、prepare 或 publish")
     if args.continue_on_review and args.action != "publish":
         parser.error("--continue-on-review 仅用于 publish")
+    if args.ai_label is not None and args.action not in {"prepare", "publish"}:
+        parser.error("--ai-label 仅用于 prepare 或 publish")
     accounts = list(dict.fromkeys(value.strip() for value in args.accounts.split(",") if value.strip()))
     if not accounts:
         parser.error("至少指定一个账号编号")
@@ -123,7 +128,8 @@ def main():
     try:
         with os.fdopen(fd, "w") as file:
             file.write(str(os.getpid()))
-        results = execute(entries, args.action, filename=args.filename, continue_on_review=args.continue_on_review)
+        results = execute(entries, args.action, filename=args.filename,
+                          continue_on_review=args.continue_on_review, ai_label=args.ai_label)
         filename = "batch-" + datetime.now().strftime("%Y%m%d-%H%M%S-%f") + ".json"
         upload.save_json(logs / filename, {"results": results})
         print("执行记录：", logs / filename)

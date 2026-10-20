@@ -139,6 +139,24 @@ class ModernEditorTests(unittest.TestCase):
         self.assertTrue(self.page.locator("#ai").is_checked())
         self.assertIsNone(self.page.evaluate("window.aiChanges"))
 
+    def test_real_video_switches_previously_enabled_ai_off(self):
+        self.entry['ai_label'] = False
+        self.editor = EDITOR.replace('id="ai" type="checkbox"', 'id="ai" checked type="checkbox"')
+        self.editor = self.editor.replace('aria-label="Off"', 'aria-label="On"')
+        button, _ = self.prepare()
+        self.assertFalse(self.page.locator('#ai').is_checked())
+        self.assertEqual(self.page.evaluate('window.aiChanges'), 1)
+        self.assertEqual(self.page.evaluate('window.savedCaption'), self.caption)
+        self.assertTrue(button.is_enabled())
+        self.assertIsNone(self.page.evaluate('window.postClicks'))
+
+    def test_real_video_does_not_click_already_disabled_ai(self):
+        self.entry['ai_label'] = False
+        self.prepare()
+        self.assertFalse(self.page.locator('#ai').is_checked())
+        self.assertIsNone(self.page.evaluate('window.aiChanges'))
+        self.assertIsNone(self.page.evaluate('window.postClicks'))
+
     def test_named_textarea_is_supported(self):
         self.editor = EDITOR.replace('<div id="caption" contenteditable="true"></div>',
                                      '<textarea id="caption" aria-label="Describe your reel..."></textarea>')

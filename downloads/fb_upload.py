@@ -14,7 +14,7 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 ROOT = Path(__file__).resolve().parent
 CONFIG = ROOT / "upload_config.json"
-VERSION = "2.22"
+VERSION = "2.23"
 SUCCESS_PATTERN = (
     r"^(?:Your reel (?:is(?: now)?|has been|was) (?:successfully )?"
     r"(?:published|shared|posted)(?: successfully)?|"
@@ -661,6 +661,47 @@ def fill_caption(field, text):
     verify_caption(field, text)
 
 
+def set_ai_label(page, entry, modern=False):
+    """Set and verify the requested state, including a previously enabled OFF."""
+    from playwright.sync_api import expect
+
+    desired = bool(entry.get("ai_label", False))
+    if modern:
+        label = page.get_by_role("button", name=re.compile(r"^Add AI label"))
+        toggle = label.get_by_label(re.compile(r"^(Off|On)$"))
+        expect(toggle).to_be_visible(timeout=30000)
+    elif entry.get("type") == "personal":
+        toggle = page.get_by_role("switch", name="Add AI label", exact=True)
+    else:
+        label = page.get_by_role("button", name=re.compile(r"^Add AI label We require you"))
+        indicator = label
+        attribute = "aria-checked"
+        current = label.get_attribute(attribute)
+        if current is None:
+            attribute = "aria-pressed"
+            current = label.get_attribute(attribute)
+        if current is None:
+            switches = label.get_by_role("switch")
+            if switches.count() == 1:
+                indicator, attribute = switches, "aria-checked"
+                current = indicator.get_attribute(attribute)
+        if current not in {"true", "false"}:
+            raise RuntimeError("无法确认 AI 标签开关状态；未点击发布。")
+        expected = "true" if desired else "false"
+        if current != expected:
+            label.click()
+        expect(indicator).to_have_attribute(attribute, expected)
+        print("AI 标签已核对：", "开启" if desired else "关闭", flush=True)
+        return
+    if desired:
+        toggle.check()
+        expect(toggle).to_be_checked()
+    else:
+        toggle.uncheck()
+        expect(toggle).not_to_be_checked()
+    print("AI 标签已核对：", "开启" if desired else "关闭", flush=True)
+
+
 def prepare_modern_reel(page, entry, text):
     from playwright.sync_api import expect
 
@@ -670,12 +711,7 @@ def prepare_modern_reel(page, entry, text):
     checkpoint(page)
     audience = page.get_by_role("button", name=re.compile(r"^Post audience Post audience"))
     expect(audience).to_be_visible(timeout=60000)
-    if entry.get("ai_label", False):
-        label = page.get_by_role("button", name=re.compile(r"^Add AI label"))
-        toggle = label.get_by_label(re.compile(r"^(Off|On)$"))
-        expect(toggle).to_be_visible(timeout=30000)
-        toggle.check()
-        expect(toggle).to_be_checked()
+    set_ai_label(page, entry, modern=True)
     # Facebook renders separate label/value nodes whose textContent is
     # "Post audiencePublic". Its accessible name retains the separation.
     expect(audience).to_be_enabled(timeout=240000)
@@ -781,22 +817,7 @@ def prepare_reel(page, entry, video, text, pause_before_reel=False):
         ensure_personal_public_audience(page)
     field = page.get_by_role("textbox", name="Describe your reel...", exact=True)
     fill_caption(field, text)
-    # Turn the requested AI label ON, never toggle an already enabled label OFF.
-    if entry.get("ai_label", False) and entry.get("type") == "personal":
-        label = page.get_by_role("switch", name="Add AI label", exact=True)
-        label.check()
-        expect(label).to_be_checked()
-    elif entry.get("ai_label", False):
-        label = page.get_by_role("button", name=re.compile(r"^Add AI label We require you"))
-        current = label.get_attribute("aria-checked") or label.get_attribute("aria-pressed")
-        if current is None:
-            switches = label.get_by_role("switch")
-            if switches.count() == 1:
-                current = switches.get_attribute("aria-checked")
-        if current not in {"true", "false"}:
-            raise RuntimeError("无法确认 AI 标签开关状态。请补充录制该开关的属性，未点击发布。")
-        if current == "false":
-            label.click()
+    set_ai_label(page, entry)
     button = page.get_by_role("button", name="Post", exact=True)
     expect(button).to_be_enabled(timeout=240000)
     return button, identity_proof
@@ -831,9 +852,14 @@ def launch_context(playwright, entry):
     return context
 
 
-def run_entry(entry, state, state_path, publish, filename=None, review_before_post=False, pause_before_reel=False):
+def run_entry(entry, state, state_path, publish, filename=None, review_before_post=False, pause_before_reel=False,
+              ai_label_override=None):
     from playwright.sync_api import sync_playwright
 
+    if ai_label_override is not None:
+        if type(ai_label_override) is not bool:
+            raise ValueError("AI 标签覆盖值必须为布尔值。")
+        entry = dict(entry, ai_label=ai_label_override)
     validate_entry(entry)
     if review_before_post and (not publish or not filename):
         raise ValueError("发布前预览核对必须用于 publish，并用 --filename 指定视频。")
@@ -862,7 +888,8 @@ def run_entry(entry, state, state_path, publish, filename=None, review_before_po
             key, video, caption, text = jobs[0]
             record = {"account": entry["account"], "target": entry["target"],
                       "url": entry["url"], "video": str(video), "caption": str(caption),
-                      "created": datetime.now().astimezone().isoformat(), "status": "preparing"}
+                      "created": datetime.now().astimezone().isoformat(), "status": "preparing",
+                      "ai_label_requested": bool(entry.get("ai_label", False))}
             if publish:
                 state[key] = record
                 save_json(state_path, state)
@@ -937,7 +964,8 @@ def main():
     parser.add_argument("--review-before-post", action="store_true", help="publish 在最终预览暂停，输入 POST 后在同一窗口继续发布")
     parser.add_argument("--pause-before-reel", action="store_true", help="选择视频前暂停，在实时页面处理遮罩后输入 READY 继续")
     parser.add_argument("--verified-absent", action="store_true")
-    parser.add_argument("--ai-label", choices=["on", "off"])
+    parser.add_argument("--ai-label", choices=["on", "off"],
+                        help="configure 保存默认值；prepare/publish 仅覆盖本次，不更改默认配置")
     args = parser.parse_args()
     if args.filename and args.action not in {"prepare", "publish"}:
         parser.error("--filename 仅用于 prepare 或 publish")
@@ -946,6 +974,8 @@ def main():
     if args.pause_before_reel and (args.action not in {"prepare", "publish"} or not args.filename):
         parser.error("--pause-before-reel 仅用于 prepare/publish，且需指定 --filename")
     logs = ROOT / "logs"
+    if args.ai_label is not None and args.action not in {"configure", "prepare", "publish"}:
+        parser.error("--ai-label 仅用于 configure、prepare 或 publish")
     if args.action == "status":
         try:
             return display_status(logs)
@@ -1039,16 +1069,21 @@ def main():
             save_json(CONFIG, configuration)
             print("已启用该目标。publish 和定时任务将实际发布新视频。")
         else:
+            run_options = {}
+            if args.ai_label is not None:
+                run_options["ai_label_override"] = args.ai_label == "on"
             if args.pause_before_reel:
                 prepared = run_entry(entry, state, state_path, args.action == "publish",
                                      filename=args.filename, review_before_post=args.review_before_post,
-                                     pause_before_reel=True)
+                                     pause_before_reel=True, **run_options)
             elif args.review_before_post:
-                prepared = run_entry(entry, state, state_path, True, filename=args.filename, review_before_post=True)
+                prepared = run_entry(entry, state, state_path, True, filename=args.filename,
+                                     review_before_post=True, **run_options)
             elif args.filename:
-                prepared = run_entry(entry, state, state_path, args.action == "publish", filename=args.filename)
+                prepared = run_entry(entry, state, state_path, args.action == "publish",
+                                     filename=args.filename, **run_options)
             else:
-                prepared = run_entry(entry, state, state_path, args.action == "publish")
+                prepared = run_entry(entry, state, state_path, args.action == "publish", **run_options)
             if args.action == "prepare" and prepared:
                 entry["prepared_at"] = datetime.now().astimezone().isoformat()
                 save_json(CONFIG, configuration)

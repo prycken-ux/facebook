@@ -123,6 +123,26 @@ class PersonalBrowserTests(unittest.TestCase):
         self.prepare()
         self.assertTrue(self.page.get_by_role("switch").is_checked())
 
+    def test_real_video_turns_previously_checked_ai_off_without_post(self):
+        self.entry['ai_label'] = False
+        self.html = HTML.replace('role="switch"', 'checked role="switch"')
+        self.html = self.html.replace(" &&\ndocument.querySelector('[role=switch]').checked", '')
+        button, _ = self.prepare()
+        self.assertFalse(self.page.get_by_role('switch').is_checked())
+        self.assertTrue(button.is_enabled())
+        self.assertEqual(self.page.get_by_role('textbox').input_value(), 'Fixture caption\n#Example')
+        self.assertIsNone(self.page.evaluate('window.postClicks'))
+
+    def test_real_video_leaves_already_unchecked_ai_off(self):
+        self.entry['ai_label'] = False
+        self.html = HTML.replace(" &&\ndocument.querySelector('[role=switch]').checked", '')
+        self.html = self.html.replace('onchange="update()"',
+                                      'onchange="window.aiChanges=(window.aiChanges||0)+1;update()"')
+        self.prepare()
+        self.assertFalse(self.page.get_by_role('switch').is_checked())
+        self.assertIsNone(self.page.evaluate('window.aiChanges'))
+        self.assertIsNone(self.page.evaluate('window.postClicks'))
+
     def hashtag_overlay(self):
         self.html = self.html.replace('oninput="update()"',
             'oninput="update();document.querySelector(\'#tags\').hidden=false" '
