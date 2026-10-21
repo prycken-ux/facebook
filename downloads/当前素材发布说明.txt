@@ -1,0 +1,40 @@
+2.24：发布当前 inbox 新素材，保留旧待核对记录
+
+本次故障：fb03、fb04、fb07、fb08、fb11 的旧 needs_review 记录指向 k3.mp4 等旧文件；
+当前 inbox 中是 1020权利3.0.mp4 这类新文件。
+旧重试工具按旧任务找文件，报“缺少指定视频”是指旧文件，不代表当前文件夹没有视频。
+此前批次中的这些目标被旧待核对任务挡住；不能把旧记录表当成这一轮新素材的发布结果。
+
+本包包含 fb_upload.py 2.24、publish_current_inbox.py、支持中文文件名的 mark_verified_post.py 及本说明。
+不包含账号配置、媒体、文案、浏览器资料或发布记录。
+原 add_fb_accounts.py 继续提供 batch/upload 锁，必须将本包解压到原 E:\FB-AutoUpload。
+
+本轮只处理用户确认尚未发布新素材的 fb03、fb04、fb07、fb08、fb11 的 personal 目标；fb10 不在本轮。
+先关闭这些账号手动打开的 Chrome 窗口，确认没有其他上传任务。
+逐个执行示例：
+& E:\FB-AutoUpload\.venv\Scripts\python.exe E:\FB-AutoUpload\publish_current_inbox.py --account fb03 --target personal --ai-label off
+
+工具读取当前 inbox 的 MP4，以目标和视频内容计算原有任务指纹。
+已存在任意状态记录的内容均跳过；仅在恰有一条尚无记录的新视频时选择它，不自动猜选多条。
+要求同名 TXT、稳定至少 60 秒的文件、原 prepare/enabled，以及同名 TXT 与现有 common_caption_today.txt 一致。
+直接使用当前文件名，包括中文；不改素材名称、不复制历史归档、不重写统一文案。
+本轮视频已确认不含 AI，调用用 --ai-label off，仅覆盖本次。
+
+新发布模式保留所有旧记录，不清空、删除、重标成功或声称旧视频未发布。
+只有指定全新视频、且同目标旧记录仅为 needs_review、旧视频原内容已不在 inbox 时才允许执行。
+旧 preparing/posting 仍阻止；若旧内容仍在 inbox，则要求先核对旧视频。
+新视频改名也不能绕过内容指纹；新素材本次变成 needs_review 后，不会被此工具再次自动选中。
+身份、Public、AI 标签、发布前保存意图、成功回执和归档逻辑保持原有检查。
+新任务保存 preserved_older_review_jobs，用于追踪保留的旧待核对任务。
+新素材准备期间内容变化会在 Post 前停止。
+常规 publish 和原批次在不传新模式时仍保留原有整目标待核对阻止规则。
+新增模式的底层命令需要明确文件名，例如：
+python fb_upload.py publish --account fb03 --target personal --filename "1020权利3.0.mp4" --ai-label off --new-video-with-old-review
+
+当前工具每次最多发当前目标一条新素材。若再次出现 REVIEW，说明本轮新素材的结果未知，
+应检查 Facebook 及 logs\review-新任务编号.png，不直接重复运行，也不重发整批。
+
+验证：105 项当前素材、精确文件、队列、成功标记/撤销、已确认缺失重试、AI 标签和批量检查通过。
+包括中文当前文件选择与归档、旧记录逐字段保留、新状态不自动重试、旧源仍存在/进行中任务阻止、
+改名旧内容拒绝、准备中源文件变更拒绝及其他账号（含 fb10）不受影响。
+实际 Windows/Facebook 新素材发布仍需在本机执行确认。

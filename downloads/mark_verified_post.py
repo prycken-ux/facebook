@@ -13,8 +13,7 @@ import fb_upload as upload
 
 
 def validate_filename(filename):
-    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._ -]*\.mp4', filename, re.I):
-        raise ValueError('需指定 MP4 文件名，不能包含路径。')
+    upload.validate_video_filename(filename)
 
 
 def mark_verified(entry, filename, url=None, correct_from_filename=None, verified_published=False):

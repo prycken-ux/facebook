@@ -14,7 +14,7 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 ROOT = Path(__file__).resolve().parent
 CONFIG = ROOT / "upload_config.json"
-VERSION = "2.23"
+VERSION = "2.24"
 SUCCESS_PATTERN = (
     r"^(?:Your reel (?:is(?: now)?|has been|was) (?:successfully )?"
     r"(?:published|shared|posted)(?: successfully)?|"
@@ -267,10 +267,19 @@ def pending_jobs(entry, state):
             print("已有任务记录，不重复发布：", video.name, state[key]["status"])
 
 
+def validate_video_filename(filename):
+    if (not isinstance(filename, str) or not filename or filename != filename.strip()
+            or any(ord(char) < 32 or ord(char) == 127 or char in '<>:"/\\|?*' for char in filename)
+            or Path(filename).suffix.lower() != '.mp4'
+            or not Path(filename).stem
+            or Path(filename).stem.split('.')[0].upper() in
+               {'CON', 'PRN', 'AUX', 'NUL', *(f'COM{i}' for i in range(1, 10)), *(f'LPT{i}' for i in range(1, 10))}):
+        raise ValueError('需填写有效 MP4 文件名，支持中文，不能包含路径、控制字符或 Windows 保留名称。')
+
+
 def named_job(entry, state, filename):
     """Resolve exactly one inbox file; never fall back to another queued video."""
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._ -]*\.mp4", filename, re.I):
-        raise ValueError("--filename 需填写 MP4 文件名，例如 2026-10-15_01.mp4，不能包含路径。")
+    validate_video_filename(filename)
     folder = inbox_for(entry)
     video = folder / filename
     if not video.is_file():
@@ -853,7 +862,7 @@ def launch_context(playwright, entry):
 
 
 def run_entry(entry, state, state_path, publish, filename=None, review_before_post=False, pause_before_reel=False,
-              ai_label_override=None):
+              ai_label_override=None, new_video_with_old_review=False):
     from playwright.sync_api import sync_playwright
 
     if ai_label_override is not None:
@@ -865,11 +874,16 @@ def run_entry(entry, state, state_path, publish, filename=None, review_before_po
         raise ValueError("发布前预览核对必须用于 publish，并用 --filename 指定视频。")
     if pause_before_reel and not filename:
         raise ValueError("菜单协助必须用 --filename 指定视频。")
+    if new_video_with_old_review and (not publish or not filename or not entry.get('prepared_at')):
+        raise ValueError('保留旧记录发布新视频仅用于已准备目标的 publish，并且必须指定文件名。')
     identity = (entry["account"], entry["target"])
     if publish and not entry.get("enabled", False):
         raise RuntimeError("尚未启用发布。先完成 prepare 检查，再执行 enable。")
-    if any((row["account"], row["target"]) == identity and row["status"] in
-           {"preparing", "posting", "needs_review"} for row in state.values()):
+    blocking = [(key, row) for key, row in state.items()
+                if (row['account'], row['target']) == identity
+                and row['status'] in {'preparing', 'posting', 'needs_review'}]
+    if blocking and (not new_video_with_old_review
+                     or any(row['status'] != 'needs_review' for _, row in blocking)):
         raise RuntimeError("该目标有待核对任务。先检查主页并 confirm 或 retry，避免重复发布。")
     if filename:
         selected = named_job(entry, state, filename)
@@ -879,6 +893,16 @@ def run_entry(entry, state, state_path, publish, filename=None, review_before_po
     if not jobs:
         print("没有新的待发布视频：", identity)
         return False
+    if new_video_with_old_review:
+        for old_key, row in blocking:
+            if target_key(row.get('url', '')) != target_key(entry['url']):
+                raise RuntimeError('旧待核对任务的目标与当前配置不同，已停止。')
+            old_name = str(row.get('video', '')).replace('\\', '/').rsplit('/', 1)[-1]
+            validate_video_filename(old_name)
+            old_file = inbox_for(entry) / old_name
+            if old_file.is_file() and job_key(entry, old_file) == old_key:
+                raise RuntimeError('旧待核对视频仍在 inbox，请先核对该视频，未选择其他视频代替。')
+        print('仅发布当前新素材，保留旧待核对记录：', len(blocking), flush=True)
     with sync_playwright() as playwright:
         context = launch_context(playwright, entry)
         try:
@@ -890,6 +914,8 @@ def run_entry(entry, state, state_path, publish, filename=None, review_before_po
                       "url": entry["url"], "video": str(video), "caption": str(caption),
                       "created": datetime.now().astimezone().isoformat(), "status": "preparing",
                       "ai_label_requested": bool(entry.get("ai_label", False))}
+            if new_video_with_old_review:
+                record['preserved_older_review_jobs'] = [old_key for old_key, _ in blocking]
             if publish:
                 state[key] = record
                 save_json(state_path, state)
@@ -917,6 +943,8 @@ def run_entry(entry, state, state_path, publish, filename=None, review_before_po
                         raise RuntimeError("核对期间源视频内容发生变化，未点击 Post。")
                     record["preview_review_method"] = "user_entered_POST"
                     record["preview_reviewed_at"] = datetime.now().astimezone().isoformat()
+                if new_video_with_old_review and job_key(entry, video) != key:
+                    raise RuntimeError('准备期间源视频内容变化，未点击发布。')
                 install_receipt_watch(page)
                 recheck_publish_identity(page, entry, identity_proof)
                 # Persist the intent BEFORE clicking, so crashes cannot retry the Post.
@@ -964,6 +992,8 @@ def main():
     parser.add_argument("--review-before-post", action="store_true", help="publish 在最终预览暂停，输入 POST 后在同一窗口继续发布")
     parser.add_argument("--pause-before-reel", action="store_true", help="选择视频前暂停，在实时页面处理遮罩后输入 READY 继续")
     parser.add_argument("--verified-absent", action="store_true")
+    parser.add_argument('--new-video-with-old-review', action='store_true',
+                        help='publish 指定全新视频；仅当旧待核对素材已不在 inbox 时保留旧记录继续')
     parser.add_argument("--ai-label", choices=["on", "off"],
                         help="configure 保存默认值；prepare/publish 仅覆盖本次，不更改默认配置")
     args = parser.parse_args()
@@ -973,6 +1003,8 @@ def main():
         parser.error("--review-before-post 仅用于 publish，且需指定 --filename")
     if args.pause_before_reel and (args.action not in {"prepare", "publish"} or not args.filename):
         parser.error("--pause-before-reel 仅用于 prepare/publish，且需指定 --filename")
+    if args.new_video_with_old_review and (args.action != 'publish' or not args.filename):
+        parser.error('--new-video-with-old-review 仅用于 publish，且需指定 --filename')
     logs = ROOT / "logs"
     if args.ai_label is not None and args.action not in {"configure", "prepare", "publish"}:
         parser.error("--ai-label 仅用于 configure、prepare 或 publish")
@@ -1070,6 +1102,8 @@ def main():
             print("已启用该目标。publish 和定时任务将实际发布新视频。")
         else:
             run_options = {}
+            if args.new_video_with_old_review:
+                run_options['new_video_with_old_review'] = True
             if args.ai_label is not None:
                 run_options["ai_label_override"] = args.ai_label == "on"
             if args.pause_before_reel:
