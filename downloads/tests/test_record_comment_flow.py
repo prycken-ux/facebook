@@ -23,6 +23,9 @@ class RecordingTests(unittest.TestCase):
         upload.save_json(upload.CONFIG, dict(targets=[self.entry]))
         self.browser = MagicMock()
         self.page = MagicMock()
+        self.page.url = self.entry['url']
+        self.page.locator.return_value.count.return_value = 0
+        self.page.locator.return_value.aria_snapshot.return_value = '- button "Reply"\n- textbox "Write a reply..."'
         self.browser.pages = [self.page]
         self.lock = self.root / 'logs/upload.lock'
 
@@ -43,6 +46,13 @@ class RecordingTests(unittest.TestCase):
         self.assertFalse(self.lock.exists())
         self.assertFalse((self.root / 'videos').exists())
         self.assertFalse((self.root / 'logs/publish_state.json').exists())
+        capture = list((self.root / 'logs/comment-recordings').iterdir())
+        self.assertEqual(len(capture), 1)
+        self.assertIn('Reply', (capture[0] / 'comments.aria.txt').read_text())
+        metadata = upload.read_json(capture[0] / 'context.json', {})
+        self.assertEqual(metadata['account'], 'fb01')
+        self.assertEqual(metadata['view_url'], self.entry['url'])
+        self.page.screenshot.assert_called_once()
 
     def test_identity_or_login_failure_never_starts_recording(self):
         with patch.object(recording, 'sync_playwright'), \
@@ -68,6 +78,26 @@ class RecordingTests(unittest.TestCase):
                 self.assertEqual(recording.main(), 1)
             launch.assert_not_called()
             self.assertFalse(self.lock.exists())
+
+    def test_checkpoint_page_is_not_captured(self):
+        self.page.url = 'https://www.facebook.com/checkpoint/'
+        with self.assertRaises(RuntimeError):
+            recording.save_comment_view(self.page, self.entry)
+        self.assertFalse((self.root / 'logs/comment-recordings').exists())
+        self.page.screenshot.assert_not_called()
+
+    def test_visible_password_form_is_not_captured(self):
+        self.page.locator.return_value.count.return_value = 1
+        self.page.locator.return_value.nth.return_value.is_visible.return_value = True
+        with self.assertRaisesRegex(RuntimeError, '登录页面'):
+            recording.save_comment_view(self.page, self.entry)
+        self.assertFalse((self.root / 'logs/comment-recordings').exists())
+
+    def test_empty_snapshot_is_not_saved(self):
+        self.page.locator.return_value.aria_snapshot.return_value = ''
+        with self.assertRaisesRegex(RuntimeError, '有效页面结构'):
+            recording.save_comment_view(self.page, self.entry)
+        self.assertFalse((self.root / 'logs/comment-recordings').exists())
 
 
 if __name__ == '__main__':
