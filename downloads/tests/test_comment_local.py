@@ -27,7 +27,7 @@ class LocalCommentTests(unittest.TestCase):
         self.temp.cleanup()
 
     @contextlib.contextmanager
-    def server(self, redirect=False):
+    def server(self, redirect=False, error_detail=None):
         visits = []
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
@@ -43,6 +43,11 @@ class LocalCommentTests(unittest.TestCase):
                     self.send_response(307)
                     self.send_header('Location', '/redirected')
                     self.end_headers()
+                    return
+                if error_detail is not None:
+                    self.send_response(500)
+                    self.end_headers()
+                    self.wfile.write(json.dumps({'error': error_detail}).encode())
                     return
                 self.send_response(200)
                 self.end_headers()
@@ -84,6 +89,7 @@ class LocalCommentTests(unittest.TestCase):
         self.assertEqual(json.loads(body['messages'][1]['content']),
             {'video_caption': caption, 'comment': comment})
         self.assertNotIn('sk-unused-key', json.dumps(body))
+        self.assertEqual(body['options']['num_ctx'], 4096)
 
     def test_local_redirect_is_not_followed(self):
         with self.server(redirect=True) as visits, self.assertRaisesRegex(ai.ReplyError, 'HTTP 307'):
@@ -181,6 +187,50 @@ class LocalCommentTests(unittest.TestCase):
         self.config.write_text(json.dumps(dict(provider='ollama', model=ai.LOCAL_MODEL,
             endpoint='https://untrusted.invalid')))
         self.assertEqual(ai.read_config(self.root), dict(provider='ollama', model=ai.LOCAL_MODEL))
+
+    def test_long_input_is_refused_before_http_instead_of_silently_truncated(self):
+        for caption, comment in [('x'*3000, 'Nice!'), ('story', '\U0001f600'*2000)]:
+            with self.subTest(comment=comment[:12]), patch.object(ai, 'local_request') as request, \
+                    self.assertRaisesRegex(ai.ReplyError, '未截断'):
+                ai.generate_reply(caption, comment, root=self.root)
+            request.assert_not_called()
+
+    def test_real_http_memory_error_is_classified_without_echoing_private_detail(self):
+        secret = 'sk-private-example-not-real'
+        detail = 'model requires more system memory (3.6 GiB) than is available (2.9 GiB) ' + secret
+        with self.server(error_detail=detail), self.assertRaisesRegex(ai.LocalAIError, '可用内存不足') as error:
+            ai.generate_reply('story', 'Nice!', root=self.root)
+        self.assertNotIn(secret, str(error.exception))
+        self.assertEqual(error.exception.detail, detail)
+
+    def test_cli_local_details_are_opt_in_and_redact_keys_input_and_control_codes(self):
+        caption = self.root / 'caption.txt'
+        caption.write_text('Private caption content')
+        detail = ('runner failed: Private caption content; private comment; '
+                  'sk-not-a-real-secret; https://example.invalid/?token=secret\n\x1b[31m')
+        for show in (False, True):
+            args = ['comment_ai.py', 'check', '--caption-file', str(caption), '--comment', 'private comment']
+            if show:
+                args.append('--local-details')
+            with patch('sys.argv', args), patch.object(ai, 'ROOT', self.root), \
+                    self.server(error_detail=detail), contextlib.redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(ai.main(), 1)
+            value = output.getvalue()
+            self.assertNotIn('sk-not-a-real-secret', value)
+            self.assertNotIn('Private caption content', value)
+            self.assertNotIn('private comment', value)
+            self.assertNotIn('token=secret', value)
+            self.assertNotIn('\x1b', value)
+            self.assertEqual('本机详细原因：' in value, show)
+
+    def test_error_details_handle_unknown_and_malformed_errors(self):
+        for raw in (b'bad json', b'[]', b'{"error":10}'):
+            self.assertEqual(ai.local_error_detail(raw), '')
+        for detail, expected in [('out of memory', '可用内存不足'),
+                                 ('unable to load model', '加载失败'),
+                                 ('invalid JSON schema', '结构化输出'),
+                                 ('unknown failure', '--local-details')]:
+            self.assertIn(expected, str(ai.LocalAIError(500, detail)))
 
 
 if __name__ == '__main__':

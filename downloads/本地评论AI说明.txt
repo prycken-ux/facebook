@@ -33,6 +33,12 @@ ollama pull qwen2.5:3b
 setup --gui 是旧 OpenAI 密钥配置入口；本地方案请用 setup-local，不要运行旧版安装包覆盖脚本。
 
 三、测试生成（不发到 Facebook）
+本次更新将默认上下文从 8192 降到 4096，降低模型上下文的内存开销。
+这不保证解决所有 HTTP 500；此前简单命令返回 OK，仅证明简单生成能运行。
+输入按保守字节预算验证，超过上下文预算时明确停止，不静默截断文案或评论。
+如需查看本机错误原因，在下方 check 命令末尾加 --local-details。
+它只显示本地 Ollama 的有限 JSON error 字段，省略输入内容、API 密钥和网址，过滤终端控制字符。
+不显示 OpenAI 错误正文；也不读取浏览器资料或 API 密钥。
 & E:\FB-AutoUpload\.venv\Scripts\python.exe E:\FB-AutoUpload\comment_ai.py check --caption-file E:\FB-AutoUpload\common_caption_today.txt --comment "Where can I buy this book?"
 
 生成采用 reply/skip/review JSON 格式，回复最长 300 字符。
@@ -50,6 +56,8 @@ setup --gui 是旧 OpenAI 密钥配置入口；本地方案请用 setup-local，
 录制及采集细节见 评论AI配置说明.txt 的第五节。
 完成后再采集个人主页 fb03。采集后才能继续适配自动回复发送流程。
 
-验证：41 项 AI/GUI/本地接入检查通过，包括真实本机 HTTP 测试服务器、代理绕过、
+验证：45 项 AI/GUI/本地接入检查通过，包括真实本机 HTTP 测试服务器、代理绕过、
 无 Authorization、拒绝重定向/远程模型、无收费回退、配置备份及结构化输出拒绝。
 测试服务器代替真实 Ollama；没有在这台 Windows 电脑或实际模型上验证速度与回复质量。
+
+新增覆盖省内存请求、超长输入拒绝、真实 HTTP 内存错误分类，以及可选错误详情的脱敏输出。
