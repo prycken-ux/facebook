@@ -12,7 +12,25 @@ import fb_upload as upload
 ROOT = Path(__file__).resolve().parent
 
 
-def select_targets(config, accounts, action, state, filename=None, continue_on_review=False):
+def parse_target_filter(value, accounts):
+    if value is None:
+        return None
+    pairs = set()
+    for item in value.split(','):
+        parts = item.strip().split('/')
+        if (len(parts) != 2 or parts[0] not in accounts
+                or any(not re.fullmatch(r'[A-Za-z0-9_-]+', part) for part in parts)):
+            raise ValueError('--targets 使用已选账号/目标格式，例如 fb10/personal。')
+        pair = tuple(parts)
+        if pair in pairs:
+            raise ValueError('--targets 包含重复目标。')
+        pairs.add(pair)
+    if {account for account, _ in pairs} != set(accounts):
+        raise ValueError('--targets 必须为每个已选账号指定至少一个目标。')
+    return pairs
+
+
+def select_targets(config, accounts, action, state, filename=None, continue_on_review=False, target_filter=None):
     selected = []
     errors = []
     urls = set()
@@ -20,7 +38,12 @@ def select_targets(config, accounts, action, state, filename=None, continue_on_r
         if not re.fullmatch(r"[A-Za-z0-9_-]+", account):
             errors.append("账号编号无效：" + account)
             continue
-        entries = [entry for entry in config.get("targets", []) if entry.get("account") == account]
+        entries = [entry for entry in config.get("targets", []) if entry.get("account") == account
+                   and (target_filter is None or (account, entry.get('target')) in target_filter)]
+        if target_filter is not None:
+            found = {(account, entry.get('target')) for entry in entries}
+            for pair in sorted(pair for pair in target_filter if pair[0] == account and pair not in found):
+                errors.append('/'.join(pair) + '：没有指定目标配置；未选择其他目标代替')
         if not entries:
             errors.append(account + "：尚未配置目标主页")
             continue
@@ -89,6 +112,7 @@ def main():
     parser = argparse.ArgumentParser(description="公共主页和个人主页批量准备或发布；每个目标每次最多一条")
     parser.add_argument("action", choices=["plan", "check-identity", "prepare", "enable", "publish"], nargs="?", default="plan")
     parser.add_argument("--accounts", required=True, help="例如 fb01,fb02,fb03")
+    parser.add_argument('--targets', help='只处理指定账号/目标，例如 fb10/personal；省略时处理所选账号的全部目标')
     parser.add_argument("--filename", help="plan/prepare/publish 只处理指定 MP4 文件名")
     parser.add_argument("--continue-on-review", action="store_true",
                         help="publish 跳过待核对账号；发布回执超时则保留记录并继续其他账号")
@@ -103,10 +127,11 @@ def main():
     accounts = list(dict.fromkeys(value.strip() for value in args.accounts.split(",") if value.strip()))
     if not accounts:
         parser.error("至少指定一个账号编号")
+    target_filter = parse_target_filter(args.targets, accounts)
     config = upload.read_json(ROOT / "upload_config.json", {"targets": []})
     state = upload.read_json(ROOT / "logs" / "publish_state.json", {})
     entries, errors = select_targets(config, accounts, args.action, state, filename=args.filename,
-                                     continue_on_review=args.continue_on_review)
+                                     continue_on_review=args.continue_on_review, target_filter=target_filter)
     for entry in entries:
         print(entry["account"], entry["target"], entry["name"], entry["url"])
     if errors:
@@ -137,7 +162,9 @@ def main():
         if any(row["exit_code"] not in {0, 3} for row in results):
             return 1
         if any(row["exit_code"] == 3 for row in results) or (args.continue_on_review and any(
-                row.get("account") in accounts and row.get("status") == "needs_review" for row in state.values())):
+                row.get("account") in accounts and row.get("status") == "needs_review"
+                and (target_filter is None or (row.get('account'), row.get('target')) in target_filter)
+                for row in state.values())):
             print("仍有待核对记录，请稍后检查对应视频；未将这些记录标为发布成功。")
             return 3
         return 0

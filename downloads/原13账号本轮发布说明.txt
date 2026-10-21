@@ -1,0 +1,42 @@
+原 13 个账号本轮发布：沿用已保存统一文案
+
+范围：fb01/page01、fb02/page01、fb03/personal、fb04/personal、fb05/page01、fb06/page01、
+fb07/personal、fb08/personal、fb09/personal、fb10/personal、fb11/personal、fb12/page01、fb13/page01。
+fb10 新公共主页 page01 不在本轮范围，即便已登记，也不会因其未准备/未启用而挡住这轮。
+每个原目标本轮最多发布一条新视频，沿用原内容指纹防重复规则。
+用户已确认本轮 13 条全部不含 AI，脚本默认本次 AI 标签 off，不改保存的默认值。
+
+执行前：
+1. 视频放在各原目标 videos\fbXX\personal 或 page01\inbox，复制完成至少一分钟。
+2. 保留原 common_caption_today.txt：脚本直接使用该文案，不生成或重写文案模板。
+3. 若 fb10 当前为新公共主页身份，先切回 Ava H-s；关闭手动打开的各账号 Chrome 窗口。
+4. 确认没有上传或其他批次运行，保持 PowerShell 打开，只运行本轮一次。
+
+本包解压到 E:\FB-AutoUpload，包含：
+- fb_upload.py：已发布的 2.23 版本，支持本次 AI 标签开关。
+- batch_upload.py：新增 --targets 以账号/目标精确选择，默认不指定时保留原行为。
+- apply_common_caption.py：同样支持 --targets，只修改指定目标的当前未记录视频文案。
+- publish_original_thirteen.ps1：原 13 目标的一次性串行发布命令。
+- 本说明。依赖原目录已有 add_fb_accounts.py，用于配置/文案锁。
+不包含账号配置、原文案、浏览器登录资料、媒体或发布记录。
+
+在 PowerShell 执行：
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File E:\FB-AutoUpload\publish_original_thirteen.ps1 -AiLabel off
+
+脚本先检查全部指定目标及原文案文件，再为它们当前未记录的 MP4 生成/更新同名 TXT，备份被改的 TXT。
+随后等待 65 秒让文件稳定，再对原 13 个目标逐个执行 publish，失败或待核对时保留记录继续其他目标。
+不会重置失败/待核对记录，不会自动把未知结果标为成功，也不会启用未准备的目标。
+--continue-on-review 只跳过待核对记录；真正是否发布成功仍以发布状态及 Facebook 页面核对。
+返回 0 也可能表示没有新的合格视频，不能仅凭汇总 ExitCode 判断已发布。
+若文案处理或整体目标检查失败，在任何发布前停止；若某个目标缺少准备/启用或身份不符，仅该目标停止。
+同名视频的重新复制或改文案不会绕过原内容去重。
+
+工具新增精确范围示例：
+python batch_upload.py publish --accounts=fb10 --targets=fb10/personal --ai-label off --continue-on-review
+python apply_common_caption.py --accounts=fb10 --targets=fb10/personal --text-file common_caption_today.txt
+指定目标缺失时明确报错，不自动换成其他目标；未选主页的待核对任务不影响本轮返回状态。
+
+验证：59 项批量选择、文案、双目标登记、精确文件名和 AI 标签检查通过。
+覆盖新增公共主页未准备/待核对时排除、未选目录文案不修改、缺失目标不回退、AI 开关传递及既有防重复行为。
+PowerShell 脚本按 Windows PowerShell 兼容语法编写并使用 UTF-8 BOM；云端未实际执行 Windows 发布脚本。
+本包不安装定时任务、不启用评论自动回复，也不修改任何保存的 AI 接口配置。

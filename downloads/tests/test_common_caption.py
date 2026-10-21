@@ -169,6 +169,21 @@ class CaptionTests(unittest.TestCase):
                 app.apply(['fb10'], self.text)
             self.assertFalse(first.with_suffix('.txt').exists())
 
+    def test_exact_target_filter_leaves_unselected_page_caption_unchanged(self):
+        personal, page = self.dual_targets()
+        first, second = self.video(personal), self.video(page)
+        second.with_suffix('.txt').write_text('leave unselected page alone')
+        counts = app.apply(['fb10'], self.text, target_filter={('fb10', 'personal')})
+        self.assertEqual(counts, {'fb10': 1})
+        self.assertEqual(first.with_suffix('.txt').read_text(), self.text+'\n')
+        self.assertEqual(second.with_suffix('.txt').read_text(), 'leave unselected page alone')
+
+    def test_missing_requested_caption_target_blocks_before_any_writes(self):
+        first = self.video(self.entries[0])
+        with self.assertRaises(ValueError):
+            app.apply(['fb01'], self.text, target_filter={('fb01', 'missing')})
+        self.assertFalse(first.with_suffix('.txt').exists())
+
 
 if __name__ == "__main__":
     unittest.main()

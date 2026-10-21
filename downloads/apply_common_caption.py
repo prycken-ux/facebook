@@ -12,6 +12,7 @@ from pathlib import Path
 
 import fb_upload as upload
 from add_fb_accounts import locked
+from batch_upload import parse_target_filter
 
 ROOT = Path(__file__).resolve().parent
 
@@ -27,7 +28,7 @@ def atomic_caption(path, text):
         temporary.unlink(missing_ok=True)
 
 
-def apply(accounts, text):
+def apply(accounts, text, target_filter=None):
     text = text.strip()
     if not text:
         raise ValueError("统一文案不能为空。")
@@ -39,7 +40,12 @@ def apply(accounts, text):
     identities = set()
     destinations = set()
     for account in accounts:
-        matches = [r for r in configuration.get("targets", []) if r.get("account") == account]
+        matches = [r for r in configuration.get("targets", []) if r.get("account") == account
+                   and (target_filter is None or (account, r.get('target')) in target_filter)]
+        if target_filter is not None:
+            found = {(account, row.get('target')) for row in matches}
+            if any(pair[0] == account and pair not in found for pair in target_filter):
+                raise ValueError(account + ' 缺少指定目标，未修改文案，未选择其他目标代替。')
         if not matches:
             raise ValueError(account + " 没有已配置目标，未修改文案。")
         for entry in matches:
@@ -121,11 +127,14 @@ def apply(accounts, text):
 def main():
     parser = argparse.ArgumentParser(description="为本轮待发布视频批量生成统一的同名 TXT")
     parser.add_argument("--accounts", required=True)
+    parser.add_argument('--targets', help='只为指定账号/目标生成文案，例如 fb10/personal')
     parser.add_argument("--text-file", type=Path, required=True)
     args = parser.parse_args()
     text = args.text_file.read_text(encoding="utf-8-sig")
+    accounts = [a.strip() for a in args.accounts.split(',') if a.strip()]
+    target_filter = parse_target_filter(args.targets, accounts)
     with locked():
-        apply([a.strip() for a in args.accounts.split(",") if a.strip()], text)
+        apply(accounts, text, target_filter=target_filter)
     return 0
 
 

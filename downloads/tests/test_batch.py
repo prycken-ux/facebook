@@ -135,6 +135,44 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(run.call_count, 2)
         self.assertFalse((self.root / "logs/batch.lock").exists())
 
+    def test_target_filter_selects_personal_without_unprepared_page_or_its_review(self):
+        personal = dict(account='fb01', target='personal', type='personal', name='Person',
+                        workflow='personal_recording_v1', url='https://www.facebook.com/person1',
+                        prepared_at='checked', enabled=True)
+        page = dict(self.entries[0], enabled=False)
+        page.pop('prepared_at')
+        state = {'page-job': dict(account='fb01', target='page01', status='needs_review')}
+        config = {'targets': [personal, page]}
+        selected, errors = batch.select_targets(config, ['fb01'], 'publish', state,
+            target_filter={('fb01', 'personal')})
+        self.assertEqual(errors, [])
+        self.assertEqual(selected, [personal])
+        with patch.object(batch.upload, 'read_json', side_effect=[config, state]), \
+                patch('sys.argv', ['batch_upload.py', 'publish', '--accounts=fb01',
+                                  '--targets=fb01/personal', '--continue-on-review']), \
+                patch('batch_upload.subprocess.run', return_value=SimpleNamespace(returncode=0)) as run, \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(batch.main(), 0)
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(run.call_args.args[0][-2:], ['--target', 'personal'])
+
+    def test_filter_does_not_fall_back_to_another_target(self):
+        selected, errors = batch.select_targets({'targets': self.entries}, ['fb01'], 'plan', {},
+                                               target_filter={('fb01', 'missing')})
+        self.assertEqual(selected, [])
+        self.assertTrue(errors)
+
+    def test_invalid_target_filters_are_refused(self):
+        self.assertIsNone(batch.parse_target_filter(None, ['fb01']))
+        for value in ('', 'fb01', 'fb01/../page', 'fb02/page01',
+                      'fb01/page01,fb01/page01'):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                batch.parse_target_filter(value, ['fb01'])
+        with self.assertRaises(ValueError):
+            batch.parse_target_filter('fb01/page01', ['fb01', 'fb02'])
+        self.assertEqual(batch.parse_target_filter('fb01/personal,fb01/page01', ['fb01']),
+                         {('fb01', 'personal'), ('fb01', 'page01')})
+
 
 if __name__ == "__main__":
     unittest.main()
