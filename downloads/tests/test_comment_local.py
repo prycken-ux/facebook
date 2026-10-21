@@ -84,8 +84,8 @@ class LocalCommentTests(unittest.TestCase):
             self.assertIsNone(headers.get('Authorization'))
         body = visits[1][2]
         self.assertFalse(body['stream'])
-        self.assertEqual(body['format'], ai.SCHEMA)
-        self.assertEqual(body['messages'][0]['content'], ai.INSTRUCTIONS)
+        self.assertEqual(body['format'], ai.LOCAL_SCHEMA)
+        self.assertEqual(body['messages'][0]['content'], ai.LOCAL_INSTRUCTIONS)
         self.assertEqual(json.loads(body['messages'][1]['content']),
             {'video_caption': caption, 'comment': comment})
         self.assertNotIn('sk-unused-key', json.dumps(body))
@@ -231,6 +231,50 @@ class LocalCommentTests(unittest.TestCase):
                                  ('invalid JSON schema', '结构化输出'),
                                  ('unknown failure', '--local-details')]:
             self.assertIn(expected, str(ai.LocalAIError(500, detail)))
+
+    def test_structured_reply_has_bounded_fields_and_a_larger_output_budget(self):
+        with self.server() as visits:
+            self.assertEqual(ai.generate_reply('story', 'Nice!', root=self.root), REPLY)
+        body = visits[1][2]
+        self.assertEqual(body['options']['num_predict'], 1024)
+        self.assertEqual(body['format']['properties']['reply']['maxLength'], 300)
+        self.assertEqual(body['format']['properties']['reason']['maxLength'], 96)
+        self.assertIn('compact JSON', body['messages'][0]['content'])
+
+    def test_truncated_and_missing_finish_reasons_remain_rejected_even_with_valid_json(self):
+        for reason in ('length', None, 'unknown'):
+            payload = dict(done=True, eval_count=1024, prompt_eval_count=300,
+                message=dict(role='assistant', content=json.dumps(REPLY)))
+            if reason is not None:
+                payload['done_reason'] = reason
+            with self.subTest(reason=reason), patch.object(ai, 'require_local_model'), \
+                    patch.object(ai, 'local_request', return_value=payload), \
+                    self.assertRaises(ai.LocalDiagnosticError) as error:
+                ai.generate_reply('story', 'Nice!', root=self.root)
+            detail = json.loads(error.exception.detail)
+            self.assertEqual(detail['done_reason'], reason)
+            self.assertEqual(detail['eval_count'], 1024)
+            self.assertEqual(detail['content_chars'], len(json.dumps(REPLY)))
+            self.assertNotIn(REPLY['reply'], error.exception.detail)
+
+    def test_cli_can_report_finish_metadata_without_showing_rejected_content(self):
+        payload = dict(done=True, done_reason='length', eval_count=1024,
+            message=dict(role='assistant', content='secret rejected model output'))
+        with patch('sys.argv', ['comment_ai.py', 'check', '--local-details']), \
+                patch.object(ai, 'ROOT', self.root), patch.object(ai, 'require_local_model'), \
+                patch.object(ai, 'local_request', return_value=payload), \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(ai.main(), 1)
+        self.assertIn('本机详细原因', output.getvalue())
+        self.assertIn('length', output.getvalue())
+        self.assertNotIn('secret rejected model output', output.getvalue())
+
+    def test_oversize_local_reason_is_refused_independently_of_server_schema(self):
+        payload = dict(done=True, done_reason='stop',
+            message=dict(role='assistant', content=json.dumps({**REPLY, 'reason': 'r'*97})))
+        with patch.object(ai, 'require_local_model'), patch.object(ai, 'local_request', return_value=payload), \
+                self.assertRaisesRegex(ai.LocalDiagnosticError, '说明过长'):
+            ai.generate_reply('story', 'Nice!', root=self.root)
 
 
 if __name__ == '__main__':
