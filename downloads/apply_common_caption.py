@@ -36,13 +36,21 @@ def apply(accounts, text):
     configuration = upload.read_json(ROOT / "upload_config.json", {})
     state = upload.read_json(ROOT / "logs" / "publish_state.json", {})
     entries = []
+    identities = set()
+    destinations = set()
     for account in accounts:
         matches = [r for r in configuration.get("targets", []) if r.get("account") == account]
-        if len(matches) != 1:
-            raise ValueError(account + " 必须有唯一的已配置目标，未修改文案。")
-        entry = matches[0]
-        upload.validate_entry(entry)
-        entries.append(entry)
+        if not matches:
+            raise ValueError(account + " 没有已配置目标，未修改文案。")
+        for entry in matches:
+            upload.validate_entry(entry)
+            identity = (entry["account"], entry["target"])
+            destination = upload.target_key(entry["url"])
+            if identity in identities or destination in destinations:
+                raise ValueError(account + " 有重复目标编号或重复主页，未修改文案。")
+            identities.add(identity)
+            destinations.add(destination)
+            entries.append(entry)
     changes = []
     counts = {a: 0 for a in accounts}
     for entry in entries:

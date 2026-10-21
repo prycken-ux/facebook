@@ -131,6 +131,44 @@ class CaptionTests(unittest.TestCase):
         self.assertFalse(excluded.with_suffix(".txt").exists())
         self.assertFalse(empty.with_suffix(".txt").exists())
 
+    def dual_targets(self):
+        personal = self.entries[9]
+        page = dict(account='fb10', target='page01', type='page', name='Extra Page',
+                    url='https://www.facebook.com/profile.php?id=61595024556188', enabled=False)
+        self.entries.append(page)
+        app.upload.save_json(self.root/'upload_config.json', {'targets': self.entries})
+        return personal, page
+
+    def test_same_video_gets_caption_for_both_destinations_independently(self):
+        personal, page = self.dual_targets()
+        first, second = self.video(personal), self.video(page)
+        self.assertNotEqual(app.upload.job_key(personal, first), app.upload.job_key(page, second))
+        counts = app.apply(['fb10'], self.text)
+        self.assertEqual(counts, {'fb10': 2})
+        for video in (first, second):
+            self.assertEqual(video.with_suffix('.txt').read_text(), self.text+'\n')
+
+    def test_published_personal_copy_does_not_block_caption_for_page_copy(self):
+        personal, page = self.dual_targets()
+        first, second = self.video(personal), self.video(page)
+        first.with_suffix('.txt').write_text('original published caption')
+        app.upload.save_json(self.root/'logs/publish_state.json',
+                            {app.upload.job_key(personal, first): {'status': 'published'}})
+        self.assertEqual(app.apply(['fb10'], self.text), {'fb10': 1})
+        self.assertEqual(first.with_suffix('.txt').read_text(), 'original published caption')
+        self.assertEqual(second.with_suffix('.txt').read_text(), self.text+'\n')
+
+    def test_duplicate_target_ids_or_destination_urls_block_all_caption_writes(self):
+        personal, page = self.dual_targets()
+        first = self.video(personal)
+        for field, value in [('target', 'personal'), ('url', personal['url'])]:
+            bad = dict(page)
+            bad[field] = value
+            app.upload.save_json(self.root/'upload_config.json', {'targets': [personal, bad]})
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                app.apply(['fb10'], self.text)
+            self.assertFalse(first.with_suffix('.txt').exists())
+
 
 if __name__ == "__main__":
     unittest.main()

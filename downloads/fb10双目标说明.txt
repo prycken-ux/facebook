@@ -1,0 +1,57 @@
+fb10 个人主页与公共主页双目标接入
+
+管理登录：fb10，复用 profiles\fb10，不新建登录账号。
+原个人主页：Ava H-s，https://www.facebook.com/lale.hs.3，目标 personal。
+新增公共主页：Thockspiwem Thimbrojospo，目标 page01。
+公共主页：https://www.facebook.com/profile.php?id=61595024556188
+登记后通常为 13 个登录账号、14 个发布目标；实际数量由本机配置输出。
+
+本包只更新 add_page_target.py、apply_common_caption.py 及本说明。
+依赖原目录已有 fb_upload.py、add_fb_accounts.py，需解压到 E:\FB-AutoUpload。
+
+一、登记新目标
+& E:\FB-AutoUpload\.venv\Scripts\python.exe E:\FB-AutoUpload\add_page_target.py --account fb10 --target page01 --name "Thockspiwem Thimbrojospo" --url "https://www.facebook.com/profile.php?id=61595024556188"
+
+工具持有 batch/upload 锁，检查原个人目标、已有浏览器资料、重复目标编号及重复主页。
+新目标未启用且没有 prepared_at，AI 标签默认继承当前个人目标默认值；不会发布。
+原上传配置先备份；保存失败恢复原配置，重复运行同一登记不重置已有准备或启用状态。
+原个人目标及其他账号条目不变；不改浏览器资料、账号主对应表、视频或历史发布记录。
+账号主对应表仍记载原个人目标；发布程序以 upload_config.json 的 targets 为准。
+
+二、核对新公共主页身份
+先关闭手动打开的 fb10 Chrome 窗口，并确认没有上传任务运行。
+& E:\FB-AutoUpload\.venv\Scripts\python.exe E:\FB-AutoUpload\fb_upload.py check-identity --account fb10 --target page01
+
+只有输出主页身份检查通过，才表示现有浏览器可以使用目标公共主页身份。
+如无法切换或权限不足，需在该账号的 Facebook 界面处理后重查，不能仅凭能看到主页判断能发布。
+本命令不上传或发布视频。
+
+三、放视频和文案
+个人主页：E:\FB-AutoUpload\videos\fb10\personal\inbox
+公共主页：E:\FB-AutoUpload\videos\fb10\page01\inbox
+同一视频要发两个位置，就各放一份；每个目标的文案为视频同名 TXT。
+本包不会自动复制原视频、已发布视频或历史归档。
+更新后的统一文案工具可为 fb10 两个目标的当前未记录视频填入统一文案：
+& E:\FB-AutoUpload\.venv\Scripts\python.exe E:\FB-AutoUpload\apply_common_caption.py --accounts fb10 --text-file E:\FB-AutoUpload\common_caption_today.txt
+生成文案后等一分钟；已记录内容仍按各自目标跳过，个人视频已发不阻止该内容首次发到公共主页。
+
+四、准备和启用
+有视频后，先单独运行公共主页 prepare，在浏览器核对目标、文案、受众和 AI 标签后回终端回车结束。
+& E:\FB-AutoUpload\.venv\Scripts\python.exe E:\FB-AutoUpload\fb_upload.py prepare --account fb10 --target page01
+不要把后续命令一起粘贴到等待回车的 prepare 中。
+确认检查完成后再单独执行：
+& E:\FB-AutoUpload\.venv\Scripts\python.exe E:\FB-AutoUpload\fb_upload.py enable --account fb10 --target page01
+新 Page 准备并启用之前，包含 fb10 的批量发布预检查会提示其缺少准备或启用。
+
+五、个人与公共主页身份切换限制
+两个目标共用 fb10 浏览器资料，按顺序执行，不能同时打开同一资料操作。
+现有程序支持从个人身份核对/切换到公共主页；从公共主页回个人身份目前要求手动切回 Ava H-s。
+准备/发布个人主页之前，在 fb10 的 Facebook 头像菜单切回 Ava H-s，关闭手动 Chrome 窗口，再运行个人 check-identity。
+批量命令选中 fb10 后会选择其 personal 和 page01 两个目标；正常配置顺序为个人在前、新 Page 在后。
+一次批量后可能保留公共主页身份，下轮处理个人目标前需先切回个人。
+身份不符、准备未完成或待核对记录都会停止，不能清除记录来绕过。
+如本轮视频不含 AI，在实际 prepare 和 publish 命令各加 --ai-label off；含 AI 时按内容选择 on。
+
+验证：33 项目标登记、统一文案和批量检查通过，覆盖原数据保留、备份/失败恢复、重复登记、锁保护、
+双目标选择及独立准备门槛、同一视频跨两个目标的独立记录和文案处理。
+实际 Facebook 主页权限及切换仍需本机验证。本包不注册定时任务，不启用 AI 自动评论。
