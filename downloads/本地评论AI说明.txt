@@ -1,0 +1,55 @@
+十三个 Facebook 账号：本地 AI 回复生成（Ollama）
+
+这一步用本机模型替代 OpenAI API，不需要 API 密钥或充值。
+当前仅生成回复草稿；没有启用 Facebook 自动读取、发送或后台任务。
+后续仍需采集个人主页和公共主页的实际评论界面，接入身份核对、评论编号、防重复和发送回执。
+模型只读文案与评论，不读取视频画面或声音。
+
+一、安装本地模型
+在运行 E:\FB-AutoUpload 的同一台 Windows 电脑上，从官网下载并安装 Ollama：
+https://ollama.com/download/windows
+保持 Ollama 运行。无需在 Ollama 登录账号，也无需任何 API 密钥。
+模型首次下载需要网络和磁盘空间，下载完成后的生成在本机进行。
+先关闭不需要的浏览器窗口，给模型留出内存。
+默认选 qwen2.5:3b，多语言小模型；速度及能否运行取决于内存、显卡及其他程序的占用。
+可先用 PowerShell 查看配置：
+Get-CimInstance Win32_ComputerSystem | Select-Object @{Name='RAM_GB';Expression={[math]::Round($_.TotalPhysicalMemory / 1GB)}}
+Get-CimInstance Win32_VideoController | Select-Object Name
+
+在新开的 PowerShell 里执行：
+ollama pull qwen2.5:3b
+
+若找不到 ollama，重新打开 PowerShell，或使用默认安装位置：
+& "$env:LOCALAPPDATA\Programs\Ollama\ollama.exe" pull qwen2.5:3b
+
+二、选择本地 AI（先把包内 comment_ai.py 放到 E:\FB-AutoUpload）
+& E:\FB-AutoUpload\.venv\Scripts\python.exe E:\FB-AutoUpload\comment_ai.py setup-local --model qwen2.5:3b
+
+程序先检查该模型确实在本机，再备份已有 comment_ai_config.json 并原子保存 provider=ollama。
+不修改上传程序、十三个账号的 Chrome 资料、视频、文案、发布记录或已有加密密钥。
+本地模式仅连接固定 http://127.0.0.1:11434，忽略代理和自定义接口地址，不加载 API 密钥。
+拒绝带 cloud 的模型名称及带 remote_host/remote_model 的远程模型条目。
+模型缺失、服务未启动、超时或回复格式错误会停止，不会回退到 OpenAI 或其他收费服务。
+setup --gui 是旧 OpenAI 密钥配置入口；本地方案请用 setup-local，不要运行旧版安装包覆盖脚本。
+
+三、测试生成（不发到 Facebook）
+& E:\FB-AutoUpload\.venv\Scripts\python.exe E:\FB-AutoUpload\comment_ai.py check --caption-file E:\FB-AutoUpload\common_caption_today.txt --comment "Where can I buy this book?"
+
+生成采用 reply/skip/review JSON 格式，回复最长 300 字符。
+默认指令：用评论语言回答；只在购买问题中提供文案里的链接；不编造价格、库存或运输承诺。
+知识不足返回 review，垃圾评论返回 skip；这些是模型决策，实际质量需用多条评论检验。
+截断、工具调用、错误格式、空回复和超长回复不采用。
+首次加载可能较慢。本地测试通过只表示模型已连通，不代表 Facebook 自动回复已开启。
+把运行结果发给适配人员；不需要提供 API 密钥。
+
+四、真实评论界面采集
+已有 record_comment_flow.py 可继续使用，不需要 API。
+关闭对应账号手动打开的 Chrome 窗口，并确认没有上传任务，然后单独执行：
+& E:\FB-AutoUpload\.venv\Scripts\python.exe E:\FB-AutoUpload\record_comment_flow.py --account fb12
+打开自己的一条有真实评论的视频，展开评论并点 Reply，只展开回复框，不发送测试文字。
+录制及采集细节见 评论AI配置说明.txt 的第五节。
+完成后再采集个人主页 fb03。采集后才能继续适配自动回复发送流程。
+
+验证：41 项 AI/GUI/本地接入检查通过，包括真实本机 HTTP 测试服务器、代理绕过、
+无 Authorization、拒绝重定向/远程模型、无收费回退、配置备份及结构化输出拒绝。
+测试服务器代替真实 Ollama；没有在这台 Windows 电脑或实际模型上验证速度与回复质量。
