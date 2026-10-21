@@ -9,6 +9,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from unittest.mock import patch
 import urllib.error
+import warnings
 
 import comment_ai as ai
 
@@ -214,6 +215,42 @@ class CommentAITests(unittest.TestCase):
                 patch.object(ai, 'dpapi', side_effect=[b'ENCRYPTED', KEY.encode()]):
             self.assertEqual(ai.main(), 0)
         self.assertNotIn(KEY, self.stdout.getvalue())
+
+    def test_invalid_pastes_stay_hidden_until_one_complete_key_is_saved(self):
+        invalid = ['sk-short', 'sk-secret-with spaces-inside', 'partial-secret-without-prefix', '"' + KEY + '"']
+        with patch('sys.argv',['comment_ai.py','setup']), \
+                patch.object(ai.sys.stdin,'isatty',return_value=True), \
+                patch.object(ai.getpass,'getpass',side_effect=invalid + [KEY]) as prompt, \
+                patch.object(ai,'save_setup') as save:
+            self.assertEqual(ai.main(),0)
+        self.assertEqual(prompt.call_count,len(invalid)+1)
+        save.assert_called_once_with(self.root,KEY)
+        for value in invalid + [KEY]:
+            self.assertNotIn(value,self.stdout.getvalue())
+        self.assertIn('仍在隐藏输入模式',self.stdout.getvalue())
+
+    def test_cancel_after_invalid_paste_does_not_save_or_echo_key(self):
+        invalid = 'sk-fragment'
+        with patch('sys.argv',['comment_ai.py','setup']), \
+                patch.object(ai.sys.stdin,'isatty',return_value=True), \
+                patch.object(ai.getpass,'getpass',side_effect=[invalid,KeyboardInterrupt]), \
+                patch.object(ai,'save_setup') as save:
+            self.assertEqual(ai.main(),2)
+        save.assert_not_called()
+        self.assertNotIn(invalid,self.stdout.getvalue())
+
+    def test_echo_fallback_is_refused_before_secret_input(self):
+        def insecure_input(*args):
+            warnings.warn('fixture unsafe input',ai.getpass.GetPassWarning)
+            self.fail('must stop before echoed input')
+        with patch('sys.argv',['comment_ai.py','setup']), \
+                patch.object(ai.sys.stdin,'isatty',return_value=True), \
+                patch.object(ai.getpass,'getpass',side_effect=insecure_input), \
+                patch.object(ai,'save_setup') as save:
+            self.assertEqual(ai.main(),1)
+        save.assert_not_called()
+        self.assertIn('无法隐藏输入',self.stdout.getvalue())
+        self.assertNotIn('fixture unsafe input',self.stdout.getvalue())
 
     def test_check_reads_caption_unchanged_and_outputs_draft_only(self):
         caption = self.root / 'original.txt'

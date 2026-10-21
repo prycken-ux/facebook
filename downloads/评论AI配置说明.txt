@@ -21,9 +21,13 @@ API 用量与 ChatGPT 订阅分开计费；本包 check 会产生一次 API 调�
 
 三、在 Windows 本机配置密钥
 解压本包到 E:\FB-AutoUpload，然后在 PowerShell 单独执行：
-Start-Process -FilePath 'cmd.exe' -ArgumentList '/k E:\FB-AutoUpload\.venv\Scripts\python.exe E:\FB-AutoUpload\comment_ai.py setup'
+$fbSetup = Start-Process -FilePath 'E:\FB-AutoUpload\.venv\Scripts\python.exe' -ArgumentList 'E:\FB-AutoUpload\comment_ai.py setup' -PassThru -Wait
+if ($fbSetup.ExitCode -eq 0) { Write-Host '密钥已加密保存，可以进行接口测试。' }
 
 在新窗口看到“在这里粘贴 OpenAI API 密钥”后再粘贴并回车，输入不会显示。
+用 API Keys 页的复制按钮复制完整密钥；格式错误时会继续停留在隐藏输入模式，Ctrl+C 可取消。
+配置程序单独运行，不使用 cmd /k；结束后直接关闭配置窗口，结果由原 PowerShell 显示。
+若密钥曾被粘贴成普通 CMD 命令或出现在截图中，建议先撤销旧密钥、重新创建，再关闭旧窗口。
 工具使用当前 Windows 用户的 DPAPI 加密，校验加解密后保存到 .secrets\comment_ai.dpapi。
 已有加密密钥与配置会先备份；不会写入明文密钥，不更改十三个 Facebook 登录资料。
 换 Windows 用户或电脑后通常需要重新配置。不要上传 .secrets 或备份中的密钥文件。
@@ -56,7 +60,8 @@ HTTP 401：检查密钥和项目权限；429：检查 API 可用额度及频率�
 正常登录在录制前完成，避免把登录操作放进手动录制代码。
 
 六、验证范围与下一步
-27 项本地检查通过：包括本地 HTTP 请求/结构化回复、拒绝密钥重定向、加密配置校验与备份、
+30 项本地检查通过：包括格式错误后继续隐藏输入、拒绝回显降级、本地 HTTP 请求/结构化回复、
+拒绝密钥重定向、加密配置校验与备份、
 账号检查与锁、真实 Chromium 页面结构和 PNG 保存、拒绝登录页面采集及过滤 URL 敏感参数。
 Windows 原生 DPAPI 和真实 OpenAI 项目连接，需由本机 setup/check 验证。
 接入真实评论选择器、评论编号去重及发送回执之后，才能启动十三个账号的自动发送工作流。

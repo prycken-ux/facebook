@@ -13,6 +13,7 @@ import tempfile
 from datetime import datetime
 import urllib.error
 import urllib.request
+import warnings
 
 ROOT = Path(__file__).resolve().parent
 CONFIG_NAME = 'comment_ai_config.json'
@@ -120,6 +121,31 @@ def validate_key(key):
     if len(key) < 20 or len(key) > 4096 or any(char.isspace() for char in key):
         raise ReplyError('密钥格式不完整，请重新输入。')
     return key
+
+
+def prompt_setup_key():
+    """Keep bad paste input inside the hidden prompt, never back in a shell."""
+    while True:
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter('error', getpass.GetPassWarning)
+                value = getpass.getpass('在这里粘贴 OpenAI API 密钥并回车（输入不显示）：')
+        except getpass.GetPassWarning:
+            raise ReplyError('当前窗口无法隐藏输入，已停止；请在独立配置窗口重试。') from None
+        if not value.strip():
+            print('未输入密钥，仍在隐藏输入模式；请重新粘贴，Ctrl+C 可取消。')
+            continue
+        try:
+            key = validate_key(value)
+            # This is the manual OpenAI portal input only. Environment bindings
+            # still use the provider's original generic key validation.
+            if not key.startswith('sk-') or key.endswith(('"', "'")):
+                raise ReplyError('格式不完整')
+        except ReplyError:
+            print('密钥格式不完整，未保存。请用 API Keys 页的复制按钮复制完整密钥，不含引号或空格。')
+            print('仍在隐藏输入模式；请重新粘贴，Ctrl+C 可取消。')
+            continue
+        return key
 
 
 def save_setup(root, key):
@@ -230,11 +256,7 @@ def main():
             if not sys.stdin.isatty():
                 raise ReplyError('请在独立终端窗口运行 setup，以隐藏密钥输入。')
             print('仅配置 AI 接口；不会自动回复 Facebook 评论。')
-            while True:
-                key = getpass.getpass('在这里粘贴 OpenAI API 密钥并回车（输入不显示）：').strip()
-                if key:
-                    break
-                print('未输入密钥，请重新输入；Ctrl+C 可取消。')
+            key = prompt_setup_key()
             save_setup(ROOT, key)
             print('密钥已使用当前 Windows 用户加密保存。')
             print('下一步运行 comment_ai.py check 测试一次 AI 调用。')
