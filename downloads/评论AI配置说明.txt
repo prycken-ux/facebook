@@ -19,15 +19,19 @@ API 用量与 ChatGPT 订阅分开计费；本包 check 会产生一次 API 调�
 默认模型为 gpt-4.1-mini；实际可用模型以项目为准，可在 comment_ai_config.json 的 model 中调整。
 不要把密钥发到聊天，也不要放进视频文案、录制代码或截图。
 
-三、在 Windows 本机配置密钥
-解压本包到 E:\FB-AutoUpload，然后在 PowerShell 单独执行：
-$fbSetup = Start-Process -FilePath 'E:\FB-AutoUpload\.venv\Scripts\python.exe' -ArgumentList 'E:\FB-AutoUpload\comment_ai.py setup' -PassThru -Wait
-if ($fbSetup.ExitCode -eq 0) { Write-Host '密钥已加密保存，可以进行接口测试。' }
+三、在 Windows 本机配置密钥（图形窗口）
+先关闭之前等待输入密钥的黑色配置窗口。解压本包到 E:\FB-AutoUpload，在 PowerShell 单独执行：
+& E:\FB-AutoUpload\.venv\Scripts\python.exe E:\FB-AutoUpload\comment_ai.py setup --gui
 
-在新窗口看到“在这里粘贴 OpenAI API 密钥”后再粘贴并回车，输入不会显示。
-用 API Keys 页的复制按钮复制完整密钥；格式错误时会继续停留在隐藏输入模式，Ctrl+C 可取消。
-配置程序单独运行，不使用 cmd /k；结束后直接关闭配置窗口，结果由原 PowerShell 显示。
-若密钥曾被粘贴成普通 CMD 命令或出现在截图中，建议先撤销旧密钥、重新创建，再关闭旧窗口。
+会打开“Facebook 评论 AI：密钥配置”窗口，提供遮挡输入框、“粘贴密钥”、“保存并加密”和“取消”按钮。
+先打开这个窗口，再回 API Keys 页面复制完整密钥，最后回配置窗口点“粘贴密钥”。
+不要先复制密钥再复制安装命令，否则剪贴板会被命令覆盖。
+密钥只显示为星号和字符数量，不提供显示明文按钮。请点击“保存并加密”。
+如果复制的是命令、空格、引号或省略号遮挡后的密钥，窗口会提示重新复制，不会退出到命令行。
+若 API Keys 列表只显示部分密钥，不能用该显示文字配置；需要新建后在创建弹窗中复制完整值。
+保存成功后窗口关闭，原 PowerShell 显示“密钥已使用当前 Windows 用户加密保存”。
+若提示无法打开窗口，请检查 Python 的 Tcl/Tk 安装组件；不会降级为可回显的输入方式。
+若密钥曾被粘贴成普通 CMD 命令或出现在截图中，建议先撤销旧密钥、重新创建，并关闭旧窗口。
 工具使用当前 Windows 用户的 DPAPI 加密，校验加解密后保存到 .secrets\comment_ai.dpapi。
 已有加密密钥与配置会先备份；不会写入明文密钥，不更改十三个 Facebook 登录资料。
 换 Windows 用户或电脑后通常需要重新配置。不要上传 .secrets 或备份中的密钥文件。
@@ -60,9 +64,10 @@ HTTP 401：检查密钥和项目权限；429：检查 API 可用额度及频率�
 正常登录在录制前完成，避免把登录操作放进手动录制代码。
 
 六、验证范围与下一步
-30 项本地检查通过：包括格式错误后继续隐藏输入、拒绝回显降级、本地 HTTP 请求/结构化回复、
+39 项本地检查通过：包括图形粘贴/保存/取消、遮挡输入、拒绝命令和遮挡密钥、格式错误后隐藏重试、
+拒绝回显降级、本地 HTTP 请求/结构化回复、
 拒绝密钥重定向、加密配置校验与备份、
 账号检查与锁、真实 Chromium 页面结构和 PNG 保存、拒绝登录页面采集及过滤 URL 敏感参数。
-Windows 原生 DPAPI 和真实 OpenAI 项目连接，需由本机 setup/check 验证。
+图形控件回调已本地验证；Windows 实际窗口、原生 DPAPI 和真实 OpenAI 项目连接，需在本机验证。
 接入真实评论选择器、评论编号去重及发送回执之后，才能启动十三个账号的自动发送工作流。
 本包不注册定时任务，也不会启动后台自动回复。

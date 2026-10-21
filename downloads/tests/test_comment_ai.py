@@ -252,6 +252,27 @@ class CommentAITests(unittest.TestCase):
         self.assertIn('无法隐藏输入',self.stdout.getvalue())
         self.assertNotIn('fixture unsafe input',self.stdout.getvalue())
 
+    def test_gui_setup_does_not_require_or_use_console_secret_input(self):
+        with patch('sys.argv',['comment_ai.py','setup','--gui']), \
+                patch.object(ai.sys.stdin,'isatty',return_value=False) as terminal, \
+                patch.object(ai,'setup_gui',return_value=0) as gui, \
+                patch.object(ai.getpass,'getpass') as prompt, \
+                patch.object(ai,'save_setup') as save:
+            self.assertEqual(ai.main(),0)
+        gui.assert_called_once_with(self.root)
+        terminal.assert_not_called()
+        prompt.assert_not_called()
+        save.assert_not_called()
+
+    def test_gui_is_rejected_for_api_check(self):
+        with patch('sys.argv',['comment_ai.py','check','--gui']), \
+                contextlib.redirect_stderr(io.StringIO()), \
+                patch.object(ai,'generate_reply') as generate:
+            with self.assertRaises(SystemExit) as error:
+                ai.main()
+        self.assertEqual(error.exception.code,2)
+        generate.assert_not_called()
+
     def test_check_reads_caption_unchanged_and_outputs_draft_only(self):
         caption = self.root / 'original.txt'
         caption.write_text('\ufeffOriginal caption\n#Example', encoding='utf-8')

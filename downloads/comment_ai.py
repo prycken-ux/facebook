@@ -123,6 +123,13 @@ def validate_key(key):
     return key
 
 
+def validate_setup_key(value):
+    key = validate_key(value)
+    if not re.fullmatch(r'sk-[A-Za-z0-9_-]+', key):
+        raise ReplyError('请复制完整的原始密钥，不要复制遮挡后的显示文字、命令、引号或空格。')
+    return key
+
+
 def prompt_setup_key():
     """Keep bad paste input inside the hidden prompt, never back in a shell."""
     while True:
@@ -136,16 +143,91 @@ def prompt_setup_key():
             print('未输入密钥，仍在隐藏输入模式；请重新粘贴，Ctrl+C 可取消。')
             continue
         try:
-            key = validate_key(value)
-            # This is the manual OpenAI portal input only. Environment bindings
-            # still use the provider's original generic key validation.
-            if not key.startswith('sk-') or key.endswith(('"', "'")):
-                raise ReplyError('格式不完整')
+            key = validate_setup_key(value)
         except ReplyError:
             print('密钥格式不完整，未保存。请用 API Keys 页的复制按钮复制完整密钥，不含引号或空格。')
             print('仍在隐藏输入模式；请重新粘贴，Ctrl+C 可取消。')
             continue
         return key
+
+
+class KeySetupDialog:
+    """Explicit paste/save actions; no secret is written to console or errors."""
+    def __init__(self, root, window, field, status):
+        self.root, self.window, self.field, self.status = root, window, field, status
+        self.result = 2
+
+    def paste(self):
+        try:
+            value = self.window.clipboard_get()
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError('empty clipboard')
+        except Exception:
+            self.status.set('剪贴板没有可粘贴文字。请先到 API Keys 页复制完整密钥。')
+            return
+        self.field.delete(0, 'end')
+        self.field.insert(0, value.strip())
+        self.status.set('内容已遮挡。请点击“保存并加密”；若复制过命令，请重新复制密钥。')
+
+    def save(self):
+        try:
+            key = validate_setup_key(self.field.get())
+        except Exception:
+            self.status.set('格式不完整。请重新复制原始完整密钥，不要使用命令、遮挡文字、空格或引号。')
+            return
+        try:
+            save_setup(self.root, key)
+        except Exception:
+            self.status.set('本机加密保存未完成。请保留这条错误提示，勿发送密钥。')
+            return
+        self.field.delete(0, 'end')
+        self.result = 0
+        self.window.destroy()
+
+    def cancel(self):
+        self.field.delete(0, 'end')
+        self.result = 2
+        self.window.destroy()
+
+
+def setup_gui(root):
+    try:
+        import tkinter as tk
+        from tkinter import ttk
+        window = tk.Tk()
+    except Exception:
+        raise ReplyError('无法打开图形配置窗口。请确认 Python 安装了 Tcl/Tk 组件。') from None
+    try:
+        window.title('Facebook 评论 AI：密钥配置')
+        window.geometry('690x300')
+        window.resizable(False, False)
+        frame = ttk.Frame(window, padding=18)
+        frame.pack(fill='both', expand=True)
+        ttk.Label(frame, text='先打开此窗口，再到 API Keys 页面复制完整密钥。').pack(anchor='w')
+        ttk.Label(frame, text='粘贴后只显示星号；密钥只会在本机加密保存。').pack(anchor='w', pady=(4, 12))
+        value = tk.StringVar()
+        field = ttk.Entry(frame, textvariable=value, show='*', width=80)
+        field.pack(fill='x')
+        count = tk.StringVar(value='已输入 0 个字符（内容已隐藏）')
+        value.trace_add('write', lambda *_: count.set('已输入 %d 个字符（内容已隐藏）' % len(value.get())))
+        ttk.Label(frame, textvariable=count).pack(anchor='w', pady=(5, 12))
+        status = tk.StringVar(value='请点击“粘贴密钥”，或在输入框内按 Ctrl+V。不要粘贴到命令行。')
+        ttk.Label(frame, textvariable=status, wraplength=650).pack(anchor='w', fill='x')
+        dialog = KeySetupDialog(root, window, field, status)
+        buttons = ttk.Frame(frame)
+        buttons.pack(side='bottom', fill='x', pady=(16, 0))
+        ttk.Button(buttons, text='粘贴密钥', command=dialog.paste).pack(side='left')
+        ttk.Button(buttons, text='保存并加密', command=dialog.save).pack(side='left', padx=12)
+        ttk.Button(buttons, text='取消', command=dialog.cancel).pack(side='right')
+        window.protocol('WM_DELETE_WINDOW', dialog.cancel)
+        field.focus_set()
+        window.mainloop()
+        return dialog.result
+    finally:
+        try:
+            window.destroy()
+        except Exception:
+            pass
 
 
 def save_setup(root, key):
@@ -250,14 +332,23 @@ def main():
     parser.add_argument('action', choices=['setup', 'check'])
     parser.add_argument('--caption-file', type=Path)
     parser.add_argument('--comment', default='Great video!')
+    parser.add_argument('--gui', action='store_true', help='setup 使用遮挡输入窗口，不使用终端粘贴')
     args = parser.parse_args()
+    if args.gui and args.action != 'setup':
+        parser.error('--gui 仅用于 setup')
     try:
         if args.action == 'setup':
-            if not sys.stdin.isatty():
+            if not args.gui and not sys.stdin.isatty():
                 raise ReplyError('请在独立终端窗口运行 setup，以隐藏密钥输入。')
             print('仅配置 AI 接口；不会自动回复 Facebook 评论。')
-            key = prompt_setup_key()
-            save_setup(ROOT, key)
+            if args.gui:
+                result = setup_gui(ROOT)
+                if result != 0:
+                    print('已取消 AI 配置。')
+                    return result
+            else:
+                key = prompt_setup_key()
+                save_setup(ROOT, key)
             print('密钥已使用当前 Windows 用户加密保存。')
             print('下一步运行 comment_ai.py check 测试一次 AI 调用。')
         else:
@@ -278,5 +369,6 @@ def main():
 
 
 if __name__ == '__main__':
-    sys.stdout.reconfigure(encoding='utf-8')
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(encoding='utf-8')
     raise SystemExit(main())
