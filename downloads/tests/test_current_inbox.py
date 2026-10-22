@@ -174,6 +174,65 @@ class CurrentInboxTests(unittest.TestCase):
             with self.subTest(name=name), self.assertRaises(ValueError):
                 upload.validate_video_filename(name)
 
+    def current_record(self, status):
+        return dict(account='fb03', target='personal', status=status, url=self.entry['url'],
+                    video=str(self.video), caption=str(self.video.with_suffix('.txt')), created='current-attempt')
+
+    def test_explicit_before_post_retry_retries_current_content_and_preserves_older_review(self):
+        self.state[self.key] = self.current_record('failed_before_post')
+        upload.save_json(self.state_path, self.state)
+        with self.browser() as (button, _, _):
+            current.publish_current('fb03', retry_before_post=True, expected_key=self.key)
+        button.click.assert_called_once()
+        result = upload.read_json(self.state_path, {})
+        self.assertEqual(result[self.key]['status'], 'published')
+        self.assertEqual(result[self.old_key], self.old)
+        backup = next((self.root/'backups').iterdir())
+        self.assertEqual(upload.read_json(backup/'before-post-retry.json', {})['original_record']['status'],
+                         'failed_before_post')
+
+    def test_before_post_retry_flag_does_not_repeat_an_unknown_result(self):
+        self.state[self.key] = self.current_record('needs_review')
+        upload.save_json(self.state_path, self.state)
+        original = self.state_path.read_bytes()
+        with patch.object(upload, 'run_entry') as run:
+            self.assertFalse(current.publish_current('fb03', retry_before_post=True, expected_key=self.key))
+        run.assert_not_called()
+        self.assertEqual(self.state_path.read_bytes(), original)
+
+    def test_before_post_retry_launch_failure_restores_old_failure_record(self):
+        self.state[self.key] = self.current_record('failed_before_post')
+        upload.save_json(self.state_path, self.state)
+        with patch.object(upload, 'launch_context', side_effect=RuntimeError('launch failed')), \
+                self.assertRaises(RuntimeError):
+            current.publish_current('fb03', retry_before_post=True, expected_key=self.key)
+        self.assertEqual(upload.read_json(self.state_path, {}), self.state)
+
+    def test_audit_fingerprint_mismatch_or_conflicting_success_proof_never_launches(self):
+        original = self.state_path.read_bytes()
+        with patch.object(upload, 'run_entry') as run, self.assertRaises(ValueError):
+            current.publish_current('fb03', retry_before_post=True, expected_key='0'*64)
+        run.assert_not_called()
+        self.assertEqual(self.state_path.read_bytes(), original)
+        self.state[self.key] = {**self.current_record('failed_before_post'), 'success_message': 'published'}
+        upload.save_json(self.state_path, self.state)
+        with patch.object(upload, 'run_entry') as run, self.assertRaises(ValueError):
+            current.publish_current('fb03', retry_before_post=True, expected_key=self.key)
+        run.assert_not_called()
+
+    def test_source_change_between_helper_check_and_uploader_selection_never_posts(self):
+        original_run = upload.run_entry
+        original_state = self.state_path.read_bytes()
+        def changed(*args, **kwargs):
+            self.video.write_bytes(b'changed after audit with old preserved timestamp')
+            os.utime(self.video, (time.time()-120, time.time()-120))
+            return original_run(*args, **kwargs)
+        with patch.object(upload, 'run_entry', side_effect=changed), \
+                patch.object(upload, 'launch_context') as launch, self.assertRaises(ValueError):
+            current.publish_current('fb03', expected_key=self.key)
+        launch.assert_not_called()
+        self.assertEqual(self.state_path.read_bytes(), original_state)
+
 
 if __name__ == '__main__':
     unittest.main()

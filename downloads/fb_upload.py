@@ -14,7 +14,7 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 ROOT = Path(__file__).resolve().parent
 CONFIG = ROOT / "upload_config.json"
-VERSION = "2.24"
+VERSION = "2.25"
 SUCCESS_PATTERN = (
     r"^(?:Your reel (?:is(?: now)?|has been|was) (?:successfully )?"
     r"(?:published|shared|posted)(?: successfully)?|"
@@ -862,7 +862,7 @@ def launch_context(playwright, entry):
 
 
 def run_entry(entry, state, state_path, publish, filename=None, review_before_post=False, pause_before_reel=False,
-              ai_label_override=None, new_video_with_old_review=False):
+              ai_label_override=None, new_video_with_old_review=False, expected_job_key=None):
     from playwright.sync_api import sync_playwright
 
     if ai_label_override is not None:
@@ -876,6 +876,8 @@ def run_entry(entry, state, state_path, publish, filename=None, review_before_po
         raise ValueError("菜单协助必须用 --filename 指定视频。")
     if new_video_with_old_review and (not publish or not filename or not entry.get('prepared_at')):
         raise ValueError('保留旧记录发布新视频仅用于已准备目标的 publish，并且必须指定文件名。')
+    if expected_job_key is not None and (not filename or not re.fullmatch(r'[a-f0-9]{64}', expected_job_key)):
+        raise ValueError('核对素材指纹必须是完整任务编号，并指定确切文件名。')
     identity = (entry["account"], entry["target"])
     if publish and not entry.get("enabled", False):
         raise RuntimeError("尚未启用发布。先完成 prepare 检查，再执行 enable。")
@@ -893,6 +895,8 @@ def run_entry(entry, state, state_path, publish, filename=None, review_before_po
     if not jobs:
         print("没有新的待发布视频：", identity)
         return False
+    if expected_job_key is not None and jobs[0][0] != expected_job_key:
+        raise ValueError('发布时素材内容与核对结果不同，未打开浏览器或选择其他视频。')
     if new_video_with_old_review:
         for old_key, row in blocking:
             if target_key(row.get('url', '')) != target_key(entry['url']):
