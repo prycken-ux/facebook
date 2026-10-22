@@ -4,6 +4,7 @@ from datetime import datetime
 import os
 import sys
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+from zipfile import ZipFile, ZIP_DEFLATED
 from playwright.sync_api import sync_playwright
 import fb_upload as upload
 
@@ -18,11 +19,14 @@ def safe_facebook_url(url):
         query=urlencode([(k,v) for k,v in parse_qsl(view.query) if k in allowed]), fragment=''))
 
 
-def save_comment_view(page, entry):
+def save_comment_view(page, entry, mode='reply'):
     """Capture visible UI for selector adaptation, never credentials or cookies."""
     upload.checkpoint(page)
     view_url = safe_facebook_url(page.url)
     target_url = safe_facebook_url(entry['url'])
+    if mode == 'top-level':
+        view = urlparse(view_url)
+        upload.normalize_video_permalink(urlunparse(view._replace(query='', fragment='')))
     fields = page.locator('input[type="password"]')
     if any(fields.nth(i).is_visible() for i in range(fields.count())):
         raise RuntimeError('当前是登录页面，未保存页面结构。')
@@ -38,8 +42,15 @@ def save_comment_view(page, entry):
         'account': entry['account'], 'target': entry['target'], 'type': entry['type'],
         'target_url': target_url, 'view_url': view_url,
         'captured_at': datetime.now().astimezone().isoformat(),
-        'purpose': 'comment_ui_adaptation_only',
+        'purpose': ('top_level_comment_ui_adaptation_only' if mode == 'top-level' else 'comment_ui_adaptation_only'),
+        'mode': mode,
     })
+    if mode == 'top-level':
+        package = folder / 'top-level-comment-capture.zip'
+        with ZipFile(package, 'w', ZIP_DEFLATED) as archive:
+            for name in ('comments.aria.txt', 'comments.png', 'context.json'):
+                archive.write(folder / name, name)
+        print('评论区采集包：', package, flush=True)
     print('已保存评论区截图与页面结构：', folder, flush=True)
     return folder
 
@@ -48,6 +59,7 @@ def main():
     parser = argparse.ArgumentParser(description='录制评论操作供适配；程序不会自动发送回复')
     parser.add_argument('--account', required=True)
     parser.add_argument('--target')
+    parser.add_argument('--mode', choices=['reply', 'top-level'], default='reply')
     args = parser.parse_args()
     config = upload.read_json(upload.CONFIG, {'targets': []})
     entries = [entry for entry in config.get('targets', []) if entry.get('account') == args.account
@@ -75,12 +87,17 @@ def main():
                 upload.ensure_identity(page, entry)
                 upload.require_english_interface(page)
                 print('已打开评论流程录制窗口：', entry['account'], entry['name'], flush=True)
-                print('在 Inspector 中启用 Record，打开自己的视频和评论区，点 Reply 并输入测试文字。', flush=True)
-                print('录制到回复输入框即可，不用发送；可将录制代码复制保存为 Python 文件。', flush=True)
-                print('保持评论区和回复框展开，点 Inspector 的 Resume；工具会保存截图和页面结构后结束。', flush=True)
+                if args.mode == 'top-level':
+                    print('在浏览器打开这个目标自己发布的一条 Reel，展开评论区，点击 Write a comment 输入框。', flush=True)
+                    print('不要点击别人的 Reply，不要输入或发送评论。保持直接视频页面及评论输入框展开。', flush=True)
+                    print('点击 Inspector 的 Resume；工具保存评论区截图和结构后关闭窗口。此次只采集界面，不补评论。', flush=True)
+                else:
+                    print('在 Inspector 中启用 Record，打开自己的视频和评论区，点 Reply 并输入测试文字。', flush=True)
+                    print('录制到回复输入框即可，不用发送；可将录制代码复制保存为 Python 文件。', flush=True)
+                    print('保持评论区和回复框展开，点 Inspector 的 Resume；工具会保存截图和页面结构后结束。', flush=True)
                 print('程序不会自动上传视频或发送评论。', flush=True)
                 page.pause()
-                save_comment_view(page, entry)
+                save_comment_view(page, entry, mode=args.mode)
             finally:
                 context.close()
         return 0

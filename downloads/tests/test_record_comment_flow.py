@@ -54,6 +54,22 @@ class RecordingTests(unittest.TestCase):
         self.assertEqual(metadata['view_url'], self.entry['url'])
         self.page.screenshot.assert_called_once()
 
+    def test_top_level_mode_records_comment_composer_without_sending(self):
+        self.page.url = 'https://www.facebook.com/reel/456'
+        self.page.screenshot.side_effect = lambda **kwargs: Path(kwargs['path']).write_bytes(b'fixture png')
+        with patch('sys.argv', ['record_comment_flow.py', '--account', 'fb01', '--target', 'page01', '--mode', 'top-level']), \
+                patch.object(recording, 'sync_playwright'), \
+                patch.object(upload, 'launch_context', return_value=self.browser), \
+                patch.object(upload, 'ensure_identity'), \
+                patch.object(upload, 'require_english_interface'):
+            self.assertEqual(recording.main(), 0)
+        capture = next((self.root / 'logs/comment-recordings').iterdir())
+        metadata = upload.read_json(capture / 'context.json', {})
+        self.assertEqual(metadata['mode'], 'top-level')
+        self.assertEqual(metadata['view_url'], self.page.url)
+        self.page.get_by_role.assert_not_called()
+        self.page.keyboard.press.assert_not_called()
+
     def test_identity_or_login_failure_never_starts_recording(self):
         with patch.object(recording, 'sync_playwright'), \
                 patch.object(upload, 'launch_context', return_value=self.browser), \

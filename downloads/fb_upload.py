@@ -14,7 +14,7 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 ROOT = Path(__file__).resolve().parent
 CONFIG = ROOT / "upload_config.json"
-VERSION = "2.25"
+VERSION = "2.26"
 SUCCESS_PATTERN = (
     r"^(?:Your reel (?:is(?: now)?|has been|was) (?:successfully )?"
     r"(?:published|shared|posted)(?: successfully)?|"
@@ -835,12 +835,16 @@ def prepare_reel(page, entry, video, text, pause_before_reel=False):
 def archive(video, caption):
     completed = video.parent.parent / "completed"
     completed.mkdir(parents=True, exist_ok=True)
-    if any((completed / source.name).exists() for source in (video, caption)):
+    sources = [video, caption]
+    comment = video.with_suffix('.comment.txt')
+    if comment.is_file():
+        sources.append(comment)
+    if any((completed / source.name).exists() for source in sources):
         # Keep original filenames together while retaining previous numbered
         # batches. New source contents can reuse 1.mp4 without replacing history.
         completed = Path(tempfile.mkdtemp(prefix=datetime.now().strftime('%Y%m%d-%H%M%S-'),
                                           dir=str(completed)))
-    for source in (video, caption):
+    for source in sources:
         shutil.move(str(source), str(completed / source.name))
     return completed
 
@@ -907,17 +911,26 @@ def run_entry(entry, state, state_path, publish, filename=None, review_before_po
             if old_file.is_file() and job_key(entry, old_file) == old_key:
                 raise RuntimeError('旧待核对视频仍在 inbox，请先核对该视频，未选择其他视频代替。')
         print('仅发布当前新素材，保留旧待核对记录：', len(blocking), flush=True)
+    # Bind optional product comment text to this exact new task before opening Chrome.
+    # Existing published tasks never reach this point; no historical backfill occurs.
+    key, video, caption, text = jobs[0]
+    comment_plan = None
+    if publish and (ROOT / 'post_comment_config.json').is_file():
+        from post_comment_plan import build_plan
+        comment_plan = build_plan(entry, video, key)
     with sync_playwright() as playwright:
         context = launch_context(playwright, entry)
         try:
             page = context.pages[0] if context.pages else context.new_page()
             page.set_default_timeout(30000)
             # One video per invocation; scheduled repetitions handle the queue.
-            key, video, caption, text = jobs[0]
             record = {"account": entry["account"], "target": entry["target"],
                       "url": entry["url"], "video": str(video), "caption": str(caption),
                       "created": datetime.now().astimezone().isoformat(), "status": "preparing",
                       "ai_label_requested": bool(entry.get("ai_label", False))}
+            if comment_plan is not None:
+                record['post_comment_plan'] = comment_plan
+                print('已绑定本条产品评论文案；当前仅记录待办，自动发送尚未启用。', flush=True)
             if new_video_with_old_review:
                 record['preserved_older_review_jobs'] = [old_key for old_key, _ in blocking]
             if publish:

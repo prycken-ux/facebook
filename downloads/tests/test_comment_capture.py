@@ -68,3 +68,24 @@ class CaptureBrowserTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,'Facebook 评论页面'):
             recording.save_comment_view(self.page,self.entry)
         self.assertFalse((self.root/'logs/comment-recordings').exists())
+
+class TopLevelCaptureTests(CaptureBrowserTests):
+    def test_top_level_capture_keeps_mode_and_direct_video_identity(self):
+        self.html = '<h1>Example Page</h1><div role="textbox" contenteditable="true" aria-label="Write a comment..."></div>'
+        self.page.goto('https://www.facebook.com/reel/456?locale=en_US&access_token=FIXTURE-SECRET')
+        folder = recording.save_comment_view(self.page, self.entry, mode='top-level')
+        context = upload.read_json(folder / 'context.json', {})
+        self.assertEqual(context['mode'], 'top-level')
+        self.assertEqual(context['purpose'], 'top_level_comment_ui_adaptation_only')
+        self.assertNotIn('FIXTURE-SECRET', (folder / 'context.json').read_text())
+        self.assertIn('Write a comment...', (folder / 'comments.aria.txt').read_text())
+        from zipfile import ZipFile
+        with ZipFile(folder / 'top-level-comment-capture.zip') as archive:
+            self.assertEqual(set(archive.namelist()), {'comments.aria.txt', 'comments.png', 'context.json'})
+            self.assertNotIn('FIXTURE-SECRET', archive.read('context.json').decode())
+
+    def test_profile_page_is_not_accepted_as_the_top_level_video_view(self):
+        self.page.goto(self.entry['url'])
+        with self.assertRaisesRegex(ValueError, '直接视频链接'):
+            recording.save_comment_view(self.page, self.entry, mode='top-level')
+        self.assertFalse((self.root / 'logs/comment-recordings').exists())

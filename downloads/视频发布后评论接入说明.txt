@@ -1,0 +1,54 @@
+视频发布后添加产品评论：分视频文案与界面采集阶段
+
+范围：只处理今后新发布的视频；本次已完成归档的 14 个发布目标不补评论。
+固定产品评论不需要 AI、Ollama 或付费 API。
+当前版本已加入逐视频文案绑定和待办，尚未实现自动发送；请勿将配置启用理解为已自动评论。
+仍需采集公共主页、个人主页的顶层评论区，适配新视频的确切链接获取、发布者身份、去重和发送回执。
+
+一、每条视频的三个文件，放在对应目标 inbox：
+产品01.mp4            视频
+产品01.txt            视频发布文案（原格式不变）
+产品01.comment.txt    该视频下方的一条产品评论
+
+评论文案可逐条不同；相同产品可复制相同内容到不同视频的 .comment.txt。
+UTF-8 文本可含换行和产品链接；文件保存后等一分钟再发布。
+不需要评论的视频不放 .comment.txt，或将其留空；不会根据发布文案自动猜测产品。
+不要创建为 产品01.comment.txt.txt（可在资源管理器显示文件扩展名）。
+
+二、解压本包到原 E:\FB-AutoUpload，确认没有上传任务运行，再运行：
+& E:\FB-AutoUpload\.venv\Scripts\python.exe E:\FB-AutoUpload\post_comment_plan.py enable-future
+
+登记目前 upload_config.json 中的目标；今后选择新的发布任务时才冻结该视频的评论内容。
+评论属于确切视频内容、账号和目标，不会仅按文案内容去重，所以相同产品可用于不同视频。
+准备模式不生成发布/评论记录。已发布的旧视频不被重新扫描补评论。
+视频发布结果未知时保留评论计划，等待视频本身的确认；不会把它当作已成功视频去评论。
+视频和同名发布 TXT、评论 TXT 会归档在同一个 completed 目录，重名历史保留在独立子目录。
+
+三、采集新增公共主页评论区（不会发评论）：
+关闭 fb10 手动 Chrome 窗口，在 PowerShell 单独运行：
+& E:\FB-AutoUpload\.venv\Scripts\python.exe E:\FB-AutoUpload\record_comment_flow.py --account fb10 --target page01 --mode top-level
+
+程序先核验 Thockspiwem Thimbrojospo 身份，随后打开浏览器和 Inspector。
+在浏览器打开该主页自己已发布的视频，进入 /reel/数字 直接视频页，展开评论区，点击 Write a comment 输入框。
+不要点别人评论下方的 Reply，不要输入或发送评论。
+保持评论区和输入框展开，切到 Inspector 点击 Resume。
+输出采集包路径：logs\comment-recordings\fb10-时间戳\top-level-comment-capture.zip。
+包含评论区页面结构、截图和删去敏感查询参数的上下文，不包含 cookies、密钥或登录资料。
+本次只是查看/采集评论界面，不给已发布视频补评论。
+
+四、采集个人主页评论区（同样不会发评论）：
+关闭 fb03 手动 Chrome 窗口，单独运行：
+& E:\FB-AutoUpload\.venv\Scripts\python.exe E:\FB-AutoUpload\record_comment_flow.py --account fb03 --target personal --mode top-level
+
+在 Lisa Mills 自己的视频中执行同样的展开评论区操作，最后在 Inspector 点击 Resume。
+输出第二个 top-level-comment-capture.zip；两个采集包均需用于后续适配。
+若出现身份/登录/网址不符先处理报错，不通过清除发布记录绕过。
+
+五、查看今后已绑定的产品评论待办：
+& E:\FB-AutoUpload\.venv\Scripts\python.exe E:\FB-AutoUpload\post_comment_plan.py status
+
+输出 logs\post-comment-queue.json。当前阶段 automatic_send_enabled 为 false。
+视频状态为 needs_review 时显示等待视频确认；成功后仍等待评论区适配和确切视频链接。
+本工具目前没有发送入口，因此不会误给历史视频评论，也不会使用 AI 改写产品文案。
+暂停今后绑定：post_comment_plan.py disable。
+不修改已有上传目标、AI 标签默认值、账号资料、定时任务和已确认发布结果。
