@@ -174,3 +174,34 @@ class ReconcileTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+class FourteenManifestTests(ReconcileTests):
+    def complete_manifest(self):
+        self.report['final_rows'] = []
+        for key, record in self.state.items():
+            if key == self.old_key:
+                continue
+            self.report['final_rows'].append(dict(account=record['account'], target=record['target'],
+                key=key, filename=tool.basename(record['video']), status=record['status']))
+        self.save()
+
+    def test_new_round_page_uses_exact_manifest_filename_instead_of_old_k1(self):
+        self.complete_manifest()
+        extra = self.entries[-1]
+        old = upload.inbox_for(extra) / 'k1.mp4'
+        new = old.with_name('新产品14.mp4')
+        old.rename(new)
+        old.with_suffix('.txt').rename(new.with_suffix('.txt'))
+        key = upload.job_key(extra, new)
+        self.state[key]['video'] = str(new)
+        self.report['final_rows'][-1]['filename'] = new.name
+        self.save()
+        self.assertEqual(tool.reconcile(True), 0)
+        self.assertTrue((new.parent.parent / 'completed' / new.name).exists())
+
+    def test_new_round_manifest_empty_directory_cannot_use_historical_success(self):
+        self.complete_manifest()
+        self.report['final_rows'][0].update(key=None, filename='', status='inbox_empty')
+        self.save()
+        with self.assertRaisesRegex(ValueError, '空目录'):
+            tool.reconcile(True)

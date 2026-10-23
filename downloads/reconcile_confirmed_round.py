@@ -63,10 +63,13 @@ def source_for(entry, filename, key, published):
 def make_plan(config, state, report):
     audited_at = instant(report['created'])
     rows = report.get('final_rows')
-    if not isinstance(rows, list) or len(rows) != 13:
-        raise ValueError('最新核对报告不含完整的本轮 13 个结果，未用旧报告代替。')
-    if {(r.get('account'), r.get('target')) for r in rows} != set(ORIGINAL):
+    if not isinstance(rows, list) or len(rows) not in {13, 14}:
+        raise ValueError('最新核对报告不含完整的本轮 13/14 个结果，未用旧报告代替。')
+    expected_pairs = set(ORIGINAL) if len(rows) == 13 else set((*ORIGINAL, EXTRA))
+    if {(r.get('account'), r.get('target')) for r in rows} != expected_pairs:
         raise ValueError('核对报告目标范围不匹配。')
+    if len(rows) == 14 and any(not row.get('key') for row in rows):
+        raise ValueError('本轮 14 目标报告有空目录或缺失素材，不能用旧成功记录代替本轮。')
     entries = {}
     for pair in (*ORIGINAL, EXTRA):
         found = [e for e in config['targets'] if (e.get('account'), e.get('target')) == pair]
@@ -90,18 +93,19 @@ def make_plan(config, state, report):
                 raise ValueError('目录为空且没有对应成功记录：' + '/'.join(pair))
             key, _ = max(successes, key=lambda item: instant(item[1]['created']))
         choices.append((pair, key, audited.get('filename') or None))
-    extra_entry = entries[EXTRA]
-    video = upload.inbox_for(extra_entry) / 'k1.mp4'
-    if video.is_file():
-        extra_key = fingerprint(extra_entry, video)
-    else:
-        extra_matches = [k for k, r in state.items()
-                         if (r.get('account'), r.get('target')) == EXTRA
-                         and basename(r.get('video', '')) == 'k1.mp4' and r.get('status') == 'published']
-        if len(extra_matches) != 1:
-            raise ValueError('新增公共主页 k1.mp4 没有唯一的成功记录或待归档原文件。')
-        extra_key = extra_matches[0]
-    choices.append((EXTRA, extra_key, 'k1.mp4'))
+    if len(rows) == 13:
+        extra_entry = entries[EXTRA]
+        video = upload.inbox_for(extra_entry) / 'k1.mp4'
+        if video.is_file():
+            extra_key = fingerprint(extra_entry, video)
+        else:
+            extra_matches = [k for k, r in state.items()
+                             if (r.get('account'), r.get('target')) == EXTRA
+                             and basename(r.get('video', '')) == 'k1.mp4' and r.get('status') == 'published']
+            if len(extra_matches) != 1:
+                raise ValueError('新增公共主页 k1.mp4 没有唯一的成功记录或待归档原文件。')
+            extra_key = extra_matches[0]
+        choices.append((EXTRA, extra_key, 'k1.mp4'))
     plan = []
     for pair, key, expected_name in choices:
         row, entry = state.get(key), entries[pair]
