@@ -1,0 +1,32 @@
+续发最近一轮 14 个目标中的发布前失败和未尝试素材
+
+本工具依赖前面已安装的 publish-fourteen-current-v1.zip；将本包解压到原 E:\FB-AutoUpload。
+仅使用最近一个实际运行的十四目标报告，忽略只检查的报告，不重新扫描其他视频作为替代。
+
+从当前截图识别：
+发布前失败 6 个：fb03/personal、fb04/personal、fb07/personal、fb09/personal、fb10/personal、fb11/personal。
+尚未尝试 2 个：fb13/page01、fb10/page01。
+未知结果 4 个：fb01/page01、fb06/page01、fb08/personal、fb12/page01；不能直接重发。
+实际执行前重新读取本机记录，已变成成功或待核对的目标会跳过，以最新记录为准。
+
+操作前：
+1. 确认原批量窗口已经出现 PS 提示符。若原任务卡在 fb12，关闭该目标的自动化浏览器窗口，退出原批量 PowerShell 的选择模式，让原批次处理异常并结束。
+2. 不要删除发布状态、锁文件或强制关闭所有 Python/Chrome；本工具检测到上传锁即停止，不争抢正在运行的上传任务。
+3. fb10 在 Facebook 头像菜单切回 Ava H-s；fb11 切回 Alice Luther。关闭手动打开的对应账号窗口，再执行续发。
+4. 如仍有 Facebook 安全检查，请按网站页面处理，不能清记录绕过身份核验。
+
+只查看续发计划：
+& E:\FB-AutoUpload\.venv\Scripts\python.exe E:\FB-AutoUpload\resume_fourteen_round.py
+
+实际续发（每个允许任务最多一次）：
+& E:\FB-AutoUpload\.venv\Scripts\python.exe E:\FB-AutoUpload\resume_fourteen_round.py --run
+
+沿用原报告的本轮 AI 标签和已有统一文案，不再次询问 AI，不清除成功/待核对/发布中任务。
+发布前失败记录仅在无成功证据、对应目标一致、原视频和文案指纹核对通过后，由现有 helper 备份并重试。
+若在创建新任务前失败，保留/恢复原失败记录；新结果未知时保留待核对，不会再次循环重发。
+两个未尝试目标同样按报告完整指纹处理，不选同目录中另一条视频代替。
+每个任务错误都保留并继续其他任务；不保证登录/遮挡等原有问题无需处理即可成功。
+
+先备份原发布记录和报告，再增量更新原报告中的 resume_results / final_rows 及同名 CSV。
+结束输出全部 14 个目标当前状态，便于后续核对 Facebook 和补记。
+本工具不为未知结果标记失败，不重写历史任务，不创建定时任务，不自动发送评论。
