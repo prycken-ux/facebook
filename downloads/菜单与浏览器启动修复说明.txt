@@ -1,0 +1,38 @@
+2.27：Facebook 菜单入口与 Chrome 启动故障处理
+
+适用：已安装十四目标发布和续发工具，部分明确在 Post 前失败。
+本包只更新程序文件，不含上传配置、登录资料、视频、密钥或发布记录。
+将本包解压到原 E:\FB-AutoUpload。
+
+修复内容：
+1. 已展开的 Menu 不再次点击关闭。
+2. 菜单鼠标点击在 5 秒内失败后，如果确认为唯一可见/可用且可聚焦的 Facebook menu/Menu，
+   没有未知对话框，使用同一按钮的 Enter 键操作，并验证 Menu/Reel 确实展开。
+   未确认展开则在选视频前停止；不强制鼠标点击、不删除遮罩、不绕过未知安全对话框。
+3. 启动前用 Windows CIM 精确比较 profiles\fbXX 的 Chrome 主进程，发现占用会显示该账号 PID。
+   本检查只在本机读取命令行进行匹配，返回 PID/程序名，不输出或保存原始进程命令行。
+   不终止任何 Chrome，不修改 cookies 或资料，不自动删除锁。
+4. Chrome 启动或初始化失败显示简短原因，完整日志保存 logs\browser-start-fbXX-时间戳.txt。
+   初始化失败会关闭半启动的上下文，减少程序自身留下资料占用的可能。
+5. 增加“准备提交发布”和“已点击发布，等待回执（最长120秒）”进度提示。
+
+先结束原发布任务，关闭手动打开的 fb10/fb11 等账号窗口。
+不用再次修改已确认的个人身份；先让程序检查当前资料和身份。
+实际仅续发当前明确在发布前失败和未尝试的视频：
+& E:\FB-AutoUpload\.venv\Scripts\python.exe E:\FB-AutoUpload\resume_fourteen_round.py --run
+
+只查浏览器占用（不关闭程序，不发布）：
+& E:\FB-AutoUpload\.venv\Scripts\python.exe E:\FB-AutoUpload\chrome_profile_guard.py --accounts fb10,fb11
+
+本包不会清除 fb03/preparing、fb12/posting 或任何 needs_review 记录。
+原有已发布内容不重发，未知结果仍须到 Facebook 核对。
+如仍报告占用，保留 PID 提示用于定位对应窗口/后台进程，不批量结束其他账号的 Chrome。
+如果没有占用仍启动失败，应查看新的 browser-start 日志；不能直接认定用户没切回身份。
+菜单布局仍无法确认、登录或安全检查等问题会停止对应目标，继续其他目标。
+本包不启用自动评论或定时发布。
+
+验证：118 项相关 UI/菜单/资料占用/发布队列/续发/评论计划检查通过，
+其中本地 Chromium 复现 banner 导航层拦截鼠标，并验证键盘菜单入口、未知安全弹窗保留、
+菜单不重复切换以及不会误点 Post。随后 42 项启动/队列/内容指纹回归检查通过，
+覆盖启动失败简短提示与日志保存、初始化失败释放部分浏览器。
+Windows CIM 与实际 Facebook 页面仍由本机运行验证。

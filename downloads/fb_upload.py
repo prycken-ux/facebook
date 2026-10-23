@@ -14,7 +14,7 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 ROOT = Path(__file__).resolve().parent
 CONFIG = ROOT / "upload_config.json"
-VERSION = "2.26"
+VERSION = "2.27"
 SUCCESS_PATTERN = (
     r"^(?:Your reel (?:is(?: now)?|has been|was) (?:successfully )?"
     r"(?:published|shared|posted)(?: successfully)?|"
@@ -750,8 +750,9 @@ def prepare_modern_reel(page, entry, text):
     return button
 
 
-def open_facebook_menu(page):
-    """Dismiss only the observed site push prompt while opening the menu."""
+def open_facebook_menu(page, click_timeout_ms=5000, keyboard_timeout_ms=5000):
+    """Use the known menu's accessible keyboard action if a nonmodal banner blocks its pointer."""
+    from playwright.sync_api import expect, TimeoutError as PlaywrightTimeoutError
     prompt = page.get_by_role("alertdialog", name="Push notifications request", exact=True)
 
     def dismiss_prompt():
@@ -775,7 +776,45 @@ def open_facebook_menu(page):
     # Scope this handler to the menu step; it must not act during Post/receipt.
     page.add_locator_handler(prompt, dismiss_prompt)
     try:
-        page.get_by_role("button", name=re.compile(r"^(Facebook menu|Menu)$", re.I)).click()
+        menu = page.get_by_role("button", name=re.compile(r"^(Facebook menu|Menu)$", re.I))
+
+        def opened():
+            drawer = page.get_by_role('dialog', name='Menu', exact=True)
+            reel = page.get_by_role('button', name='Reel', exact=True)
+            return ((drawer.count() == 1 and drawer.is_visible()) or
+                    (menu.count() == 1 and menu.get_attribute('aria-expanded') == 'true'
+                     and reel.count() == 1 and reel.is_visible()))
+
+        # A menu already opened by the operator or by a delayed click must not
+        # be toggled closed again.
+        if opened():
+            return
+        try:
+            menu.click(timeout=click_timeout_ms)
+            return
+        except PlaywrightTimeoutError:
+            if opened():
+                return
+            if (menu.count() != 1 or not menu.is_visible() or not menu.is_enabled()
+                    or menu.get_attribute('aria-expanded') not in {None, 'false'}):
+                raise
+            # Preserve unknown modal/security dialogs, rather than focusing
+            # an underlying control through their interaction boundary.
+            if page.locator('[role="dialog"]:visible, [role="alertdialog"]:visible, dialog:visible').count():
+                raise
+            if not menu.evaluate("e => e.matches('button, a[href], input') || e.hasAttribute('tabindex')"):
+                raise
+            print('菜单鼠标入口被遮挡，尝试键盘打开同一个 Facebook 菜单。', flush=True)
+            menu.focus(timeout=keyboard_timeout_ms)
+            expect(menu).to_be_focused(timeout=keyboard_timeout_ms)
+            menu.press('Enter', timeout=keyboard_timeout_ms)
+            deadline = time.monotonic() + keyboard_timeout_ms / 1000
+            while time.monotonic() < deadline:
+                if opened():
+                    print('Facebook 菜单已通过键盘打开。', flush=True)
+                    return
+                page.wait_for_timeout(100)
+            raise RuntimeError('键盘操作后未确认 Facebook 菜单展开，尚未选择视频；请检查菜单遮挡或截图。')
     finally:
         page.remove_locator_handler(prompt)
 
@@ -853,16 +892,35 @@ def launch_context(playwright, entry):
     profile = ROOT / "profiles" / entry["account"]
     if not profile.is_dir():
         raise RuntimeError("没有该账号的登录资料：" + str(profile))
-    # Use the existing installed Chrome, retain the browser security sandbox.
-    context = playwright.chromium.launch_persistent_context(
-        str(profile), channel="chrome", headless=False, chromium_sandbox=True,
-        locale="en-US", accept_downloads=False,
-    )
-    # Persistent profiles can retain a different Facebook site language even
-    # when the browser locale is English. This is a UI preference, not login data.
-    context.add_cookies([{"name": "locale", "value": "en_US", "domain": ".facebook.com",
-                         "path": "/", "secure": True}])
-    return context
+    from chrome_profile_guard import require_profile_free
+    require_profile_free(profile, entry['account'])
+    print('正在启动账号浏览器：', entry['account'], entry['target'], flush=True)
+    # Retain sandboxing and the existing local profile. If setup fails after
+    # the process was created, close that partial context to release its profile.
+    context = None
+    try:
+        context = playwright.chromium.launch_persistent_context(
+            str(profile), channel="chrome", headless=False, chromium_sandbox=True,
+            locale="en-US", accept_downloads=False,
+        )
+        context.add_cookies([{"name": "locale", "value": "en_US", "domain": ".facebook.com",
+                             "path": "/", "secure": True}])
+        return context
+    except Exception as error:
+        if context is not None:
+            try:
+                context.close()
+            except Exception:
+                pass
+        detail = ROOT / 'logs' / ('browser-start-' + entry['account'] + '-' + datetime.now().strftime('%Y%m%d-%H%M%S-%f') + '.txt')
+        try:
+            detail.parent.mkdir(parents=True, exist_ok=True)
+            detail.write_text(str(error), encoding='utf-8')
+            saved = '完整启动日志：' + str(detail)
+        except OSError:
+            saved = '完整启动日志未能保存。'
+        first = str(error).split('\n', 1)[0][:220]
+        raise RuntimeError(entry['account'] + ' 的 Chrome 启动/初始化失败，尚未选择视频。' + first + '；' + saved) from None
 
 
 def run_entry(entry, state, state_path, publish, filename=None, review_before_post=False, pause_before_reel=False,
@@ -968,9 +1026,11 @@ def run_entry(entry, state, state_path, publish, filename=None, review_before_po
                 record["identity_validation"] = identity_proof
                 record["status"] = "posting"
                 save_json(state_path, state)
+                print('准备提交发布：', entry['account'], entry['target'], video.name, flush=True)
                 page.evaluate("() => { window.__fbUploadWatch.armed = true; }")
                 posted = True
                 button.click()
+                print('已点击发布，正在等待成功回执（最长 120 秒）：', entry['account'], entry['target'], flush=True)
                 record["success_message"] = wait_for_receipt(page, button)
                 record["confirmation_method"] = "fresh_success_ui_and_composer_closed"
                 record["status"] = "published"
