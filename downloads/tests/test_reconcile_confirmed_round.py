@@ -205,3 +205,70 @@ class FourteenManifestTests(ReconcileTests):
         self.save()
         with self.assertRaisesRegex(ValueError, '空目录'):
             tool.reconcile(True)
+
+class ConfirmedBeforePostTests(unittest.TestCase):
+    def setUp(self):
+        ReconcileTests.setUp(self)
+        self.report['schema'] = 'fourteen-current-publication-v1'
+        self.report['phase'] = 'attempts_finished'
+        self.report['final_rows'] = [dict(account=row['account'], target=row['target'], key=key,
+            filename=tool.basename(row['video']), status=row['status']) for key, row in self.state.items() if key != self.old_key]
+        self.key = self.report['final_rows'][-1]['key']
+        self.state[self.key].update(status='failed_before_post', error='original Next click timeout')
+        self.report['final_rows'][-1]['status'] = 'failed_before_post'
+        self.report['rows'] = copy.deepcopy(self.report['final_rows'])
+        self.path = self.root / 'logs/current-audit-20261022-103000.json'
+        self.audit_path.unlink()
+        self.audit_path = self.path
+        self.save()
+
+    save = ReconcileTests.save
+
+    def tearDown(self):
+        ReconcileTests.tearDown(self)
+
+    def test_bound_full_confirmation_includes_before_post_record_preserves_error_and_old_proofs(self):
+        before = copy.deepcopy(self.state)
+        self.assertEqual(tool.reconcile(True, '2026-10-22T10:30:00', True), 0)
+        state = upload.read_json(self.state_path, {})
+        self.assertEqual(state[self.key]['status'], 'published')
+        self.assertEqual(state[self.key]['error'], 'original Next click timeout')
+        self.assertTrue(state[self.key]['user_verified_post_despite_before_post_error'])
+        self.assertEqual(state[self.old_key], before[self.old_key])
+        for key, old in before.items():
+            if old['status'] == 'published':
+                self.assertEqual(state[key], old)
+        report = upload.read_json(self.path, {})
+        self.assertTrue(all(row['status'] == 'published' for row in report['final_rows']))
+        self.assertEqual(report['rows'], self.report['rows'])
+        self.assertTrue(self.path.with_suffix('.csv').exists())
+        self.assertEqual(tool.reconcile(True, '2026-10-22T10:30:00', True), 0)
+
+    def test_before_post_record_requires_explicit_existing_video_confirmation(self):
+        before = self.state_path.read_bytes()
+        with self.assertRaisesRegex(ValueError, '尚未处于'):
+            tool.reconcile(True, '2026-10-22T10:30:00')
+        self.assertEqual(before, self.state_path.read_bytes())
+
+    def test_bound_confirmation_does_not_apply_to_a_newer_actual_round(self):
+        newer = self.root / 'logs/current-audit-20261024-103000.json'
+        upload.save_json(newer, dict(self.report, created='2026-10-24T10:30:00+08:00'))
+        before = self.state_path.read_bytes()
+        with self.assertRaisesRegex(ValueError, '批次不同'):
+            tool.reconcile(True, '2026-10-22T10:30:00', True)
+        self.assertEqual(before, self.state_path.read_bytes())
+        self.assertFalse((self.root / 'backups').exists())
+
+    def test_newer_read_only_plan_does_not_replace_actual_confirmed_round(self):
+        newer = self.root / 'logs/current-audit-20261024-103000.json'
+        upload.save_json(newer, dict(self.report, phase='plan_only', created='2026-10-24T10:30:00+08:00'))
+        self.assertEqual(tool.reconcile(True, '2026-10-22T10:30:00', True), 0)
+
+    def test_missing_file_stops_before_marking_a_failed_record_successful(self):
+        entry = self.entries[-1]
+        (upload.inbox_for(entry) / 'k1.mp4').unlink()
+        before = self.state_path.read_bytes()
+        with self.assertRaisesRegex(ValueError, '不在 inbox'):
+            tool.reconcile(True, '2026-10-22T10:30:00', True)
+        self.assertEqual(before, self.state_path.read_bytes())
+        self.assertFalse((self.root / 'backups').exists())

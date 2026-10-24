@@ -60,7 +60,7 @@ def source_for(entry, filename, key, published):
     raise ValueError('找不到与任务指纹一致的已归档视频：' + filename)
 
 
-def make_plan(config, state, report):
+def make_plan(config, state, report, allow_confirmed_before_post=False):
     audited_at = instant(report['created'])
     rows = report.get('final_rows')
     if not isinstance(rows, list) or len(rows) not in {13, 14}:
@@ -114,7 +114,10 @@ def make_plan(config, state, report):
         if ((row.get('account'), row.get('target')) != pair
                 or upload.target_key(row.get('url', '')) != upload.target_key(entry['url'])):
             raise ValueError('任务账号或主页链接不一致。')
-        if row.get('status') not in {'needs_review', 'published'}:
+        allowed = {'needs_review', 'published'}
+        if allow_confirmed_before_post:
+            allowed.add('failed_before_post')
+        if row.get('status') not in allowed:
             raise ValueError('任务尚未处于已确认的待核对/成功状态：' + '/'.join(pair))
         filename = basename(row.get('video', ''))
         upload.validate_video_filename(filename)
@@ -131,7 +134,7 @@ def make_plan(config, state, report):
     return sorted(plan, key=lambda r: (r['account'], r['target']))
 
 
-def reconcile(verified=False):
+def reconcile(verified=False, round_start=None, allow_confirmed_before_post=False):
     if not verified:
         raise ValueError('需要 --verified-all-fourteen-published：用户已确认本轮 14 个目标实际发布成功。')
     with locked():
@@ -139,12 +142,24 @@ def reconcile(verified=False):
         reports = list((root / 'logs').glob('current-audit-*.json'))
         if not reports:
             raise ValueError('没有找到本轮 current-audit 核对报告。')
-        audit_path = max(reports, key=lambda p: p.stat().st_mtime_ns)
-        audit = upload.read_json(audit_path, {})
+        if round_start is None:
+            audit_path = max(reports, key=lambda p: p.stat().st_mtime_ns)
+            audit = upload.read_json(audit_path, {})
+        else:
+            if not re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}', round_start):
+                raise ValueError('指定批次时间格式无效。')
+            actual_reports = []
+            for candidate in sorted(reports, reverse=True):
+                payload = upload.read_json(candidate, {})
+                if payload.get('schema') == 'fourteen-current-publication-v1' and payload.get('phase') != 'plan_only':
+                    actual_reports.append((candidate, payload))
+            if not actual_reports or actual_reports[0][1].get('created', '')[:19] != round_start:
+                raise ValueError('最近实际发布批次与本次确认的批次不同，未用旧确认归档另一轮视频。')
+            audit_path, audit = actual_reports[0]
         state_path = root / 'logs/publish_state.json'
         original = upload.read_json(state_path, {})
         config = upload.read_json(upload.CONFIG, {})
-        plan = make_plan(config, original, audit)
+        plan = make_plan(config, original, audit, allow_confirmed_before_post=allow_confirmed_before_post)
         now = datetime.now().astimezone().isoformat()
         backup = root / 'backups' / ('confirmed-fourteen-' + datetime.now().strftime('%Y%m%d-%H%M%S-%f'))
         backup.mkdir(parents=True)
@@ -165,6 +180,8 @@ def reconcile(verified=False):
                 row = state[item['key']]
                 row.update(status='published', confirmation_method='user_confirmed_existing_post_no_link',
                            confirmed_at=now, status_before_user_confirmation=item['previous_status'])
+                if item['previous_status'] == 'failed_before_post':
+                    row['user_verified_post_despite_before_post_error'] = True
         if state != original:
             upload.save_json(state_path, state)
         errors = []
@@ -193,6 +210,23 @@ def reconcile(verified=False):
             writer.writeheader()
             for row in report['rows']:
                 writer.writerow({k: row.get(k, '') for k in writer.fieldnames})
+        # Synchronize the original fourteen-file manifest too, retaining its
+        # original immutable rows and all attempt/error histories.
+        if audit.get('schema') == 'fourteen-current-publication-v1':
+            synced = []
+            for item in audit['final_rows']:
+                item = dict(item)
+                if item.get('key') in selected:
+                    item.update(status='published', reason='该本轮视频已确认发布成功')
+                synced.append(item)
+            audit.update(final_rows=synced, user_confirmed_all_fourteen_at=now, confirmation_report=str(output))
+            upload.save_json(audit_path, audit)
+            source_fields = ['account', 'target', 'filename', 'status', 'reason', 'key', 'created']
+            with audit_path.with_suffix('.csv').open('w', encoding='utf-8-sig', newline='') as handle:
+                writer = csv.DictWriter(handle, fieldnames=source_fields)
+                writer.writeheader()
+                for item in synced:
+                    writer.writerow({field: item.get(field, '') for field in source_fields})
         print('本轮：14 个发布目标已记录成功；归档完成：', 14 - len(errors), '/14')
         print('历史待核对记录保留：', len(report['preserved_older_reviews']), '条；不属于此次确认范围。')
         print('原记录备份：', backup)
@@ -205,8 +239,11 @@ def reconcile(verified=False):
 def main():
     parser = argparse.ArgumentParser(description='仅归档用户已明确确认成功的本轮 14 个发布目标')
     parser.add_argument('--verified-all-fourteen-published', action='store_true')
+    parser.add_argument('--round-start', required=True, help='本次已经核对的原发布报告开始时间，精确到秒')
+    parser.add_argument('--allow-confirmed-before-post', action='store_true',
+                        help='用户已在 Facebook 看到确切视频，允许补记此前显示发布前失败的记录')
     args = parser.parse_args()
-    return reconcile(args.verified_all_fourteen_published)
+    return reconcile(args.verified_all_fourteen_published, args.round_start, args.allow_confirmed_before_post)
 
 
 if __name__ == '__main__':
