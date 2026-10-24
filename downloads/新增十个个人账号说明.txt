@@ -1,0 +1,54 @@
+新增十个个人 Facebook 登录账号，并统一登录快捷方式位置
+
+本工具用于接入用户已有的 Facebook 账号，不在 Facebook 自动注册新身份。
+现有 fb01～fb13 登录与 14 个发布目标、浏览器资料、视频和历史发布记录保持原样。
+新增十个编号通常为 fb14～fb23；如果本机已有更高编号或未登记资料/快捷方式，自动从更高空闲编号开始，避免覆盖。
+所有本次及以后新增账号的登录入口固定放在：E:\FB-AutoUpload\新增账号登录。
+原 fb08～fb13 快捷方式保留；不会创建另一个“新增个人账号登录”文件夹。
+
+将本包解压到原 E:\FB-AutoUpload，依赖已有 add_fb_accounts.py 和 fb_upload.py。
+没有上传任务运行时操作；程序检查 batch/upload 锁，不删除其他任务的锁。
+
+一、打开原有 fb01～fb07：
+& E:\FB-AutoUpload\.venv\Scripts\python.exe E:\FB-AutoUpload\add_personal_accounts.py open --accounts fb01,fb02,fb03,fb04,fb05,fb06,fb07
+使用已有 profiles\fbXX 和配置的原主目标；不会为缺少资料的旧账号另建空白登录。
+fb10 等多个目标的账号，默认按账号对应表选择原主目标；本次 1～7 不涉及新增主页。
+
+二、为这次十个个人账号准备独立登录入口：
+& E:\FB-AutoUpload\.venv\Scripts\python.exe E:\FB-AutoUpload\add_personal_accounts.py prepare --count 10 --batch-id personal-20261024-ten
+同一 batch-id 重复运行复用同一批十个编号，不自动再加十个。
+只有以后明确要另加一批时才更换 batch-id，不要每次自动生成新编号。
+先记录路径所有权再创建资料/目录，意外中断可重复运行同一批次继续。
+此时只是准备登录入口，不会把十个未登录账号直接启用发布。
+
+输出的“新增账号登录”文件夹中逐个双击 fb14 登录、fb15 登录等入口，正常登录 Facebook。
+每个编号对应一个账号，不要在同一个编号中反复登录不同的人。
+无需登录 Google/Chrome 同步；快捷方式直接进入 Facebook，并跳过 Chrome 首次使用提示。
+新十个浏览器不会同时自动打开；按入口逐个完成即可。
+视频目录已预留：videos\fb14\personal\inbox 等，配套 completed 和 failed。
+不要把密码、验证码或 Cookie 发到聊天中；后续只需要对应编号、本人主页名称和本人主页链接。
+
+三、取得名称和网址后逐个登记（示意，填写真实信息）：
+& E:\FB-AutoUpload\.venv\Scripts\python.exe E:\FB-AutoUpload\add_personal_accounts.py register --account fb14 --name "实际本人姓名" --url "https://www.facebook.com/实际本人主页"
+只允许登记本工具预留的 fb14 以后新账号，类型固定 personal，不覆盖已有账号或公共主页。
+登记前校验 Facebook 主页 URL、重复目标和资料所有权；姓名/网址变化需先核对，不能覆盖原映射。
+配置、账号对应表、新增登记表先备份后保存；保存失败恢复三份原文件。
+重复登记保留已完成的 prepare/enabled 状态，即便新个人账号后来又挂公共主页也保持其额外目标。
+新增个人账号初次登记保持 disabled，需关闭手动浏览器后运行：
+& E:\FB-AutoUpload\.venv\Scripts\python.exe E:\FB-AutoUpload\fb_upload.py check-identity --account fb14 --target personal
+有本轮实际视频/同名文案后再单独 prepare，检查完成后 enable。不要在等待回车的 prepare 中粘贴后续命令。
+
+四、以后打开已预留但还没登记的新账号窗口：
+& E:\FB-AutoUpload\.venv\Scripts\python.exe E:\FB-AutoUpload\add_personal_accounts.py open --accounts fb14,fb15
+已登记的打开本人主页，未登记但已预留的打开 Facebook 登录入口；都复用原对应资料。
+Chrome 资料占用诊断现支持 fb14、fb23 及后续更多编号。
+
+五、发布范围
+原 14 目标批次工具仍只处理原来的 14 个，不能把它误认为新账号已经加入本轮。
+新十个完成身份核验、准备、启用后，再按实际新账号清单安排发布；不自动更改旧批次、AI 标签或定时任务。
+本包不自动发布视频、不补历史评论、不启用 AI 自动回复。
+
+45 项新增账号/原登记/公共主页/Chrome 资料检查通过，覆盖十个连续编号、统一快捷方式目录、
+原 14 目标和资料保留、已有编号跳过、同批次幂等、旧 1～7 原资料打开、注册备份与失败恢复、
+个人/公共双目标保留、缺少资料拒绝、锁保护和新编号诊断。
+Windows 原生快捷方式和真实 Facebook 登录由用户本机运行验证。

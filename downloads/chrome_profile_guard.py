@@ -62,8 +62,8 @@ def main():
     parser.add_argument('--accounts', default='fb10,fb11')
     args = parser.parse_args()
     accounts = args.accounts.split(',')
-    if any(not re.fullmatch(r'fb(?:0[1-9]|1[0-3])', account) for account in accounts):
-        raise ValueError('请使用 fb01～fb13 账号编号。')
+    if any(not re.fullmatch(r'fb(?:0[1-9]|[1-9][0-9]+)', account) for account in accounts):
+        raise ValueError('请使用 fb01、fb14 等有效账号编号。')
     for account in accounts:
         owners = profile_owners(ROOT / 'profiles' / account)
         print(account, '仍被占用，Chrome PID：' + ', '.join(str(row['pid']) for row in owners) if owners else '未发现 Chrome 进程占用')
