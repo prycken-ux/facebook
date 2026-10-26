@@ -14,7 +14,7 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 ROOT = Path(__file__).resolve().parent
 CONFIG = ROOT / "upload_config.json"
-VERSION = "2.28"
+VERSION = "2.29"
 SUCCESS_PATTERN = (
     r"^(?:Your reel (?:is(?: now)?|has been|was) (?:successfully )?"
     r"(?:published|shared|posted)(?: successfully)?|"
@@ -462,9 +462,10 @@ def visible_page_switch(page):
     return None
 
 
-def ensure_page_identity(page, entry, timeout_ms=90000):
+def ensure_page_identity(page, entry, timeout_ms=90000, picker_delay_ms=2000):
     deadline = time.monotonic() + timeout_ms / 1000
-    switched, announced = False, False
+    started = time.monotonic()
+    switched, announced, picker_used = False, False, False
     actor_error = None
     banner = page.get_by_text(re.compile(r'^Switch into .+ to start managing it\.?$', re.I))
     while True:
@@ -497,12 +498,24 @@ def ensure_page_identity(page, entry, timeout_ms=90000):
                     # A different active Page cannot be accepted via a generic
                     # management control; allow a delayed Switch Now to arrive.
                     actor_error = error
+        if (method is None and actor_error is not None and not switched and not picker_used
+                and (time.monotonic() - started) * 1000 >= picker_delay_ms
+                and deadline - time.monotonic() >= 1):
+            from page_profile_switch import switch_page_from_picker
+            picker_used = True
+            switch_page_from_picker(page, entry, timeout_ms=int((deadline - time.monotonic()) * 1000))
+            switched = True
+            actor_error = None
+            continue
         if method:
             checkpoint(page)
             if target_key(page.url) != target_key(entry['url']):
                 raise RuntimeError('切换后主页网址与配置不同，已停止。')
             print('主页身份检查通过：', entry['name'], entry['url'], flush=True)
-            return {'target_url': entry['url'], 'name': entry['name'], 'switched': switched, 'method': method}
+            proof = {'target_url': entry['url'], 'name': entry['name'], 'switched': switched, 'method': method}
+            if picker_used:
+                proof['switch_method'] = 'profile_picker'
+            return proof
         if time.monotonic() >= deadline:
             if actor_error is not None:
                 raise actor_error

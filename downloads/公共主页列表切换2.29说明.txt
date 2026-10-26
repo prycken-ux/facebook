@@ -1,0 +1,26 @@
+公共主页之间的身份切换 2.29
+
+针对本次 Your profiles & Pages 菜单截图：
+保留 2.28 的新版个人姓名识别、加载等待和严格身份校验。
+如果当前活动身份是另一个公共主页，且目标页面没有可用的 Switch Now，
+程序尝试通过顶部账号头像 → See all profiles → Your profiles & Pages 列表切换。
+
+只操作可见、唯一的已知头像入口、菜单和选择对话框。
+在列表内按配置中的准确公共主页名称选择；必要时只填写该列表自己的搜索框。
+不猜测重复名称，不选择其他主页，不使用动态/帖子中的同名文字或按钮。
+选择姓名只表示尝试切换；还必须确认 c_user 登录者保持一致、i_user 为目标数字主页 ID、
+选择列表关闭，并返回配置中的目标主页网址，随后再次完成原核验。
+切换超时、缺入口、身份变化或目标 ID 不匹配都保留为 CHECK_REQUIRED。
+不绕过验证码、安全检查、登录，不修改 Cookie、代理或网络。
+
+新增诊断参数 --targets 可只核验明确的账号/目标，不扩大到已通过的其他目标：
+& E:\FB-AutoUpload\.venv\Scripts\python.exe E:\FB-AutoUpload\diagnose_personal_identity.py --targets fb10/page02,fb10/page03,fb10/page04,fb10/page05,fb10/page06,fb10/page07,fb10/page08,fb10/page09,fb22/personal --close-windows --refresh-once
+
+没有其他上传任务运行时更新。先备份同名的 fb_upload.py、page_profile_switch.py、
+diagnose_personal_identity.py、chrome_profile_guard.py，再将本包解压到原目录。
+包内只有以上程序及本文档，不包含账号配置、浏览器资料、Cookie、发布记录或视频。
+身份核验不启用、不发布；已通过的个人号仍需有视频和同名 TXT 后 prepare、enable。
+fb16、fb18、fb21 仍暂停接入；未登记的 fb10/page10 仍需名称及数字 ID 链接。
+
+真实菜单布局在本地 Chromium 中按截图对应流程回归测试，另覆盖原有上传与去重保护。
+实际 Facebook 页面及 Windows 的资料占用/窗口关闭需由用户电脑运行验证。

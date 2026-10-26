@@ -117,6 +117,13 @@ class DiagnosticBrowserTests(unittest.TestCase):
 
 
 class DiagnosticProcessTests(unittest.TestCase):
+    def test_explicit_targets_do_not_expand_to_other_pages_or_accounts(self):
+        self.assertEqual(diag.parse_target_pairs('fb10/page02,fb22/personal'),
+                         [('fb10', 'page02'), ('fb22', 'personal')])
+        for value in ('fb10/page02,fb10/page02', 'fb10/../page02', 'fb10', 'fb00/page01', 'fb10/page02,'):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                diag.parse_target_pairs(value)
+
     def test_close_is_scoped_graceful_and_rechecks_freedom(self):
         with patch.object(diag.sys, 'platform', 'win32'), \
              patch.object(diag.subprocess, 'run', return_value=MagicMock(returncode=0)) as run, \

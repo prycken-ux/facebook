@@ -120,6 +120,19 @@ def selected_entries(accounts):
     return select_pairs([(account, 'personal') for account in accounts])[0]
 
 
+def parse_target_pairs(value):
+    pairs = []
+    for item in value.split(','):
+        parts = item.strip().split('/')
+        if (len(parts) != 2 or not re.fullmatch(r'fb(?:0[1-9]|[1-9][0-9]+)', parts[0])
+                or not re.fullmatch(r'[A-Za-z0-9_-]+', parts[1])):
+            raise ValueError('目标请使用账号/目标格式，例如 fb10/page02,fb22/personal。')
+        pairs.append(tuple(parts))
+    if len(pairs) != len(set(pairs)):
+        raise ValueError('目标列表包含重复项目。')
+    return pairs
+
+
 def select_pairs(pairs, allow_missing=False):
     config = upload.read_json(ROOT / 'upload_config.json', None)
     if not isinstance(config, dict) or not isinstance(config.get('targets'), list):
@@ -149,6 +162,7 @@ def main():
     parser = argparse.ArgumentParser(description='主页身份核验和诊断，不上传或发布视频')
     scope = parser.add_mutually_exclusive_group(required=True)
     scope.add_argument('--accounts', help='只核验这些账号的个人主页，例如 fb14,fb15')
+    scope.add_argument('--targets', help='只核验明确指定的账号/目标，例如 fb10/page02,fb22/personal')
     scope.add_argument('--new-onboarding', action='store_true', help='继续 fb14～fb23 个人主页和 fb10/page01～page10；列出缺失配置并核验已登记目标')
     parser.add_argument('--close-windows', action='store_true', help='仅正常关闭指定账号的 Chrome 主窗口，不强制结束进程')
     parser.add_argument('--refresh-once', action='store_true', help='主页标题未加载时刷新一次，仍须通过原身份核验')
@@ -156,6 +170,8 @@ def main():
     with locked():
         if args.new_onboarding:
             entries, missing = select_pairs(NEW_ONBOARDING, allow_missing=True)
+        elif args.targets:
+            entries, missing = select_pairs(parse_target_pairs(args.targets))
         else:
             entries, missing = selected_entries(args.accounts.split(',')), []
         print('已登记目标：', len(entries), '；尚未登记：', len(missing), flush=True)
