@@ -59,13 +59,40 @@ def save_csv(path, rows):
             writer.writerow({field: row.get(field, '') for field in fields})
 
 
-def run(publish=False, ai_label=None):
+def new_material_rows(scanned):
+    """Keep exactly one manifest slot per target; never put old jobs in this round."""
+    rows, preserved = [], []
+    for account, target in TARGETS:
+        group=[row for row in scanned if (row['account'],row['target'])==(account,target)]
+        fresh=[row for row in group if row['status']=='unrecorded']
+        if len(fresh)==1:
+            rows.append(dict(fresh[0]))
+            preserved.extend(dict(row) for row in group if row is not fresh[0])
+            continue
+        base=dict(group[0])
+        base.update(filename='',key=None,created='',eligible=False)
+        if len(fresh)>1:
+            base.update(status='invalid',reason='当前目标有多条未记录素材，未自动猜选')
+        elif any(row['status']=='invalid' for row in group):
+            base.update(status='invalid',reason=next(row['reason'] for row in group if row['status']=='invalid'))
+        elif len(group)==1 and group[0]['status']=='inbox_empty':
+            base=dict(group[0])
+        else:
+            base.update(status='no_new_video',reason='没有未记录的新视频，未用以前的任务代替本轮')
+        rows.append(base)
+        preserved.extend(dict(row) for row in group if row.get('key'))
+    return rows,preserved
+
+
+def run(publish=False, ai_label=None, new_only=False):
     if publish and ai_label not in {'off', 'on'}:
         raise ValueError('实际发布必须明确指定本轮 --ai-label off 或 on。')
     caption_path = upload.ROOT / 'common_caption_today.txt'
     text = caption_path.read_text(encoding='utf-8-sig').strip()
     if not text:
         raise ValueError('已保存的统一文案为空，未发布。')
+    if new_only:
+        print('本次只处理当前 inbox 中未记录的新视频；以前的失败、待核对和成功记录全部保留。', flush=True)
     with locked():
         config = upload.read_json(upload.CONFIG, {})
         validate_scope(config)
@@ -81,16 +108,20 @@ def run(publish=False, ai_label=None):
         config = upload.read_json(upload.CONFIG, {})
         validate_scope(config)
         state = upload.read_json(upload.ROOT / 'logs/publish_state.json', {})
-        rows, old = audit.scan(config, state, pairs=TARGETS)
+        rows, old = audit.scan(config, state, pairs=TARGETS, retry_before_post=not new_only)
+        rows,preserved=(new_material_rows(rows) if new_only else (rows,[]))
     report = dict(schema='fourteen-current-publication-v1', created=datetime.now().astimezone().isoformat(),
                   targets=[dict(account=a, target=t) for a, t in TARGETS], ai_label=ai_label,
-                  caption_source=str(caption_path), caption_text=text, rows=rows,
+                  caption_source=str(caption_path), caption_text=text, new_only=new_only, rows=rows,
                   older_reviews_not_current=old, results=[], final_rows=rows,
+                  preserved_inbox_rows=preserved,
                   phase='publishing' if publish else 'plan_only')
     path = upload.ROOT / 'logs' / ('current-audit-' + datetime.now().strftime('%Y%m%d-%H%M%S-%f') + '.json')
     upload.save_json(path, report)
     audit.show(rows, '本轮 14 个目标：按当前文件内容核对；fb10 个人主页先于公共主页执行')
     print('历史待核对保留：', len(old), '条。新素材最多每目标一条，未知结果不重发。', flush=True)
+    if new_only:
+        print('另有已记录或无法唯一选择的 inbox 素材保留：',len(preserved),'条。',flush=True)
     if not publish:
         print('本次仅检查，没有发布或修改文案。报告：', path)
         return 0
@@ -98,7 +129,7 @@ def run(publish=False, ai_label=None):
         for row in rows:
             if not row['eligible']:
                 continue
-            report['results'].extend(audit.execute([row], ai_label))
+            report['results'].extend(audit.execute([row], ai_label, retry_before_post=not new_only))
             actual = upload.read_json(upload.ROOT / 'logs/publish_state.json', {})
             report['final_rows'] = final_rows(rows, actual, report['results'])
             upload.save_json(path, report)
@@ -128,8 +159,9 @@ def main():
     parser = argparse.ArgumentParser(description='发布原有 13 个目标和 fb10 新公共主页的当前视频；不包含未登记的新主页')
     parser.add_argument('--run', action='store_true')
     parser.add_argument('--ai-label', choices=['off', 'on'])
+    parser.add_argument('--new-only', action='store_true', help='只处理未记录的新素材，保留以前的发布前失败记录')
     args = parser.parse_args()
-    return run(args.run, args.ai_label)
+    return run(args.run, args.ai_label, args.new_only)
 
 
 if __name__ == '__main__':

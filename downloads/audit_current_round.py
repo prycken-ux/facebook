@@ -12,9 +12,10 @@ ORIGINAL_TARGETS = tuple((f'fb{i:02d}', 'personal' if i in {3, 4, 7, 8, 9, 10, 1
 LABELS = {'unrecorded': '未尝试', 'failed_before_post': '发布前失败', 'needs_review': '结果待核对',
           'published': '已记录成功', 'preparing': '准备中/中断', 'posting': '发布中/中断',
           'inbox_empty': '当前目录为空', 'invalid': '需要检查', 'excluded': '排除素材'}
+LABELS['no_new_video']='没有未记录新素材'
 
 
-def scan(config, state, pairs=ORIGINAL_TARGETS):
+def scan(config, state, pairs=ORIGINAL_TARGETS, retry_before_post=True):
     rows, old_reviews = [], []
     common_path = upload.ROOT / 'common_caption_today.txt'
     common = common_path.read_text(encoding='utf-8-sig').strip() if common_path.is_file() else ''
@@ -56,6 +57,8 @@ def scan(config, state, pairs=ORIGINAL_TARGETS):
                 row['created'] = record.get('created', '') if record else ''
                 if video.name.lower() in {value.lower() for value in entry.get('excluded_files', [])}:
                     row.update(status='excluded', reason='该素材在排除列表中')
+                elif row['status'] == 'failed_before_post' and not retry_before_post:
+                    row['reason'] = '本次只处理未记录的新素材，保留以前的发布前失败记录'
                 elif row['status'] in {'unrecorded', 'failed_before_post'}:
                     if not entry.get('prepared_at') or not entry.get('enabled'):
                         raise ValueError('目标尚未完成 prepare 或启用')
@@ -112,7 +115,7 @@ def show(rows, heading):
         print(label + '：' + ('、'.join(accounts) if accounts else '无'), flush=True)
 
 
-def execute(rows, ai_label='off'):
+def execute(rows, ai_label='off', retry_before_post=True):
     results = []
     for row in rows:
         if not row['eligible']:
@@ -120,7 +123,7 @@ def execute(rows, ai_label='off'):
         result = dict(account=row['account'], target=row['target'], filename=row['filename'], key=row['key'])
         try:
             print('\n正在处理当前素材：', row['account'], row['filename'], flush=True)
-            publish_current(row['account'], row['target'], ai_label, retry_before_post=True,
+            publish_current(row['account'], row['target'], ai_label, retry_before_post=retry_before_post,
                             expected_key=row['key'])
             result['attempt'] = 'finished'
         except upload.ReceiptNeedsReview as error:

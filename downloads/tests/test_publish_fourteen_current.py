@@ -59,7 +59,7 @@ class FourteenTests(unittest.TestCase):
     def report(self):
         return upload.read_json(next((self.root / 'logs').glob('current-audit-*.json')), {})
 
-    def execute(self, fail_account=None, ambiguous_account=None):
+    def execute(self, fail_account=None, ambiguous_account=None, new_only=False):
         calls = []
         def publish(account, target, label, **kwargs):
             calls.append((account, target, label, kwargs['expected_key']))
@@ -86,7 +86,7 @@ class FourteenTests(unittest.TestCase):
              patch.object(upload, 'recheck_publish_identity'), \
              patch.object(upload, 'install_receipt_watch'), \
              patch.object(upload, 'wait_for_receipt', return_value='Your reel is published.'):
-            result = driver.run(True, 'off')
+            result = driver.run(True, 'off',new_only=new_only)
         return result, calls
 
     def age_captions(self, seconds):
@@ -149,6 +149,66 @@ class FourteenTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '明确指定'):
             driver.run(True)
         self.assertTrue(all(not video.with_suffix('.txt').exists() for video in self.videos))
+
+    def test_new_only_keeps_old_failed_inbox_material_and_publishes_new_fourteen(self):
+        entry=self.entries[8]
+        previous=upload.inbox_for(entry)/'previous-round.mp4'
+        previous.write_bytes(b'previous round not posted')
+        previous.with_suffix('.txt').write_text('Previous caption retained')
+        for path in (previous,previous.with_suffix('.txt')):
+            os.utime(path,(time.time()-120,time.time()-120))
+        old_key=upload.job_key(entry,previous)
+        old_record=dict(account=entry['account'],target=entry['target'],url=entry['url'],
+                        video=str(previous),status='failed_before_post',error='old before-post failure')
+        self.state[old_key]=old_record
+        upload.save_json(self.state_path,self.state)
+        self.sleep.side_effect=self.age_captions
+        result,calls=self.execute(new_only=True)
+        self.assertEqual(result,0)
+        self.assertEqual(len(calls),14)
+        state=upload.read_json(self.state_path,{})
+        self.assertEqual(state[old_key],old_record)
+        self.assertTrue(previous.is_file())
+        self.assertEqual(previous.with_suffix('.txt').read_text(),'Previous caption retained')
+        self.assertTrue(all(state[key]['status']=='published' for key in self.keys))
+        self.assertTrue(self.report()['new_only'])
+        self.assertEqual(len(self.report()['rows']),14)
+        self.assertNotIn(old_key,{row['key'] for row in self.report()['rows']})
+        self.assertIn(old_key,{row['key'] for row in self.report()['preserved_inbox_rows']})
+
+    def test_new_only_without_new_file_never_uses_previous_failed_video_instead(self):
+        old_record=dict(account=self.entries[0]['account'],target=self.entries[0]['target'],
+            url=self.entries[0]['url'],video=str(self.videos[0]),status='failed_before_post')
+        self.state[self.keys[0]]=old_record
+        upload.save_json(self.state_path,self.state)
+        self.sleep.side_effect=self.age_captions
+        result,calls=self.execute(new_only=True)
+        self.assertEqual(result,3)
+        self.assertEqual(len(calls),13)
+        self.assertNotIn(self.keys[0],{row[3] for row in calls})
+        self.assertEqual(upload.read_json(self.state_path,{})[self.keys[0]],old_record)
+        row=self.report()['rows'][0]
+        self.assertIsNone(row['key'])
+        self.assertEqual(row['status'],'no_new_video')
+
+    def test_new_only_multiple_new_files_have_no_manifest_key_to_resume_by_guess(self):
+        extra=self.videos[0].with_name('another-new.mp4')
+        extra.write_bytes(b'another new video')
+        os.utime(extra,(time.time()-120,time.time()-120))
+        self.sleep.side_effect=self.age_captions
+        def age_all(seconds):
+            self.age_captions(seconds)
+            if extra.with_suffix('.txt').exists():
+                os.utime(extra.with_suffix('.txt'),(time.time()-120,time.time()-120))
+        self.sleep.side_effect=age_all
+        result,calls=self.execute(new_only=True)
+        self.assertEqual(result,3)
+        self.assertEqual(len(calls),13)
+        row=self.report()['rows'][0]
+        self.assertEqual(row['status'],'invalid')
+        self.assertIsNone(row['key'])
+        self.assertEqual(len(self.report()['rows']),14)
+        self.assertTrue(extra.is_file())
 
     def test_inbox_empty_is_not_substituted_with_an_old_success(self):
         self.sleep.side_effect = self.age_captions

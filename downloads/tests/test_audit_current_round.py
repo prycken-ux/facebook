@@ -112,6 +112,31 @@ class AuditTests(unittest.TestCase):
         publish.assert_called_once_with('fb03', 'personal', 'off', retry_before_post=True, expected_key=self.key)
         self.assertEqual(len(results), 1)
 
+    def test_new_only_does_not_retry_old_failed_video_or_block_one_new_video(self):
+        self.state[self.key] = self.record('failed_before_post')
+        other=self.video.parent/'today.mp4'
+        other.write_bytes(b'today content')
+        other.with_suffix('.txt').write_text('Approved caption')
+        for path in (other,other.with_suffix('.txt')):
+            os.utime(path,(time.time()-120,time.time()-120))
+        rows,_=audit.scan(self.config,self.state,pairs=[('fb03','personal')],retry_before_post=False)
+        by_name={row['filename']:row for row in rows}
+        self.assertFalse(by_name[self.video.name]['eligible'])
+        self.assertEqual(by_name[self.video.name]['status'],'failed_before_post')
+        self.assertTrue(by_name['today.mp4']['eligible'])
+        with patch.object(audit,'publish_current') as publish:
+            audit.execute(rows,'off',retry_before_post=False)
+        publish.assert_called_once_with('fb03','personal','off',retry_before_post=False,
+                                       expected_key=upload.job_key(self.entry,other))
+
+    def test_new_only_leaves_old_failure_when_no_new_video_exists(self):
+        self.state[self.key]=self.record('failed_before_post')
+        rows,_=audit.scan(self.config,self.state,pairs=[('fb03','personal')],retry_before_post=False)
+        self.assertFalse(rows[0]['eligible'])
+        with patch.object(audit,'publish_current') as publish:
+            audit.execute(rows,'off',retry_before_post=False)
+        publish.assert_not_called()
+
     def test_read_only_run_preserves_ledger_and_excludes_new_fb10_page(self):
         before = self.state_path.read_bytes()
         with patch('sys.argv', ['audit_current_round.py']), patch.object(audit, 'publish_current') as publish:
