@@ -1,0 +1,35 @@
+继续接入已预留的十个个人账号和 fb10 下十个公共主页
+
+使用原 E:\FB-AutoUpload，不重新创建账号或浏览器资料。
+安装包只添加诊断脚本和说明，不替换 fb_upload.py、配置、发布记录或登录资料。
+依赖原有 fb_upload.py、add_fb_accounts.py、chrome_profile_guard.py 和 Playwright。
+
+本次固定范围：fb14～fb23/personal，以及 fb10/page01～page10（包含原有 page01）。
+没有配置的目标列为 NOT_REGISTERED 并跳过，不猜测本人名称、链接或创建空白登录。
+所有已配置目标核验前统一检查唯一性、主页链接和原资料文件夹。
+
+在没有其他上传任务运行时执行：
+& E:\FB-AutoUpload\.venv\Scripts\python.exe E:\FB-AutoUpload\diagnose_personal_identity.py --new-onboarding --close-windows --refresh-once
+
+--close-windows 仅向所选账号 Chrome 正常发送关闭主窗口请求；严格核对资料路径和进程创建时间。
+不会强制结束进程或关闭其他账号。无法退出的后台进程仍列 CHECK_REQUIRED 和对应 PID。
+程序持有原 batch/upload 锁，不删除其他任务的锁，不与发布任务同时运行。
+每个目标单独启动、检查、关闭浏览器，输出即时进度。
+标题 20 秒未出现时保存证据并刷新一次，随后仍需通过原上传器的完整身份规则。
+不关闭登录验证，不绕过身份检查；个人主页必须是当前本人，公共主页必须有对应身份依据。
+公共主页只使用原有可见 Switch Now 切换规则；不能自动切换时停止该目标供手动处理。
+
+PASS：此次实际身份核验通过。
+CHECK_REQUIRED：需要检查占用、登录、安全验证、加载、姓名或主页切换。
+NOT_REGISTERED：尚缺该目标配置，需要本人名称和主页链接。
+
+日志位于 logs\identity-diagnostic-时间\results.json。
+各目标的截图和网址、标题、heading 诊断分别保存到对应 account\target 子目录。
+网址诊断不记录跟踪参数；不保存 Cookie、密码、验证码、请求头或原始浏览器进程命令。
+仅核验通过的目标更新原 identity-账号-目标.json，失败不写成功证明。
+不会执行 prepare、enable、publish、补评论或改动发布记录；既有启用状态保留。
+
+有实际待发布视频和同名非空 TXT 后，再按目标单独 prepare 并在本地检查，返回终端后 enable。
+AI 标签必须按对应本轮素材内容确定。不要把一串后续命令粘贴到 prepare 的回车提示中。
+
+本地 Chromium 及配置/占用回归已测试；Windows CIM/正常关闭请求和真实 Facebook 登录由本机验证。
