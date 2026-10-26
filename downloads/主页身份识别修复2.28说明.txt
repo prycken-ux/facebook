@@ -1,0 +1,30 @@
+Facebook 主页身份识别修复 2.28
+
+根据本次上传的 identity-diagnostic-for-review.zip 修复：
+1. 部分个人主页顶部姓名不是 heading，旧程序等待标题会失败。
+   现在兼容准确姓名文字旁的有效 Edit profile 等本人管理控件，排除帖子、动态、侧栏和弹窗中的同名文字。
+   此界面识别只用于确认主页已加载；原 c_user/i_user 检查、数字主页身份和短网址 /me 所有权检查继续执行。
+2. 公共主页名字/侧栏出现早于 Switch Now 或真正的主页管理控件。
+   现在最多等待 90 秒，等待可见的唯一 Switch Now 按钮/链接，并至多点击一次，然后确认正确的主页身份或有效顶部管理控件。
+   侧栏 Manage Page、主页姓名、关注/广告按钮或仅切换按钮消失，都不能单独视为通过。
+   不同的活动主页身份不能通过泛化的 Edit 按钮覆盖；不绕过登录、安全验证或未知弹窗。
+3. 诊断的刷新判断复用新姓名识别方式，避免对已正常加载的新版个人主页多余刷新。
+   本机代理连接失败会明确提示；不更改代理、网络、账号资料或 Cookie。
+
+包内只有 fb_upload.py、diagnose_personal_identity.py、chrome_profile_guard.py 和本文档。
+使用原安装目录，更新前备份三个同名程序；没有其他上传任务运行时解压覆盖。
+保留 upload_config.json、account_registry.json、发布记录、profiles 和所有视频文件。
+
+核验原来新增范围：
+& E:\FB-AutoUpload\.venv\Scripts\python.exe E:\FB-AutoUpload\diagnose_personal_identity.py --new-onboarding --close-windows --refresh-once
+
+核验范围仍为 fb14～fb23/personal，以及 fb10/page01～page10（含原来的 page01）。
+目前 fb16、fb18、fb21 暂停接入，未登记会跳过；page10 仍缺名称和链接。
+每个目标依次启动和关闭，正常关闭请求只针对本批资料，不强制终止仍占用的进程。
+PASS 表示此次核验通过；CHECK_REQUIRED 表示仍需处理；NOT_REGISTERED 表示缺配置。
+核验本身不准备视频、不启用、不发布、不补评论，不修改历史发布或归档记录。
+
+111 项本地测试通过，包括真实 Chromium 的新版姓名、/me 所有权、延迟公共主页切换、
+其他活动主页拒绝、侧栏按钮拒绝、未知/未完成切换、旧 Page/个人上传编辑器、
+AI 标签、发布去重与待核对记录、Chrome 资料检查及诊断。
+真实 Facebook 页面和 Windows 原生窗口关闭需在用户电脑运行验证。

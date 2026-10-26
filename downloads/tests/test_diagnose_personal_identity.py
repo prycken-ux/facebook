@@ -53,8 +53,12 @@ class DiagnosticBrowserTests(unittest.TestCase):
             context.route('https://www.facebook.com/**', route)
             sentinel = root / 'publish_state.json'
             sentinel.write_bytes(b'untouched publication ledger')
+            wait_name = upload.wait_profile_name
+            check_page = upload.ensure_page_identity
             with patch.object(diag, 'ROOT', root), patch.object(upload, 'ROOT', root), \
                  patch.object(upload, 'launch_context', return_value=context), \
+                 patch.object(upload, 'wait_profile_name', side_effect=lambda p, e, **kw: wait_name(p, e, timeout_ms=min(kw.get('timeout_ms', 300), 300))), \
+                 patch.object(upload, 'ensure_page_identity', side_effect=lambda p, e: check_page(p, e, timeout_ms=500)), \
                  patch('playwright.sync_api.expect', side_effect=quick_expect), \
                  contextlib.redirect_stdout(io.StringIO()):
                 result = diag.inspect_entry(self.playwright, entry, root / 'capture', True, 100)

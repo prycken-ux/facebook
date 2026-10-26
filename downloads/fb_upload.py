@@ -14,7 +14,7 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 ROOT = Path(__file__).resolve().parent
 CONFIG = ROOT / "upload_config.json"
-VERSION = "2.27"
+VERSION = "2.28"
 SUCCESS_PATTERN = (
     r"^(?:Your reel (?:is(?: now)?|has been|was) (?:successfully )?"
     r"(?:published|shared|posted)(?: successfully)?|"
@@ -404,37 +404,113 @@ def page_actor_matches(page, entry):
     return True
 
 
-def ensure_page_identity(page, entry):
-    from playwright.sync_api import expect
+PROFILE_NAME_ALLOWED_JS = r"""element => !element.closest(
+    'article,[role="article"],[role="feed"],nav,[role="navigation"],aside,' +
+    '[role="complementary"],[role="banner"],[role="dialog"],[role="alertdialog"]')"""
 
-    checkpoint(page)
-    expect(page.get_by_role("heading", name=entry["name"], exact=True).first).to_be_visible(timeout=90000)
-    if target_key(page.url) != target_key(entry["url"]):
-        raise RuntimeError("浏览器跳转到了不同主页；未选择视频或点击发布。")
-    switch = page.get_by_role("button", name=re.compile(r"^(Switch Now|立即切换|现在切换)$", re.I))
-    if switch.count() == 0:
-        switch = page.get_by_text(re.compile(r"^(Switch Now|立即切换|现在切换)$", re.I))
-    switched = False
-    if switch.count() == 1 and switch.is_visible():
-        print("正在切换到目标公共主页身份：", entry["name"], flush=True)
-        switch.click()
-        expect(switch).not_to_be_visible(timeout=90000)
-        switched = True
-    banner = page.get_by_text(re.compile(r"^Switch into .+ to start managing it\.?$", re.I))
-    expect(banner).not_to_be_visible(timeout=30000)
-    method = "page_actor_id_match" if page_actor_matches(page, entry) else None
-    if method is None:
-        heading = page.get_by_role("heading", name=entry["name"], exact=True).first
-        method = heading.evaluate(HEADER_MANAGEMENT_JS)
-        if method != "active_page_header_management_control":
-            raise RuntimeError("无法确认公共主页身份：当前身份编号不可用，且主页顶部未找到有效管理按钮。未选择视频或点击发布。")
-    checkpoint(page)
-    expect(page.get_by_role("heading", name=entry["name"], exact=True).first).to_be_visible(timeout=30000)
-    if target_key(page.url) != target_key(entry["url"]):
-        raise RuntimeError("切换后主页网址与配置不同，已停止。")
-    print("主页身份检查通过：", entry["name"], entry["url"], flush=True)
-    return {"target_url": entry["url"], "name": entry["name"], "switched": switched,
-            "method": method}
+
+class ProfileNameNotReady(RuntimeError):
+    pass
+
+
+def profile_name_candidates(page, entry):
+    """Use real profile headings, or new personal name text beside Edit profile.
+
+    Names in articles, feeds, menus or management sidebars are not proof. This
+    function only establishes loaded profile UI; cookie/owner validation remains
+    mandatory in the callers, including the /me check for vanity profiles.
+    """
+    candidates = []
+    headings = page.get_by_role('heading', name=entry['name'], exact=True)
+    for index in range(headings.count()):
+        candidate = headings.nth(index)
+        if candidate.is_visible() and candidate.evaluate(PROFILE_NAME_ALLOWED_JS):
+            candidates.append(candidate)
+    if entry.get('type') == 'personal' and not candidates:
+        labels = page.get_by_text(entry['name'], exact=True)
+        for index in range(labels.count()):
+            candidate = labels.nth(index)
+            if (candidate.is_visible() and candidate.evaluate(PROFILE_NAME_ALLOWED_JS)
+                    and candidate.evaluate(HEADER_MANAGEMENT_JS, 'personal') == 'active_personal_header_management_control'):
+                candidates.append(candidate)
+    return candidates
+
+
+def wait_profile_name(page, entry, timeout_ms=90000):
+    deadline = time.monotonic() + timeout_ms / 1000
+    while True:
+        checkpoint(page)
+        candidates = profile_name_candidates(page, entry)
+        if candidates:
+            return candidates[0]
+        if time.monotonic() >= deadline:
+            raise ProfileNameNotReady('未加载出目标主页名称及有效顶部区域：' + entry['name'])
+        page.wait_for_timeout(min(200, max(1, (deadline - time.monotonic()) * 1000)))
+
+
+def visible_page_switch(page):
+    pattern = re.compile(r'^(Switch Now|立即切换|现在切换)$', re.I)
+    # A switch can be a button or link. The text fallback retains the recorded
+    # layout while requiring one visible, unambiguous known switching action.
+    for choices in (page.get_by_role('button', name=pattern), page.get_by_role('link', name=pattern),
+                    page.get_by_text(pattern)):
+        visible = [choices.nth(i) for i in range(choices.count()) if choices.nth(i).is_visible()]
+        if len(visible) > 1:
+            raise RuntimeError('找到多个公共主页切换入口，请手动确认；未选择视频或点击发布。')
+        if visible:
+            return visible[0]
+    return None
+
+
+def ensure_page_identity(page, entry, timeout_ms=90000):
+    deadline = time.monotonic() + timeout_ms / 1000
+    switched, announced = False, False
+    actor_error = None
+    banner = page.get_by_text(re.compile(r'^Switch into .+ to start managing it\.?$', re.I))
+    while True:
+        checkpoint(page)
+        if target_key(page.url) != target_key(entry['url']):
+            raise RuntimeError('浏览器跳转到了不同主页；未选择视频或点击发布。')
+        candidates = profile_name_candidates(page, entry)
+        method = None
+        if candidates:
+            switch = visible_page_switch(page)
+            if switch is not None:
+                if switched:
+                    # A pending switch can render briefly during navigation;
+                    # never keep clicking it or claim that absence proves success.
+                    method = None
+                else:
+                    print('正在切换到目标公共主页身份：', entry['name'], flush=True)
+                    switch.click(timeout=min(10000, max(1, (deadline - time.monotonic()) * 1000)))
+                    switched = True
+            elif not any(banner.nth(i).is_visible() for i in range(banner.count())):
+                try:
+                    method = 'page_actor_id_match' if page_actor_matches(page, entry) else None
+                    actor_error = None
+                    if method is None:
+                        for candidate in candidates:
+                            if candidate.evaluate(HEADER_MANAGEMENT_JS) == 'active_page_header_management_control':
+                                method = 'active_page_header_management_control'
+                                break
+                except RuntimeError as error:
+                    # A different active Page cannot be accepted via a generic
+                    # management control; allow a delayed Switch Now to arrive.
+                    actor_error = error
+        if method:
+            checkpoint(page)
+            if target_key(page.url) != target_key(entry['url']):
+                raise RuntimeError('切换后主页网址与配置不同，已停止。')
+            print('主页身份检查通过：', entry['name'], entry['url'], flush=True)
+            return {'target_url': entry['url'], 'name': entry['name'], 'switched': switched, 'method': method}
+        if time.monotonic() >= deadline:
+            if actor_error is not None:
+                raise actor_error
+            raise RuntimeError('等待主页加载和身份切换后仍无法确认公共主页身份；未选择视频或点击发布。')
+        if not announced:
+            print('等待主页加载、管理按钮或 Switch Now 切换入口：', entry['name'], flush=True)
+            announced = True
+        page.wait_for_timeout(min(250, max(1, (deadline - time.monotonic()) * 1000)))
 
 
 def personal_actor_fingerprint(page, entry):
@@ -456,8 +532,6 @@ def personal_actor_fingerprint(page, entry):
 
 
 def verify_personal_vanity_owner(page, entry, marker):
-    from playwright.sync_api import expect
-
     # Facebook's /me route resolves the logged-in person's own profile. This
     # proves ownership even when a responsive layout hides Edit profile.
     page.goto(english_url("https://www.facebook.com/me"), wait_until="domcontentloaded", timeout=90000)
@@ -465,7 +539,7 @@ def verify_personal_vanity_owner(page, entry, marker):
     checkpoint(page)
     if personal_actor_fingerprint(page, entry) != marker:
         raise RuntimeError("核对本人主页期间登录身份变化，已停止；未选择视频或点击发布。")
-    expect(page.get_by_role("heading", name=entry["name"], exact=True).first).to_be_visible(timeout=90000)
+    wait_profile_name(page, entry)
     own_key = target_key(page.url)
     expected_key = target_key(entry["url"])
     verified = own_key == expected_key
@@ -481,18 +555,15 @@ def verify_personal_vanity_owner(page, entry, marker):
         raise RuntimeError("无法通过 Facebook 本人主页入口确认目标短网址属于当前账号；未选择视频或点击发布。")
     page.goto(english_url(entry["url"]), wait_until="domcontentloaded", timeout=90000)
     checkpoint(page)
-    expect(page.get_by_role("heading", name=entry["name"], exact=True).first).to_be_visible(timeout=90000)
+    wait_profile_name(page, entry)
     if target_key(page.url) != expected_key:
         raise RuntimeError("返回后目标个人主页网址变化，已停止。")
 
 
 def ensure_personal_identity(page, entry):
-    from playwright.sync_api import expect
-
     checkpoint(page)
     marker = personal_actor_fingerprint(page, entry)
-    heading = page.get_by_role("heading", name=entry["name"], exact=True).first
-    expect(heading).to_be_visible(timeout=90000)
+    wait_profile_name(page, entry)
     if target_key(page.url) != target_key(entry["url"]):
         raise RuntimeError("浏览器网址与目标个人主页不同；未选择视频或点击发布。")
     method = "personal_actor_id_match"

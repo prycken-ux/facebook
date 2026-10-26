@@ -90,10 +90,9 @@ def inspect_entry(playwright, entry, folder, refresh_once=False, heading_timeout
         upload.save_json(folder / 'navigation.json', {'status': response.status if response else None})
         upload.checkpoint(page)
         if refresh_once:
-            from playwright.sync_api import TimeoutError as BrowserTimeout
             try:
-                page.get_by_role('heading', name=entry['name'], exact=True).first.wait_for(timeout=heading_timeout_ms)
-            except BrowserTimeout:
+                upload.wait_profile_name(page, entry, timeout_ms=heading_timeout_ms)
+            except upload.ProfileNameNotReady:
                 evidence(page, folder, 'before-refresh')
                 upload.checkpoint(page)
                 print('主页标题未加载，刷新一次：', entry['account'], flush=True)
@@ -106,8 +105,10 @@ def inspect_entry(playwright, entry, folder, refresh_once=False, heading_timeout
     except Exception as error:
         if page is not None:
             evidence(page, folder, 'failed')
-        return {'account': entry['account'], 'target': entry['target'], 'result': 'CHECK_REQUIRED',
-                'error': str(error).splitlines()[0][:500] or type(error).__name__}
+        message = str(error).splitlines()[0][:500] or type(error).__name__
+        if 'ERR_PROXY_CONNECTION_FAILED' in message or 'ERR_TUNNEL_CONNECTION_FAILED' in message:
+            message = '本机代理连接失败，请先检查该账号原有网络/代理连接。' + message
+        return {'account': entry['account'], 'target': entry['target'], 'result': 'CHECK_REQUIRED', 'error': message}
     finally:
         context.close()
 
