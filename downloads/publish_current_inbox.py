@@ -9,7 +9,8 @@ import fb_upload as upload
 from add_fb_accounts import locked
 
 
-def publish_current(account, target='personal', ai_label='off', retry_before_post=False, expected_key=None):
+def publish_current(account, target='personal', ai_label='off', retry_before_post=False, expected_key=None,
+                    pause_before_reel=False):
     if ai_label not in ('off', 'on'):
         raise ValueError('AI 标签必须为 on 或 off。')
     if expected_key is not None and not re.fullmatch(r'[a-f0-9]{64}', expected_key):
@@ -52,6 +53,11 @@ def publish_current(account, target='personal', ai_label='off', retry_before_pos
         if not candidates:
             print('当前 inbox 没有尚未记录的新视频，未发布：', account, target)
             return False
+        if expected_key is not None:
+            matched=[candidate for candidate in candidates if candidate[1]==expected_key]
+            if not matched:
+                raise ValueError('当前素材与刚才核对的内容不同，未选择其他视频代替。')
+            candidates=matched
         if len(candidates) != 1:
             raise ValueError('当前 inbox 有多条新视频，未自动猜选，请先明确本轮素材。')
         video, key, failed_row = candidates[0]
@@ -83,9 +89,10 @@ def publish_current(account, target='personal', ai_label='off', retry_before_pos
                 raise
             print('原记录明确为发布前失败，已备份，重新处理当前同一素材：', video.name, flush=True)
         try:
+            assistance={'pause_before_reel':True} if pause_before_reel else {}
             return upload.run_entry(entry, state, state_path, True, filename=video.name,
                                     ai_label_override=ai_label == 'on', new_video_with_old_review=True,
-                                    expected_job_key=key)
+                                    expected_job_key=key,**assistance)
         finally:
             if failed_row is not None:
                 actual = upload.read_json(state_path, {})

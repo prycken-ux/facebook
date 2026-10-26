@@ -1,0 +1,34 @@
+先修复当前身份，再续发这六个明确发布前失败的视频
+
+本次依据用户列出的 fb02/page01、fb05/page01、fb06/page01、fb09/personal、fb10/personal、fb13/page01。
+只绑定 2026-10-26T17:53:46 这一轮原报告，不从其他轮次或其他视频猜选。
+原报告的完整任务 key、目标 URL、文件名、视频内容和文案都要核对一致。
+只允许状态为 failed_before_post、且没有任何成功证据的原任务重试。
+published、needs_review、preparing、posting 或已不存在的记录全部保留，不重发。
+
+先结束其他发布/核验/采集批次，不同时操作同一个 Chrome 资料。
+程序逐个打开目标所属账号；在浏览器右上角头像菜单手动切到打印出的名字。
+四个公共主页分别为 Donna Merrill、Jessica Miller、Michelle Hamer、Prycken BK；
+fb10/personal 必须是 Ava H-s，fb09/personal 必须是 Jesse Arreola。
+切换完成后回到终端输入 READY。程序仍执行原有身份校验，校验通过才正式续发。
+SKIP 跳过当前目标，原失败记录保留；CANCEL 结束本次续发。
+不需要手动上传或点击 Post，切换身份通过后程序负责原视频上传和发布。
+身份修复窗口关闭后会重新启动上传窗口，继续使用同一个已保存的浏览器资料。
+
+fb09 设置 --assist-targets fb09/personal，使用原上传器的菜单协助暂停。
+菜单打开后处理遮挡或未加载的情况，按程序提示输入 READY，才继续选择确切视频。
+新尝试若仍在点击发布前失败，保留为 failed_before_post；发布后回执不明则保留 needs_review，不自动再次重发。
+
+完整运行命令：
+& E:\FB-AutoUpload\.venv\Scripts\python.exe E:\FB-AutoUpload\retry_failed_with_switch.py --round-start 2026-10-26T17:53:46 --targets fb02/page01,fb05/page01,fb06/page01,fb09/personal,fb10/personal,fb13/page01 --assist-targets fb09/personal --run --close-windows
+
+工具先备份配置、发布状态和原报告；发布前失败记录只在经过核对的安全重试时移除。
+如果尚未建立新尝试就启动失败，原失败记录恢复。其他视频和未知结果不清除。
+publish_current_inbox.py 现在可以用完整 expected_key 从多条候选中精确选择；
+没有指定 key 时仍要求唯一候选，同内容出现多份时也不猜选。
+原报告及 CSV 持续更新，原始 rows 和历史错误保留，新尝试追加到 resume_results。
+源视频变化、文案变化、批次不匹配或已有成功证据都会停止，不尝试其他视频代替。
+
+包内只有 retry_failed_with_switch.py、publish_current_inbox.py 和本文档，不替换上传核心。
+55 项精确素材、身份修复、重试、锁、旧记录保留及菜单协助测试通过。
+真实 Facebook 身份和 Windows 浏览器状态由本机核验。

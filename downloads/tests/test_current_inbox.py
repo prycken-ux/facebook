@@ -200,6 +200,32 @@ class CurrentInboxTests(unittest.TestCase):
         run.assert_not_called()
         self.assertEqual(self.state_path.read_bytes(), original)
 
+    def test_exact_audited_key_selects_only_that_failed_video_among_other_material(self):
+        other=self.make_pair('different.mp4',b'other failed video')
+        other_key=upload.job_key(self.entry,other)
+        self.state[self.key]=self.current_record('failed_before_post')
+        self.state[other_key]=dict(self.current_record('failed_before_post'),video=str(other))
+        previous=copy.deepcopy(self.state[other_key])
+        upload.save_json(self.state_path,self.state)
+        with self.browser() as (button,_,prepare):
+            current.publish_current('fb03',retry_before_post=True,expected_key=self.key)
+        button.click.assert_called_once()
+        self.assertEqual(prepare.call_args.args[2],self.video)
+        self.assertTrue(other.exists())
+        self.assertEqual(upload.read_json(self.state_path,{})[other_key],previous)
+
+    def test_audited_key_never_guesses_between_two_copies_of_identical_content(self):
+        self.make_pair('copy.mp4',self.video.read_bytes())
+        with patch.object(upload,'run_entry') as run,self.assertRaises(ValueError):
+            current.publish_current('fb03',expected_key=self.key)
+        run.assert_not_called()
+
+    def test_menu_assistance_is_forwarded_only_when_requested(self):
+        with self.browser() as (button,_,prepare):
+            current.publish_current('fb03',expected_key=self.key,pause_before_reel=True)
+        self.assertTrue(prepare.call_args.kwargs['pause_before_reel'])
+        button.click.assert_called_once()
+
     def test_before_post_retry_launch_failure_restores_old_failure_record(self):
         self.state[self.key] = self.current_record('failed_before_post')
         upload.save_json(self.state_path, self.state)
