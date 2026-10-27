@@ -19,7 +19,7 @@ def stamp():
     return datetime.now().astimezone().isoformat()
 
 
-def fresh_video(entry,state):
+def fresh_video(entry,state,recorded=None):
     folder=upload.inbox_for(entry)
     if not folder.is_dir():
         return None
@@ -43,6 +43,8 @@ def fresh_video(entry,state):
             if ((record.get('account'),record.get('target'))!=(entry['account'],entry['target'])
                     or upload.target_key(record.get('url',''))!=upload.target_key(entry['url'])):
                 raise ValueError('视频指纹的已有记录与当前目标不一致')
+            if recorded is not None:
+                recorded.append(dict(key=key,filename=video.name,status=record.get('status','invalid')))
             continue
         if time.time()-after.st_mtime<60:
             raise ValueError('视频刚更新，请复制完成一分钟后处理：'+video.name)
@@ -68,7 +70,7 @@ def plan(config,state,prepare_new):
     for entry in sorted(entries,key=lambda e:(e.get('target')!='personal',e.get('account',''),str(e.get('target','')))):
         account,target=entry.get('account'),entry.get('target')
         row=dict(account=account,target=target,name=entry.get('name',''),url=entry.get('url',''),
-                 filename='',key=None,status='invalid',eligible=False,reason='',entry=entry)
+                 filename='',key=None,status='invalid',eligible=False,reason='',entry=entry,recorded_inbox=[])
         try:
             if account in PAUSED:
                 row.update(status='paused',reason='账号仍在登录验证循环，保留暂停接入')
@@ -78,9 +80,11 @@ def plan(config,state,prepare_new):
                     raise ValueError('目标编号或主页链接重复，未猜选')
                 if not (upload.ROOT/'profiles'/account).is_dir():
                     raise ValueError('缺少原浏览器资料，未创建空白资料代替')
-                selected=fresh_video(entry,state)
+                selected=fresh_video(entry,state,row['recorded_inbox'])
                 if selected is None:
-                    row.update(status='no_new_video',reason='没有未记录的新视频，保留已有任务记录')
+                    counts=Counter(item['status'] for item in row['recorded_inbox'])
+                    detail='；inbox 已有记录：'+', '.join(f'{s}={n}' for s,n in sorted(counts.items())) if counts else '；inbox 没有可选 MP4'
+                    row.update(status='no_new_video',reason='没有未记录的新视频'+detail+'。不代表已发布成功')
                 else:
                     key,video=selected
                     needs_prepare=not (entry.get('prepared_at') and entry.get('enabled'))
@@ -113,6 +117,8 @@ def save_report(path,report,rows,results,state):
             row.update(status=result.get('status',row['status']),reason=result.get('error',result.get('reason',row['reason'])))
         final.append(row)
     report.update(results=results,final_rows=final)
+    report['manual_checks']=[dict(row) for row in final if row['status'] in
+                            {'needs_review','posting','preparing','needs_check','failed_before_post','invalid'}]
     upload.save_json(path,report)
     with path.with_suffix('.csv').open('w',encoding='utf-8-sig',newline='') as handle:
         fields=['account','target','name','filename','status','reason','key']
@@ -131,21 +137,33 @@ def validate_exact(entry,state,row,text):
         raise ValueError('当前视频指纹或同名文案与本轮核对结果不同')
 
 
-def run(publish=False,ai_label=None,prepare_new=False,close_windows=False):
+def run(publish=False,ai_label=None,prepare_new=False,close_windows=False,targets=None):
     if publish and ai_label not in {'off','on'}:
         raise ValueError('实际发布需要明确 --ai-label off 或 on')
     with locked():
         config=upload.read_json(upload.CONFIG,{})
+        if targets is not None:
+            if not targets or len(set(targets))!=len(targets):
+                raise ValueError('需指定不重复的账号/目标')
+            if any(account not in ACCOUNTS for account,target in targets):
+                raise ValueError('指定目标超出已授权账号范围')
+            selected=[e for e in config.get('targets',[]) if (e.get('account'),e.get('target')) in targets]
+            if Counter((e.get('account'),e.get('target')) for e in selected)!=Counter(targets):
+                raise ValueError('指定目标未登记或重复，未扩大到其他账号')
         state_path=upload.ROOT/'logs/publish_state.json'
         state=upload.read_json(state_path,{})
         text=(upload.ROOT/'common_caption_today.txt').read_text(encoding='utf-8-sig').strip()
         if not text:
             raise ValueError('已保存的统一文案为空')
         rows=plan(config,state,prepare_new)
+        if targets is not None:
+            rows=[row for row in rows if (row['account'],row['target']) in targets]
         path=upload.ROOT/'logs'/('available-today-'+datetime.now().strftime('%Y%m%d-%H%M%S-%f')+'.json')
         report=dict(schema='available-current-publication-v1',created=stamp(),ai_label=ai_label,
             scope_accounts=list(ACCOUNTS),paused_accounts=sorted(PAUSED),caption_text=text,
             rows=public_rows(rows),phase='publishing' if publish else 'plan_only')
+        if targets is not None:
+            report['selected_targets']=[dict(account=a,target=t) for a,t in targets]
         results=[]
         save_report(path,report,rows,results,state)
         for row in rows:
@@ -196,7 +214,14 @@ def run(publish=False,ai_label=None,prepare_new=False,close_windows=False):
                         previous=copy.deepcopy(entry)
                         entry.update(prepared_at=stamp(),enabled=True)
                         try:
-                            upload.save_json(upload.CONFIG,config)
+                            # A scoped run still preserves every unselected configuration row.
+                            current=upload.read_json(upload.CONFIG,{})
+                            matches=[e for e in current.get('targets',[]) if
+                                     (e.get('account'),e.get('target'))==(entry['account'],entry['target'])]
+                            if len(matches)!=1 or matches[0]!=previous:
+                                raise ValueError('首次准备期间目标配置变化，未启用或发布')
+                            matches[0].update(entry)
+                            upload.save_json(upload.CONFIG,current)
                         except Exception:
                             entry.clear()
                             entry.update(previous)
@@ -234,8 +259,14 @@ def main():
     parser.add_argument('--ai-label',choices=['off','on'])
     parser.add_argument('--prepare-new',action='store_true',help='新增目标首次预览检查完成后自动启用并发布')
     parser.add_argument('--close-windows',action='store_true',help='正常请求关闭当前有新素材的账号窗口，不强制结束进程')
+    parser.add_argument('--targets',help='仅处理指定目标，例如 fb17/personal,fb22/personal,fb23/personal')
     args=parser.parse_args()
-    return run(args.run,args.ai_label,args.prepare_new,args.close_windows)
+    if args.targets:
+        from diagnose_personal_identity import parse_target_pairs
+        targets=parse_target_pairs(args.targets)
+    else:
+        targets=None
+    return run(args.run,args.ai_label,args.prepare_new,args.close_windows,targets)
 
 
 if __name__=='__main__':

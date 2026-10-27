@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch
 from urllib.parse import urlparse
 
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import sync_playwright, Locator, TimeoutError as BrowserTimeout
 
 import fb_upload as upload
 
@@ -134,6 +134,37 @@ class IdentityLayoutTests(unittest.TestCase):
         self.html = '<h1 hidden>Example Person</h1>' + PERSONAL
         self.visit()
         self.assertEqual(upload.ensure_personal_identity(self.page, self.entry)['method'], 'personal_actor_id_match')
+
+    def test_disappearing_heading_falls_back_without_thirty_second_evaluate_wait(self):
+        self.html='<h1>Example Person</h1>'+PERSONAL
+        self.visit()
+        original=Locator.evaluate
+        removed=[]
+        def evaluate(locator, expression, *args, **kwargs):
+            if expression==upload.PROFILE_NAME_ALLOWED_JS and not removed:
+                original(locator,'element=>element.remove()')
+                removed.append(True)
+                raise BrowserTimeout('profile heading re-rendered')
+            return original(locator,expression,*args,**kwargs)
+        with patch.object(Locator,'evaluate',new=evaluate):
+            self.assertEqual(upload.ensure_personal_identity(self.page,self.entry)['method'],'personal_actor_id_match')
+        self.assertTrue(removed)
+
+    def test_page_header_repaint_is_rechecked_instead_of_aborting(self):
+        self.as_page()
+        self.html=self.html.replace('<div id="controls"></div>','<div id="controls"><button>Edit Page</button></div>')
+        self.visit()
+        original=Locator.evaluate
+        retried=[]
+        def evaluate(locator, expression, *args, **kwargs):
+            if expression==upload.HEADER_MANAGEMENT_JS and not retried:
+                retried.append(True)
+                raise BrowserTimeout('header re-rendered')
+            return original(locator,expression,*args,**kwargs)
+        with patch.object(Locator,'evaluate',new=evaluate):
+            self.assertEqual(upload.ensure_page_identity(self.page,self.entry,timeout_ms=1500)['method'],
+                             'active_page_header_management_control')
+        self.assertTrue(retried)
 
     def test_page_waits_for_delayed_switch_now_instead_of_failing_on_skeleton(self):
         self.as_page()

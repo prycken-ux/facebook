@@ -68,7 +68,7 @@ def repair_identity(entry,read=input):
         context=upload.launch_context(playwright,entry)
         try:
             page=context.pages[0] if context.pages else context.new_page()
-            page.goto(upload.english_url(entry['url']),wait_until='domcontentloaded',timeout=90000)
+            upload.navigate_profile(page,entry['url'])
             while True:
                 print('请在此浏览器右上角头像菜单切到：',entry['name'],entry['url'],flush=True)
                 print('切好后回到此窗口输入 READY；跳过当前目标输入 SKIP；结束批次输入 CANCEL。',flush=True)
@@ -85,7 +85,7 @@ def repair_identity(entry,read=input):
                 try:
                     # Manual actor repair can land at another route; reopen the
                     # configured URL and retain the ordinary identity proof rules.
-                    page.goto(upload.english_url(entry['url']),wait_until='domcontentloaded',timeout=90000)
+                    upload.navigate_profile(page,entry['url'])
                     proof=upload.ensure_identity(page,entry)
                     proof['checked_at']=datetime.now().astimezone().isoformat()
                     upload.save_json(upload.ROOT/'logs'/('identity-'+entry['account']+'-'+entry['target']+'.json'),proof)

@@ -86,7 +86,7 @@ def inspect_entry(playwright, entry, folder, refresh_once=False, heading_timeout
     page = None
     try:
         page = context.pages[0] if context.pages else context.new_page()
-        response = page.goto(upload.english_url(entry['url']), wait_until='domcontentloaded', timeout=90000)
+        response = upload.navigate_profile(page, entry['url'])
         upload.save_json(folder / 'navigation.json', {'status': response.status if response else None})
         upload.checkpoint(page)
         if refresh_once:

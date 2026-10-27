@@ -243,6 +243,51 @@ class AvailableTests(unittest.TestCase):
         self.assertEqual(next(e for e in config['targets'] if e['account']=='fb14'),self.new)
         self.assertTrue(self.videos['fb14'].exists())
 
+    def test_recorded_failures_and_reviews_are_explained_in_no_new_result(self):
+        key=upload.job_key(self.new,self.videos['fb14'])
+        record=dict(account='fb14',target='personal',url=self.new['url'],video=str(self.videos['fb14']),status='needs_review')
+        rows=today.plan(self.config,{key:record},True)
+        row=next(r for r in rows if r['account']=='fb14')
+        self.assertEqual(row['status'],'no_new_video')
+        self.assertIn('needs_review=1',row['reason'])
+        self.assertIn('不代表已发布成功',row['reason'])
+        self.assertEqual(row['recorded_inbox'],[dict(key=key,filename='today.mp4',status='needs_review')])
+        self.assertFalse(row['eligible'])
+
+    def test_selected_new_target_preserves_all_unselected_configuration_and_jobs(self):
+        original=copy.deepcopy(self.config)
+        calls=[]
+        def process(entry,state,path,publish,**options):
+            calls.append((entry['account'],publish))
+            if publish:
+                state[options['expected_job_key']]=dict(account=entry['account'],target=entry['target'],
+                    url=entry['url'],video=str(self.videos[entry['account']]),status='published')
+                upload.save_json(path,state)
+            return True
+        with patch.object(upload,'run_entry',side_effect=process):
+            self.assertEqual(today.run(True,'off',True,False,[('fb14','personal')]),0)
+        self.assertEqual(calls,[('fb14',False),('fb14',True)])
+        saved=upload.read_json(upload.CONFIG,{})
+        self.assertEqual(saved['custom_setting'],original['custom_setting'])
+        for before,after in zip(original['targets'],saved['targets']):
+            if before['account']!='fb14':
+                self.assertEqual(before,after)
+        self.assertEqual({row['account'] for row in self.report()['rows']},{'fb14'})
+
+    def test_target_filter_does_not_hide_conflicting_url_on_unselected_target(self):
+        config=copy.deepcopy(self.config)
+        config['targets'].append(dict(self.new,account='fb15'))
+        upload.save_json(upload.CONFIG,config)
+        with patch.object(upload,'run_entry') as run:
+            self.assertEqual(today.run(True,'off',True,False,[('fb14','personal')]),3)
+        run.assert_not_called()
+        self.assertEqual(self.report()['final_rows'][0]['status'],'invalid')
+
+    def test_missing_target_filter_does_not_fall_back_to_all_accounts(self):
+        with patch.object(upload,'run_entry') as run,self.assertRaisesRegex(ValueError,'未登记'):
+            today.run(True,'off',True,False,[('fb23','personal')])
+        run.assert_not_called()
+
 
 if __name__=='__main__':
     unittest.main()

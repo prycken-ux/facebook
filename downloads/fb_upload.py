@@ -14,7 +14,7 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 ROOT = Path(__file__).resolve().parent
 CONFIG = ROOT / "upload_config.json"
-VERSION = "2.29"
+VERSION = "2.30"
 SUCCESS_PATTERN = (
     r"^(?:Your reel (?:is(?: now)?|has been|was) (?:successfully )?"
     r"(?:published|shared|posted)(?: successfully)?|"
@@ -328,6 +328,32 @@ def english_url(url):
     return urlunparse(parsed._replace(query=urlencode(query, doseq=True)))
 
 
+def navigate_profile(page, url):
+    """Retry one transient GET before file selection, never an editor or Post."""
+    from playwright.sync_api import Error as BrowserError, TimeoutError as BrowserTimeout
+
+    # Limit recovery to configured profile routes and the ownership-check route.
+    target_key(url)
+    destination = english_url(url)
+    for attempt in range(2):
+        try:
+            response = page.goto(destination, wait_until='domcontentloaded', timeout=90000)
+        except BrowserError as error:
+            message = str(error)
+            # Security/login redirects must be handled by the account owner.
+            checkpoint(page)
+            transient = isinstance(error, BrowserTimeout) or any(code in message for code in
+                ('net::ERR_TIMED_OUT', 'net::ERR_CONNECTION_RESET', 'net::ERR_CONNECTION_CLOSED'))
+            if attempt or not transient or page.is_closed():
+                raise
+            print('主页首次加载遇到临时网络错误，2 秒后只重试打开一次；尚未选择视频。', flush=True)
+            page.wait_for_timeout(2000)
+            checkpoint(page)
+            continue
+        checkpoint(page)
+        return response
+
+
 def require_english_interface(page):
     language = (page.locator("html").get_attribute("lang") or "").strip().lower().replace("_", "-")
     if language and language != "en" and not language.startswith("en-"):
@@ -420,19 +446,27 @@ def profile_name_candidates(page, entry):
     function only establishes loaded profile UI; cookie/owner validation remains
     mandatory in the callers, including the /me check for vanity profiles.
     """
+    from playwright.sync_api import TimeoutError as BrowserTimeout
+
     candidates = []
     headings = page.get_by_role('heading', name=entry['name'], exact=True)
     for index in range(headings.count()):
         candidate = headings.nth(index)
-        if candidate.is_visible() and candidate.evaluate(PROFILE_NAME_ALLOWED_JS):
-            candidates.append(candidate)
+        try:
+            if candidate.is_visible() and candidate.evaluate(PROFILE_NAME_ALLOWED_JS, timeout=1000):
+                candidates.append(candidate)
+        except BrowserTimeout:
+            continue
     if entry.get('type') == 'personal' and not candidates:
         labels = page.get_by_text(entry['name'], exact=True)
         for index in range(labels.count()):
             candidate = labels.nth(index)
-            if (candidate.is_visible() and candidate.evaluate(PROFILE_NAME_ALLOWED_JS)
-                    and candidate.evaluate(HEADER_MANAGEMENT_JS, 'personal') == 'active_personal_header_management_control'):
-                candidates.append(candidate)
+            try:
+                if (candidate.is_visible() and candidate.evaluate(PROFILE_NAME_ALLOWED_JS, timeout=1000)
+                        and candidate.evaluate(HEADER_MANAGEMENT_JS, 'personal', timeout=1000) == 'active_personal_header_management_control'):
+                    candidates.append(candidate)
+            except BrowserTimeout:
+                continue
     return candidates
 
 
@@ -463,6 +497,8 @@ def visible_page_switch(page):
 
 
 def ensure_page_identity(page, entry, timeout_ms=90000, picker_delay_ms=2000):
+    from playwright.sync_api import TimeoutError as BrowserTimeout
+
     deadline = time.monotonic() + timeout_ms / 1000
     started = time.monotonic()
     switched, announced, picker_used = False, False, False
@@ -491,9 +527,12 @@ def ensure_page_identity(page, entry, timeout_ms=90000, picker_delay_ms=2000):
                     actor_error = None
                     if method is None:
                         for candidate in candidates:
-                            if candidate.evaluate(HEADER_MANAGEMENT_JS) == 'active_page_header_management_control':
-                                method = 'active_page_header_management_control'
-                                break
+                            try:
+                                if candidate.evaluate(HEADER_MANAGEMENT_JS, timeout=1000) == 'active_page_header_management_control':
+                                    method = 'active_page_header_management_control'
+                                    break
+                            except BrowserTimeout:
+                                continue
                 except RuntimeError as error:
                     # A different active Page cannot be accepted via a generic
                     # management control; allow a delayed Switch Now to arrive.
@@ -547,7 +586,7 @@ def personal_actor_fingerprint(page, entry):
 def verify_personal_vanity_owner(page, entry, marker):
     # Facebook's /me route resolves the logged-in person's own profile. This
     # proves ownership even when a responsive layout hides Edit profile.
-    page.goto(english_url("https://www.facebook.com/me"), wait_until="domcontentloaded", timeout=90000)
+    navigate_profile(page, "https://www.facebook.com/me")
     page.wait_for_url(lambda url: urlparse(str(url)).path.rstrip("/") != "/me", timeout=60000)
     checkpoint(page)
     if personal_actor_fingerprint(page, entry) != marker:
@@ -566,7 +605,7 @@ def verify_personal_vanity_owner(page, entry, marker):
                 verified = False
     if not verified:
         raise RuntimeError("无法通过 Facebook 本人主页入口确认目标短网址属于当前账号；未选择视频或点击发布。")
-    page.goto(english_url(entry["url"]), wait_until="domcontentloaded", timeout=90000)
+    navigate_profile(page, entry["url"])
     checkpoint(page)
     wait_profile_name(page, entry)
     if target_key(page.url) != expected_key:
@@ -614,7 +653,7 @@ def check_identity(entry):
         context = launch_context(playwright, entry)
         try:
             page = context.pages[0] if context.pages else context.new_page()
-            page.goto(english_url(entry["url"]), wait_until="domcontentloaded", timeout=90000)
+            navigate_profile(page, entry["url"])
             result = ensure_identity(page, entry)
             result["checked_at"] = datetime.now().astimezone().isoformat()
             upload_log = ROOT / "logs" / ("identity-" + entry["account"] + "-" + entry["target"] + ".json")
@@ -927,7 +966,7 @@ def assist_reel_entry(page, entry, video, identity_proof):
 def prepare_reel(page, entry, video, text, pause_before_reel=False):
     from playwright.sync_api import expect
 
-    page.goto(english_url(entry["url"]), wait_until="domcontentloaded", timeout=90000)
+    navigate_profile(page, entry["url"])
     identity_proof = ensure_identity(page, entry)
     require_english_interface(page)
     open_facebook_menu(page)
