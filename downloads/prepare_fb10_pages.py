@@ -163,11 +163,11 @@ def prepare(rows,ai_label,common_caption,report_path,report,close_windows=False)
                     raise ValueError('原视频指纹变化，未选择其他文件')
                 expected_text=text if common_caption else selected[3]
                 validate_exact(entry,state,row,expected_text)
-                # Shared fb10 profile: manual switching is serial and must pass
-                # the ordinary numeric Page actor/header identity checks.
+                # Shared fb10 profile: switch serially, try the normal automatic
+                # actor proof first, and request manual repair only on failure.
                 if preview_matches(entry,row,expected_text,ai_label):
                     result.update(status='preview_ready',reason='此确切视频及相同文案、AI 设置已有准备记录，本次无需重复预览')
-                elif not repair_identity(entry):
+                elif not repair_identity(entry,auto_first=True):
                     result.update(status='manual_skipped',reason='用户跳过该主页身份切换，未上传或发布')
                 else:
                     validate_exact(entry,upload.read_json(state_path,{}),row,expected_text)

@@ -62,13 +62,40 @@ def validate_job(config,state,row,caption):
     return entry
 
 
-def repair_identity(entry,read=input):
+def repair_identity(entry,read=input,auto_first=False):
     from playwright.sync_api import sync_playwright
     with sync_playwright() as playwright:
         context=upload.launch_context(playwright,entry)
         try:
             page=context.pages[0] if context.pages else context.new_page()
             upload.navigate_profile(page,entry['url'])
+            if auto_first:
+                print('先自动切换并核对公共主页身份：',entry['name'],flush=True)
+                try:
+                    proof=upload.ensure_identity(page,entry)
+                except Exception as error:
+                    print('自动身份核验未通过：',str(error).splitlines()[0],flush=True)
+                    # Local UI evidence lets us adapt an unknown avatar label
+                    # without collecting raw DOM, cookies, or form values.
+                    try:
+                        from capture_profile_switch_ui import capture
+                        import zipfile
+                        folder=upload.ROOT/'logs'/('auto-switch-'+entry['account']+'-'+entry['target']+'-'+datetime.now().strftime('%Y%m%d-%H%M%S-%f'))
+                        capture(page,folder,'automatic-failure')
+                        output=folder.with_suffix('.zip')
+                        with zipfile.ZipFile(output,'w',zipfile.ZIP_DEFLATED) as archive:
+                            for item in folder.iterdir():
+                                if item.is_file():
+                                    archive.write(item,item.name)
+                        print('自动切换诊断：',output,flush=True)
+                    except Exception:
+                        print('未能保存切换界面诊断，原任务记录保留。',flush=True)
+                    print('本页改为手动处理；SKIP 可跳过后继续其他主页。',flush=True)
+                else:
+                    proof['checked_at']=datetime.now().astimezone().isoformat()
+                    upload.save_json(upload.ROOT/'logs'/('identity-'+entry['account']+'-'+entry['target']+'.json'),proof)
+                    print('自动切换及身份核验通过，无需输入 READY。',flush=True)
+                    return True
             while True:
                 print('请在此浏览器右上角头像菜单切到：',entry['name'],entry['url'],flush=True)
                 print('切好后回到此窗口输入 READY；跳过当前目标输入 SKIP；结束批次输入 CANCEL。',flush=True)

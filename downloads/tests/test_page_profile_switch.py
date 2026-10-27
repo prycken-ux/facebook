@@ -159,6 +159,36 @@ class ProfilePickerTests(unittest.TestCase):
         self.assertEqual(self.count('account'), 0)
         self.assertEqual(self.count('post'), 0)
 
+    def test_named_account_control_outside_banner_is_supported(self):
+        self.html = self.html.replace('<header role="banner">', '<nav aria-label="Account controls">').replace('</header>', '</nav>')
+        self.visit()
+        switcher.switch_page_from_picker(self.page, self.entry, timeout_ms=1500)
+        self.assertEqual(self.count('account'), 1)
+        self.assertEqual(self.count('pick'), 1)
+        self.assertEqual(self.count('post'), 0)
+
+    def test_account_label_with_current_profile_name_is_supported(self):
+        self.html = self.html.replace('aria-label="Your profile"', 'aria-label="Your profile: Current Page"')
+        self.visit()
+        switcher.switch_page_from_picker(self.page, self.entry, timeout_ms=1500)
+        self.assertEqual(self.count('pick'), 1)
+
+    def test_two_different_account_label_variants_are_ambiguous(self):
+        self.html = self.html.replace('</header>', '<button aria-label="Your profile: Another account">Avatar</button></header>')
+        self.visit()
+        with self.assertRaisesRegex(RuntimeError, '多个可见入口'):
+            switcher.switch_page_from_picker(self.page, self.entry, timeout_ms=600)
+        self.assertEqual(self.count('pick'), 0)
+
+    def test_feed_button_with_account_label_is_not_an_avatar_fallback(self):
+        self.html = self.html.replace('aria-label="Your profile"', 'aria-label="Unknown avatar"').replace(
+            '<article>', '<article><button aria-label="Your profile" onclick="bump(\'post\')">Misleading feed button</button>')
+        self.visit()
+        with self.assertRaisesRegex(RuntimeError, '未加载|切换超时'):
+            switcher.switch_page_from_picker(self.page, self.entry, timeout_ms=600)
+        self.assertEqual(self.count('post'), 0)
+        self.assertEqual(self.count('pick'), 0)
+
     def test_checkpoint_stops_without_opening_profile_picker(self):
         self.page.goto('https://www.facebook.com/two_step_verification/authentication/')
         with self.assertRaisesRegex(RuntimeError, '登录或安全验证'):

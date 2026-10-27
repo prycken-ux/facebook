@@ -7,6 +7,7 @@ import fb_upload as upload
 
 PICKER_TITLE = re.compile(r'^(Your profiles\s*(?:&|and)\s*Pages|Profiles\s*&\s*Pages|你的个人主页和公共主页|您的个人主页和公共主页)$', re.I)
 ACCOUNT_BUTTON = re.compile(r'^(Your profile|Account|Your profile and settings|Account controls and settings|个人主页|你的个人主页|账户|帐户|账号)$', re.I)
+ACCOUNT_WITH_NAME = re.compile(r'^(Your profile|Your profile and settings|Account controls and settings|你的个人主页|账户|帐户|账号)[,:，：]\s*\S.+$', re.I)
 ALL_PROFILES = re.compile(r'^(See all profiles|See all profiles and Pages|查看所有个人主页|查看所有主页|查看全部个人主页|查看所有个人主页和公共主页)$', re.I)
 SEARCH_PROFILES = re.compile(r'^(Search profiles and Pages|Search profiles|搜索个人主页和公共主页|搜索个人主页)$', re.I)
 
@@ -79,6 +80,25 @@ def see_all_profiles_control(page):
     return found[0] if found else None
 
 
+def account_control(page):
+    # Some layouts place account controls next to, rather than inside, banner.
+    # Require a named account action outside content and existing dialogs; never
+    # infer the avatar by image position, a profile name, or an unnamed button.
+    allowed = '''el => !el.closest('main,[role="main"],article,[role="article"],' +
+        '[role="feed"],aside,[role="complementary"],[role="dialog"],[role="menu"]')'''
+    visible = []
+    for pattern in (ACCOUNT_BUTTON, ACCOUNT_WITH_NAME):
+        for role in ('button', 'link'):
+            choices = page.get_by_role(role, name=pattern)
+            for index in range(choices.count()):
+                choice = choices.nth(index)
+                if choice.is_visible() and choice.evaluate(allowed, timeout=1000):
+                    visible.append(choice)
+    if len(visible) > 1:
+        raise RuntimeError('账号头像存在多个可见入口，未猜选。')
+    return visible[0] if visible else None
+
+
 def switch_page_from_picker(page, entry, timeout_ms=60000):
     """Choose one exact configured Page name, then require its numeric actor ID.
 
@@ -98,10 +118,7 @@ def switch_page_from_picker(page, entry, timeout_ms=60000):
         # Do not toggle an already-open account menu closed.
         see_all = see_all_profiles_control(page)
         if see_all is None:
-            banner = page.get_by_role('banner')
-            if banner.count() != 1:
-                raise RuntimeError('没有唯一的 Facebook 顶部导航，未猜选头像入口。')
-            account = wait_value(page, deadline, lambda: exact_control(banner, ACCOUNT_BUTTON), '账号头像入口', marker)
+            account = wait_value(page, deadline, lambda: account_control(page), '账号头像入口', marker)
             account.click(timeout=remaining(deadline))
         dialog = picker_dialog(page)
         if dialog is None:

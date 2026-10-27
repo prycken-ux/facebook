@@ -125,6 +125,42 @@ class RetryTests(unittest.TestCase):
                 retry.repair_identity(self.entries[1],read=lambda prompt:'CANCEL')
         self.assertEqual(browser.close.call_count,3)
 
+    def test_automatic_identity_pass_needs_no_ready_input(self):
+        browser=MagicMock()
+        browser.pages=[MagicMock()]
+        read=MagicMock(side_effect=AssertionError('automatic success must not prompt'))
+        with patch('playwright.sync_api.sync_playwright'),patch.object(upload,'launch_context',return_value=browser), \
+             patch.object(upload,'ensure_identity',return_value={'method':'exact actor'}) as check:
+            self.assertTrue(retry.repair_identity(self.entries[1],read=read,auto_first=True))
+        check.assert_called_once()
+        read.assert_not_called()
+        browser.close.assert_called_once()
+        proof=upload.read_json(self.root/'logs'/('identity-'+self.entries[1]['account']+'-'+self.entries[1]['target']+'.json'),{})
+        self.assertEqual(proof['method'],'exact actor')
+
+    def test_automatic_failure_falls_back_without_skipping_identity_proof(self):
+        browser=MagicMock()
+        browser.pages=[MagicMock()]
+        before=self.state_path.read_bytes()
+        with patch('playwright.sync_api.sync_playwright'),patch.object(upload,'launch_context',return_value=browser), \
+             patch.object(upload,'ensure_identity',side_effect=[RuntimeError('unknown avatar'),{'method':'exact actor'}]) as check, \
+             patch('capture_profile_switch_ui.capture',side_effect=RuntimeError('no capture')):
+            self.assertTrue(retry.repair_identity(self.entries[1],read=lambda prompt:'READY',auto_first=True))
+        self.assertEqual(check.call_count,2)
+        self.assertEqual(self.state_path.read_bytes(),before)
+        browser.close.assert_called_once()
+
+    def test_automatic_failure_can_be_skipped_without_post_or_state_change(self):
+        browser=MagicMock()
+        browser.pages=[MagicMock()]
+        before=self.state_path.read_bytes()
+        with patch('playwright.sync_api.sync_playwright'),patch.object(upload,'launch_context',return_value=browser), \
+             patch.object(upload,'ensure_identity',side_effect=RuntimeError('unknown avatar')), \
+             patch('capture_profile_switch_ui.capture',side_effect=RuntimeError('no capture')):
+            self.assertFalse(retry.repair_identity(self.entries[1],read=lambda prompt:'SKIP',auto_first=True))
+        self.assertEqual(self.state_path.read_bytes(),before)
+        browser.close.assert_called_once()
+
 
 if __name__=='__main__':
     unittest.main()
