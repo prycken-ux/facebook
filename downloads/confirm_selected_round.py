@@ -17,7 +17,42 @@ def basename(value):
     return str(value).replace('\\','/').rsplit('/',1)[-1]
 
 
-def confirmation_plan(config,state,report,targets):
+def load_expanded_report(filename):
+    if not re.fullmatch(r'available-today-\d{8}-\d{6}-\d{6}\.json',filename):
+        raise ValueError('需提供 logs 中确切的 available-today 报告文件名')
+    path=upload.ROOT/'logs'/filename
+    report=upload.read_json(path,{})
+    if (not isinstance(report,dict) or report.get('schema')!='available-current-publication-v1'
+            or report.get('phase')=='plan_only' or not isinstance(report.get('rows'),list)
+            or any(not isinstance(row,dict) for row in report['rows'])
+            or report.get('ai_label') not in {'off','on'} or not report.get('caption_text','').strip()):
+        raise ValueError('没有有效的原新账号实际发布报告')
+    created=datetime.fromisoformat(report.get('created',''))
+    if created.tzinfo is None or created.strftime('%Y%m%d')!=filename[16:24]:
+        raise ValueError('原报告日期或时区与文件名不一致')
+    return path,report
+
+
+def missing_record_source(entry,filename,key):
+    folder=upload.inbox_for(entry)
+    candidates=[folder/filename]
+    if (folder.parent/'completed').is_dir():
+        candidates.extend((folder.parent/'completed').rglob(filename))
+    for video in candidates:
+        if not video.is_file():
+            continue
+        video.resolve().relative_to(folder.parent.resolve())
+        before=video.stat()
+        actual=upload.job_key(entry,video)
+        after=video.stat()
+        if (before.st_size,before.st_mtime_ns)!=(after.st_size,after.st_mtime_ns):
+            raise ValueError('补记期间视频正在变化，未创建成功记录')
+        if before.st_size and actual==key:
+            return video
+    raise ValueError('缺少本地记录，且没有与原报告指纹一致的原视频；未猜选其他素材')
+
+
+def confirmation_plan(config,state,report,targets,allow_unrecorded=False):
     if not targets or len(set(targets))!=len(targets):
         raise ValueError('需提供明确且不重复的已确认目标')
     plan=[]
@@ -33,16 +68,24 @@ def confirmation_plan(config,state,report,targets):
             raise ValueError('原批次没有确切素材指纹，未用旧视频代替：'+'/'.join(pair))
         upload.validate_video_filename(source.get('filename'))
         record=state.get(key)
-        if (not isinstance(record,dict) or (record.get('account'),record.get('target'))!=pair
+        manual_source=None
+        if record is None:
+            if not allow_unrecorded:
+                raise ValueError('原批次缺少确切任务记录，未自动创建成功记录')
+            if report.get('ai_label') not in {'off','on'} or not report.get('caption_text','').strip():
+                raise ValueError('缺少原批次明确素材设置，未创建成功记录')
+            manual_source=missing_record_source(entry,source['filename'],key)
+        elif (not isinstance(record,dict) or (record.get('account'),record.get('target'))!=pair
                 or upload.target_key(record.get('url',''))!=upload.target_key(entry['url'])
                 or basename(record.get('video',''))!=source['filename']):
             raise ValueError('原批次、任务记录或当前目标不一致：'+'/'.join(pair))
         if source.get('url') and upload.target_key(source['url'])!=upload.target_key(entry['url']):
             raise ValueError('原批次目标网址已变化')
-        if record.get('status') not in {'published','failed_before_post','needs_review'}:
+        if record is not None and record.get('status') not in {'published','failed_before_post','needs_review'}:
             raise ValueError('任务状态需先检查：'+'/'.join(pair))
         plan.append(dict(account=pair[0],target=pair[1],key=key,filename=source['filename'],
-                         previous_status=record['status'],entry=entry))
+                         previous_status=record['status'] if record is not None else 'unrecorded',entry=entry,
+                         manual_source=str(manual_source) if manual_source is not None else None))
     if len({row['key'] for row in plan})!=len(plan):
         raise ValueError('选定素材指纹重复，未确认')
     return plan
@@ -65,15 +108,15 @@ def archive_confirmed(item):
     return '原视频已归档：'+str(folder/item['filename'])
 
 
-def confirm(round_start,targets,verified=False):
+def confirm(round_start,targets,verified=False,source_report=None,allow_unrecorded=False):
     if not verified:
         raise ValueError('需 --verified-published，表示用户已在 Facebook 确认选定原视频实际发布')
     with locked():
-        path,report=load_bound_round(round_start)
+        path,report=(load_expanded_report(source_report) if source_report else load_bound_round(round_start))
         state_path=upload.ROOT/'logs/publish_state.json'
         original=upload.read_json(state_path,{})
         config=upload.read_json(upload.CONFIG,{})
-        plan=confirmation_plan(config,original,report,targets)
+        plan=confirmation_plan(config,original,report,targets,allow_unrecorded)
         now=datetime.now().astimezone().isoformat()
         backup=upload.ROOT/'backups'/('confirmed-selected-'+datetime.now().strftime('%Y%m%d-%H%M%S-%f'))
         backup.mkdir(parents=True)
@@ -86,6 +129,13 @@ def confirm(round_start,targets,verified=False):
         upload.save_json(backup/'confirmation.json',audit)
         state=copy.deepcopy(original)
         for item in plan:
+            if item['key'] not in state:
+                video=upload.ROOT/item['manual_source']
+                if upload.job_key(item['entry'],video)!=item['key']:
+                    raise ValueError('原视频在补记前变化，未写成功记录')
+                state[item['key']]=dict(account=item['account'],target=item['target'],
+                    url=item['entry']['url'],video=str(video),caption=str(video.with_suffix('.txt')),
+                    created=report['created'],status='unrecorded',ai_label_requested=report['ai_label']=='on')
             record=state[item['key']]
             if record['status']!='published':
                 record.update(status='published',status_before_user_confirmation=record['status'],
@@ -119,11 +169,14 @@ def confirm(round_start,targets,verified=False):
 
 def main():
     parser=argparse.ArgumentParser(description='仅补记用户明确确认的原批次指定视频，不发布')
-    parser.add_argument('--round-start',required=True)
+    scope=parser.add_mutually_exclusive_group(required=True)
+    scope.add_argument('--round-start')
+    scope.add_argument('--source-report')
     parser.add_argument('--targets',required=True)
     parser.add_argument('--verified-published',action='store_true')
+    parser.add_argument('--allow-unrecorded',action='store_true',help='用户已核实手动发布，允许按原报告和本地原视频补建确切成功记录')
     args=parser.parse_args()
-    return confirm(args.round_start,parse_target_pairs(args.targets),args.verified_published)
+    return confirm(args.round_start,parse_target_pairs(args.targets),args.verified_published,args.source_report,args.allow_unrecorded)
 
 
 if __name__=='__main__':
