@@ -288,6 +288,77 @@ class AvailableTests(unittest.TestCase):
             today.run(True,'off',True,False,[('fb23','personal')])
         run.assert_not_called()
 
+    def bound_report(self):
+        name='available-today-20261026-182238-604193.json'
+        source=dict(schema='available-current-publication-v1',created='2026-10-26T18:22:38+08:00',
+            phase='attempts_finished',ai_label='off',caption_text=(self.root/'common_caption_today.txt').read_text(),
+            rows=[dict(account='fb14',target='personal',url=self.new['url'],filename='today.mp4',
+                       key=upload.job_key(self.new,self.videos['fb14']))])
+        upload.save_json(self.root/'logs'/name,source)
+        return name,source
+
+    def test_source_report_rejects_replacement_video_without_touching_other_targets(self):
+        name,source=self.bound_report()
+        self.videos['fb14'].write_bytes(b'new content must not reuse yesterday confirmation or AI assertion')
+        os.utime(self.videos['fb14'],(time.time()-120,time.time()-120))
+        with patch.object(upload,'run_entry') as run:
+            self.assertEqual(today.run(True,'off',True,False,[('fb14','personal')],name),3)
+        run.assert_not_called()
+        self.assertFalse(self.videos['fb14'].with_suffix('.txt').exists())
+        self.assertEqual(self.report()['final_rows'][0]['key'],source['rows'][0]['key'])
+
+    def test_source_unknown_or_published_is_not_retried_even_with_another_new_file(self):
+        name,source=self.bound_report()
+        key=source['rows'][0]['key']
+        self.video(self.new,'another.mp4',b'unrelated current content')
+        for status in ('needs_review','published','failed_before_post'):
+            upload.save_json(self.state_path,{key:dict(account='fb14',target='personal',url=self.new['url'],
+                video=str(self.videos['fb14']),status=status)})
+            with patch.object(upload,'run_entry') as run:
+                today.run(True,'off',True,False,[('fb14','personal')],name)
+            run.assert_not_called()
+        self.assertTrue(self.videos['fb14'].exists())
+
+    def test_bound_exact_unrecorded_video_prepares_and_publishes_only_its_source_key(self):
+        name,source=self.bound_report()
+        calls=[]
+        def process(entry,state,path,publish,**kwargs):
+            calls.append((entry['account'],publish,kwargs['expected_job_key']))
+            if publish:
+                state[kwargs['expected_job_key']]=dict(account=entry['account'],target=entry['target'],
+                    url=entry['url'],video=str(self.videos[entry['account']]),status='published')
+                upload.save_json(path,state)
+            return True
+        with patch.object(upload,'run_entry',side_effect=process):
+            self.assertEqual(today.run(True,'off',True,False,[('fb14','personal')],name),0)
+        self.assertEqual(calls,[('fb14',False,source['rows'][0]['key']),('fb14',True,source['rows'][0]['key'])])
+
+    def test_source_caption_ai_scope_and_path_are_checked_before_any_mutation(self):
+        name,source=self.bound_report()
+        before=upload.CONFIG.read_bytes()
+        for ai,targets,filename in (('on',[('fb14','personal')],name),
+                                    ('off',None,name),('off',[('fb14','personal')],'../'+name)):
+            with self.assertRaises(ValueError):
+                today.run(True,ai,True,False,targets,filename)
+        (self.root/'common_caption_today.txt').write_text('different caption')
+        with self.assertRaises(ValueError):
+            today.run(True,'off',True,False,[('fb14','personal')],name)
+        self.assertEqual(upload.CONFIG.read_bytes(),before)
+        self.assertFalse(self.videos['fb14'].with_suffix('.txt').exists())
+
+    def test_bound_prepare_failure_updates_original_report_without_overwriting_history(self):
+        name,source=self.bound_report()
+        source['results']=[dict(key=source['rows'][0]['key'],error='previous prepare error')]
+        upload.save_json(self.root/'logs'/name,source)
+        with patch.object(upload,'run_entry',side_effect=RuntimeError('new profile busy error')):
+            self.assertEqual(today.run(True,'off',True,False,[('fb14','personal')],name),3)
+        saved=upload.read_json(self.root/'logs'/name,{})
+        self.assertEqual(saved['rows'],source['rows'])
+        self.assertEqual(saved['results'],source['results'])
+        self.assertEqual(len(saved['resume_results']),1)
+        self.assertEqual(saved['final_rows'][0]['status'],'needs_check')
+        self.assertEqual(saved['final_rows'][0]['reason'],'new profile busy error')
+
 
 if __name__=='__main__':
     unittest.main()

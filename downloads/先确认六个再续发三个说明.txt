@@ -1,0 +1,41 @@
+先确认六个，再续发三个（2026-10-26 原批次）
+
+用户已明确确认成功的六个目标：
+fb02/page01 Donna Merrill
+fb05/page01 Jessica Miller
+fb06/page01 Michelle Hamer
+fb09/personal Jesse Arreola
+fb10/personal Ava H-s
+fb13/page01 Prycken BK
+不能再按旧失败清单重发这六个视频。
+
+第一步：只补记这六个原视频成功
+.venv\Scripts\python.exe confirm_selected_round.py --round-start 2026-10-26T17:53:46 --targets fb02/page01,fb05/page01,fb06/page01,fb09/personal,fb10/personal,fb13/page01 --verified-published
+原报告、当前目标、原任务文件名和完整指纹必须对应，六个目标全部预检通过才写成功记录。
+备份发布记录、配置、原报告和 CSV，保留原错误历史。已有成功证据原样保留，不覆盖。
+只归档指纹一致的原 inbox 视频；同名新文件或缺失文件不会被当成原视频移走。
+此命令不联网核验 Facebook；依据的是本次用户明确确认，不会打开浏览器或发布。
+
+第二步：仅继续三个上次准备未完成的原视频
+.venv\Scripts\python.exe publish_available_today.py --run --ai-label off --prepare-new --close-windows --targets fb17/personal,fb22/personal,fb23/personal --source-report available-today-20261026-182238-604193.json
+限定原报告的账号、目标、网址、完整内容指纹和文件名，文案及 AI 分类仍须与原批次一致。
+不将 10 月 27 日新放入的其他视频当成昨天的失败视频，也不会沿用旧 AI 分类去发布其他内容。
+这三个视频原报告为准备未完成，无成功或未知结果记录；只有仍未建立记录的原素材才可处理。
+如果现在已是成功、未知、活动中或发布前失败状态，本命令都保留，不自动清除记录重发。
+首次准备仍需在浏览器核对预览、文案、Public、AI 关闭，按提示回车后才启用并发布。
+临时主页 GET 故障只重试一次；不能解决的身份、控件或浏览器占用问题继续保留，处理下一个目标。
+不会强制结束 Chrome，也不会删除锁或绕过安全验证。
+续发结果同步回原 available-today 报告，保留原始 rows/results 和新增 resume_results。
+
+第三步：刷新两轮汇总，打开未知结果供本人核实
+.venv\Scripts\python.exe publication_status.py --date 2026-10-26 --open-review
+原九个未知结果账号为 fb03、fb04、fb07、fb08、fb11、fb14、fb15、fb19、fb20（personal）。
+本工具不会把它们当作失败重发。第二步若出现新的未知结果，也会列入本人核实清单。
+用户检查的是原批次实际视频内容，确认存在后提供编号、文件名和视频链接；缺失则明确说编号及“未发布”。
+不要把空文件夹、已有旧视频或正常退出当成本批新视频成功。
+清单：logs\publication-status-2026-10-26.txt；汇总为同名 CSV/JSON。
+
+安装包包含上传核心 2.30、当前汇总/续发相关代码和本说明，不包含或覆盖用户配置、视频、登录资料及发布记录。
+安装前正常结束运行任务；发现 batch.lock/upload.lock 则核对当前任务，不直接删锁。
+125 项相关本地测试通过，覆盖选择性确认、归档、指纹绑定、源码报告同步、未知结果不重发、原记录和配置保留。
+执行电脑必须是用户的 Windows 上传电脑；本地测试不等于实际 Facebook 已发布。

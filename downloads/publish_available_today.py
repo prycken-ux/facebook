@@ -2,6 +2,7 @@
 import argparse
 import copy
 import csv
+import re
 import sys
 import time
 from collections import Counter
@@ -101,13 +102,15 @@ def public_rows(rows):
     return [{k:v for k,v in row.items() if k!='entry'} for row in rows]
 
 
-def save_report(path,report,rows,results,state):
-    outcomes={(r['account'],r['target']):r for r in results}
+def save_report(path,report,rows,results,state,update_results=True):
+    outcomes={r['key']:r for r in results if r.get('key')}
     final=[]
     for source in public_rows(rows):
         row=dict(source)
+        row.setdefault('status','needs_check')
+        row.setdefault('reason','原报告缺少明确的准备结果')
         record=state.get(row['key']) if row.get('key') else None
-        result=outcomes.get((row['account'],row['target']),{})
+        result=outcomes.get(row.get('key'),{})
         if record:
             row.update(status=record.get('status','invalid'),created=record.get('created',''),
                 reason='当前确切素材已记录成功' if record.get('status')=='published' else
@@ -116,7 +119,9 @@ def save_report(path,report,rows,results,state):
         elif result:
             row.update(status=result.get('status',row['status']),reason=result.get('error',result.get('reason',row['reason'])))
         final.append(row)
-    report.update(results=results,final_rows=final)
+    report['final_rows']=final
+    if update_results:
+        report['results']=results
     report['manual_checks']=[dict(row) for row in final if row['status'] in
                             {'needs_review','posting','preparing','needs_check','failed_before_post','invalid'}]
     upload.save_json(path,report)
@@ -137,7 +142,34 @@ def validate_exact(entry,state,row,text):
         raise ValueError('当前视频指纹或同名文案与本轮核对结果不同')
 
 
-def run(publish=False,ai_label=None,prepare_new=False,close_windows=False,targets=None):
+def bind_source(rows,source,state):
+    """Pin a scoped continuation to its original videos, never today's replacements."""
+    for row in rows:
+        pair=(row['account'],row['target'])
+        found=[item for item in source.get('rows',[]) if (item.get('account'),item.get('target'))==pair]
+        if len(found)!=1:
+            raise ValueError('指定原批次中没有唯一的目标素材：'+'/'.join(pair))
+        original=found[0]
+        key=original.get('key')
+        if not isinstance(key,str) or not re.fullmatch(r'[a-f0-9]{64}',key):
+            raise ValueError('指定原批次目标缺少确切素材指纹')
+        upload.validate_video_filename(original.get('filename'))
+        if upload.target_key(original.get('url',''))!=upload.target_key(row['url']):
+            raise ValueError('原批次目标网址与当前配置不一致')
+        record=state.get(key)
+        if record is not None:
+            if (not isinstance(record,dict) or (record.get('account'),record.get('target'))!=pair
+                    or upload.target_key(record.get('url',''))!=upload.target_key(row['url'])):
+                raise ValueError('原批次素材的任务记录与当前目标冲突')
+            row.update(key=key,filename=original['filename'],eligible=False,status=record.get('status','invalid'),
+                reason='原批次确切视频已有记录，保留当前状态，不自动重发')
+        elif row['key']!=key or row['filename']!=original['filename']:
+            row.update(key=key,filename=original['filename'],eligible=False,status='invalid',
+                reason='原批次视频已变化、缺失或不能唯一选择，未选择其他新视频代替')
+    return rows
+
+
+def run(publish=False,ai_label=None,prepare_new=False,close_windows=False,targets=None,source_report=None):
     if publish and ai_label not in {'off','on'}:
         raise ValueError('实际发布需要明确 --ai-label off 或 on')
     with locked():
@@ -155,15 +187,31 @@ def run(publish=False,ai_label=None,prepare_new=False,close_windows=False,target
         text=(upload.ROOT/'common_caption_today.txt').read_text(encoding='utf-8-sig').strip()
         if not text:
             raise ValueError('已保存的统一文案为空')
+        source=None
+        if source_report is not None:
+            if not targets or not re.fullmatch(r'available-today-\d{8}-\d{6}-\d{6}\.json',source_report):
+                raise ValueError('续发须指定明确目标及原 available-today 报告文件名')
+            source=upload.read_json(upload.ROOT/'logs'/source_report,{})
+            if (source.get('schema')!='available-current-publication-v1' or source.get('phase')=='plan_only'
+                    or not isinstance(source.get('rows'),list)
+                    or any(not isinstance(item,dict) for item in source['rows'])
+                    or source.get('ai_label') not in {'off','on'}):
+                raise ValueError('指定来源不是有效的实际发布批次')
+            if source.get('caption_text','').strip()!=text or (publish and ai_label!=source['ai_label']):
+                raise ValueError('当前文案或 AI 分类与原批次不同，未发布其他素材')
         rows=plan(config,state,prepare_new)
         if targets is not None:
             rows=[row for row in rows if (row['account'],row['target']) in targets]
+        if source is not None:
+            rows=bind_source(rows,source,state)
         path=upload.ROOT/'logs'/('available-today-'+datetime.now().strftime('%Y%m%d-%H%M%S-%f')+'.json')
         report=dict(schema='available-current-publication-v1',created=stamp(),ai_label=ai_label,
             scope_accounts=list(ACCOUNTS),paused_accounts=sorted(PAUSED),caption_text=text,
             rows=public_rows(rows),phase='publishing' if publish else 'plan_only')
         if targets is not None:
             report['selected_targets']=[dict(account=a,target=t) for a,t in targets]
+        if source is not None:
+            report['resumed_from_report']=source_report
         results=[]
         save_report(path,report,rows,results,state)
         for row in rows:
@@ -173,7 +221,11 @@ def run(publish=False,ai_label=None,prepare_new=False,close_windows=False,target
             return 0
         backup=upload.ROOT/'backups'/('available-today-'+datetime.now().strftime('%Y%m%d-%H%M%S-%f'))
         backup.mkdir(parents=True)
-        for original in (upload.CONFIG,state_path,upload.ROOT/'common_caption_today.txt'):
+        originals=[upload.CONFIG,state_path,upload.ROOT/'common_caption_today.txt']
+        if source is not None:
+            original_path=upload.ROOT/'logs'/source_report
+            originals.extend((original_path,original_path.with_suffix('.csv')))
+        for original in originals:
             if original.is_file():
                 (backup/original.name).write_bytes(original.read_bytes())
         for row in rows:
@@ -242,6 +294,11 @@ def run(publish=False,ai_label=None,prepare_new=False,close_windows=False,target
         finally:
             state=upload.read_json(state_path,{})
             final=save_report(path,report,rows,results,state)
+            if source is not None:
+                source['resume_results']=source.get('resume_results',[])+[
+                    dict(result,continuation_report=path.name) for result in results]
+                save_report(upload.ROOT/'logs'/source_report,source,source['rows'],
+                    source.get('results',[])+source['resume_results'],state,update_results=False)
             print('\n本轮已配置目标的新素材结果：',flush=True)
             for row in final:
                 print(row['account']+'/'+str(row['target']),row['filename'] or '-',row['status'],row['reason'],flush=True)
@@ -249,6 +306,8 @@ def run(publish=False,ai_label=None,prepare_new=False,close_windows=False,target
             print('本轮报告：',path,flush=True)
             print('结果汇总：',path.with_suffix('.csv'),flush=True)
         eligible=[row for row in rows if row['eligible']]
+        if source is not None and rows and all(state.get(row['key'],{}).get('status')=='published' for row in rows):
+            return 0
         return 0 if eligible and not any(row['status']=='invalid' for row in rows) and all(
             state.get(row['key'],{}).get('status')=='published' for row in eligible) else 3
 
@@ -260,13 +319,14 @@ def main():
     parser.add_argument('--prepare-new',action='store_true',help='新增目标首次预览检查完成后自动启用并发布')
     parser.add_argument('--close-windows',action='store_true',help='正常请求关闭当前有新素材的账号窗口，不强制结束进程')
     parser.add_argument('--targets',help='仅处理指定目标，例如 fb17/personal,fb22/personal,fb23/personal')
+    parser.add_argument('--source-report',help='仅续发此原批次的确切视频，填写 logs 内的 available-today 报告文件名')
     args=parser.parse_args()
     if args.targets:
         from diagnose_personal_identity import parse_target_pairs
         targets=parse_target_pairs(args.targets)
     else:
         targets=None
-    return run(args.run,args.ai_label,args.prepare_new,args.close_windows,targets)
+    return run(args.run,args.ai_label,args.prepare_new,args.close_windows,targets,args.source_report)
 
 
 if __name__=='__main__':
