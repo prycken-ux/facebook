@@ -41,15 +41,14 @@ def one_source(report,pair):
 def preflight():
     original_path,original=load_bound_round(ORIGINAL_START)
     path,source=confirmed.load_expanded_report(EXPANDED)
-    if (len(source['rows'])!=7 or {(row.get('account'),row.get('target')) for row in source['rows']}
-            !=set(NEW_SUCCESS+RETRY)):
-        raise ValueError('原新增账号批次不是本次核实的七个目标，未扩大确认范围')
+    # The expanded driver reports every configured target, including no-new
+    # rows. Validate the selected material without requiring a seven-row file.
+    for pair in NEW_SUCCESS+RETRY:
+        one_source(source,pair)
     config=upload.read_json(upload.CONFIG,{})
     state=upload.read_json(upload.ROOT/'logs/publish_state.json',{})
     confirmed.confirmation_plan(config,state,original,ORIGINAL_SUCCESS)
     confirmed.confirmation_plan(config,state,source,NEW_SUCCESS,allow_unrecorded=True)
-    for pair in RETRY:
-        one_source(source,pair)
     common=(upload.ROOT/'common_caption_today.txt').read_text(encoding='utf-8-sig').strip()
     if source['caption_text'].strip()!=common or source['ai_label']!='off':
         raise ValueError('原文案或实拍不含 AI 的原批次设置不一致')

@@ -48,6 +48,16 @@ class FinalizeTests(unittest.TestCase):
             self.new_entries[account]=entry
             self.new_videos[account]=video
             self.new_keys[account]=key
+        # Match the real expanded report: 7 material rows + 14 original
+        # no-new rows + 8 additional Page no-new rows = 29 target rows.
+        rows.extend(dict(account=e['account'],target=e['target'],url=e['url'],filename='',key=None,
+            status='no_new_video',eligible=False,reason='no unrecorded material') for e in self.entries)
+        for n in range(2,10):
+            entry=dict(account='fb10',target=f'page{n:02d}',type='page',name=f'Extra Page {n}',
+                url=f'https://www.facebook.com/profile.php?id={40000+n}',enabled=False)
+            self.config['targets'].append(entry)
+            rows.append(dict(account=entry['account'],target=entry['target'],url=entry['url'],filename='',key=None,
+                status='no_new_video',eligible=False,reason='no unrecorded material'))
         upload.save_json(upload.CONFIG,self.config)
         upload.save_json(self.state_path,self.state)
         self.expanded=dict(schema='available-current-publication-v1',created='2026-10-26T18:22:38+08:00',
@@ -84,6 +94,7 @@ class FinalizeTests(unittest.TestCase):
         return stack
 
     def test_real_ledger_pipeline_confirms_eighteen_and_posts_only_two_then_repeats_safely(self):
+        self.assertEqual(len(self.expanded['rows']),29)
         historical=copy.deepcopy(self.state['historical_review'])
         with self.browser():
             self.assertEqual(final.run(True,True,True),0)
@@ -106,6 +117,39 @@ class FinalizeTests(unittest.TestCase):
             self.assertEqual(final.run(True,True,True),0)
             self.button.click.assert_not_called()
         self.assertEqual(self.state_path.read_bytes(),before)
+
+    def test_missing_or_duplicate_selected_target_stops_before_any_record_update(self):
+        before=self.state_path.read_bytes()
+        for rows in ([r for r in self.expanded['rows'] if r.get('account')!='fb17'],
+                     self.expanded['rows']+[copy.deepcopy(self.expanded['rows'][0])]):
+            upload.save_json(self.expanded_path,dict(self.expanded,rows=rows))
+            with patch.object(upload,'run_entry') as publish,self.assertRaisesRegex(ValueError,'唯一'):
+                final.run(True,True)
+            publish.assert_not_called()
+            self.assertEqual(self.state_path.read_bytes(),before)
+
+    def test_other_reported_material_is_not_confirmed_archived_or_posted(self):
+        video=upload.inbox_for(self.extra)/'unrelated.mp4'
+        video.parent.mkdir(parents=True)
+        video.write_bytes(b'unrelated material outside the user verification')
+        video.with_suffix('.txt').write_text('Keep unrelated caption')
+        key=upload.job_key(self.extra,video)
+        state=copy.deepcopy(self.state)
+        record=dict(account=self.extra['account'],target=self.extra['target'],url=self.extra['url'],
+                    video=str(video),status='needs_review',error='unrelated old outcome')
+        state[key]=record
+        upload.save_json(self.state_path,state)
+        extra_row=dict(account=self.extra['account'],target=self.extra['target'],url=self.extra['url'],
+            filename=video.name,key=key,status='needs_review',eligible=False,reason='unrelated')
+        payload=copy.deepcopy(self.expanded)
+        payload['rows'].append(extra_row)
+        upload.save_json(self.expanded_path,payload)
+        with self.browser():
+            self.assertEqual(final.run(True,True),0)
+            self.assertEqual(self.button.click.call_count,2)
+        self.assertEqual(upload.read_json(self.state_path,{})[key],record)
+        self.assertTrue(video.exists())
+        self.assertEqual(video.with_suffix('.txt').read_text(),'Keep unrelated caption')
 
     def test_fb15_unknown_retry_is_once_only_and_keeps_new_unknown_on_repeat(self):
         with self.browser([upload.ReceiptNeedsReview('new uncertain receipt'),'Your reel is published.']):
