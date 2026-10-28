@@ -14,7 +14,7 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 ROOT = Path(__file__).resolve().parent
 CONFIG = ROOT / "upload_config.json"
-VERSION = "2.31"
+VERSION = "2.32"
 SUCCESS_PATTERN = (
     r"^(?:Your reel (?:is(?: now)?|has been|was) (?:successfully )?"
     r"(?:published|shared|posted)(?: successfully)?|"
@@ -565,6 +565,10 @@ def ensure_page_identity(page, entry, timeout_ms=90000, picker_delay_ms=2000):
         page.wait_for_timeout(min(250, max(1, (deadline - time.monotonic()) * 1000)))
 
 
+class PageActorActive(RuntimeError):
+    pass
+
+
 def personal_actor_fingerprint(page, entry):
     # Compare identity metadata only in memory; no cookie values enter logs.
     try:
@@ -576,7 +580,7 @@ def personal_actor_fingerprint(page, entry):
     if len(people) != 1 or not next(iter(people)).isdecimal():
         raise RuntimeError("无法确认个人账号登录身份，请在该账号窗口重新检查登录。")
     if actors and actors != people:
-        raise RuntimeError("当前仍是公共主页身份，请先手动切回登录者个人主页；未选择视频或点击发布。")
+        raise PageActorActive("当前仍是公共主页身份，请先手动切回登录者个人主页；未选择视频或点击发布。")
     target = target_key(entry["url"])
     if target.startswith("id:") and people != {target[3:]}:
         raise RuntimeError("登录的个人账号与目标个人主页不一致；未选择视频或点击发布。")
@@ -614,7 +618,14 @@ def verify_personal_vanity_owner(page, entry, marker):
 
 def ensure_personal_identity(page, entry):
     checkpoint(page)
-    marker = personal_actor_fingerprint(page, entry)
+    try:
+        marker = personal_actor_fingerprint(page, entry)
+    except PageActorActive:
+        if not entry.get('auto_switch_personal', False):
+            raise
+        from page_profile_switch import switch_personal_from_picker
+        switch_personal_from_picker(page, entry)
+        marker = personal_actor_fingerprint(page, entry)
     wait_profile_name(page, entry)
     if target_key(page.url) != target_key(entry["url"]):
         raise RuntimeError("浏览器网址与目标个人主页不同；未选择视频或点击发布。")

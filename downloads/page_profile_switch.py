@@ -109,20 +109,8 @@ def account_control(page):
     return visible[0] if visible else None
 
 
-def switch_page_from_picker(page, entry, timeout_ms=60000):
-    """Choose one exact configured Page name, then require its numeric actor ID.
-
-    The visible picker opens under the account avatar. Name selection authorizes
-    a switch attempt only: successful proof still requires unchanged login owner,
-    the target's exact i_user ID, and navigation back to the configured URL.
-    """
-    upload.checkpoint(page)
-    if entry.get('type') != 'page' or not upload.target_key(entry['url']).startswith('id:'):
-        raise RuntimeError('公共主页选择列表只用于已配置的数字 ID 公共主页。')
-    if upload.target_key(page.url) != upload.target_key(entry['url']):
-        raise RuntimeError('当前网址不是待核验的公共主页，未打开切换列表。')
-    marker = login_marker(page)
-    deadline = time.monotonic() + timeout_ms / 1000
+def select_configured_profile(page, entry, marker, deadline):
+    """Attempt an exact-name selection; callers must prove numeric identity."""
     dialog = picker_dialog(page)
     if dialog is None:
         # Do not toggle an already-open account menu closed.
@@ -150,6 +138,18 @@ def switch_page_from_picker(page, entry, timeout_ms=60000):
         raise RuntimeError('选择公共主页前登录者身份变化，已停止。')
     print('从个人主页和公共主页列表切换：', entry['name'], flush=True)
     target.click(timeout=remaining(deadline))
+
+
+def switch_page_from_picker(page, entry, timeout_ms=60000):
+    """Choose a configured Page and require its exact numeric actor identity."""
+    upload.checkpoint(page)
+    if entry.get('type') != 'page' or not upload.target_key(entry['url']).startswith('id:'):
+        raise RuntimeError('公共主页选择列表只用于已配置的数字 ID 公共主页。')
+    if upload.target_key(page.url) != upload.target_key(entry['url']):
+        raise RuntimeError('当前网址不是待核验的公共主页，未打开切换列表。')
+    marker = login_marker(page)
+    deadline = time.monotonic() + timeout_ms / 1000
+    select_configured_profile(page, entry, marker, deadline)
     while True:
         upload.checkpoint(page)
         if login_marker(page) != marker:
@@ -183,4 +183,44 @@ def switch_page_from_picker(page, entry, timeout_ms=60000):
     if (login_marker(page) != marker or not upload.page_actor_matches(page, entry)
             or upload.target_key(page.url) != upload.target_key(entry['url'])):
         raise RuntimeError('主页内容加载后身份或网址变化，未选择视频或点击发布。')
+    return True
+
+
+def switch_personal_from_picker(page, entry, timeout_ms=60000):
+    """Switch back to the original login owner; vanity ownership stays mandatory."""
+    upload.checkpoint(page)
+    upload.validate_entry(entry)
+    if entry.get('type')!='personal' or not entry.get('auto_switch_personal'):
+        raise RuntimeError('自动切回个人主页只用于本次明确启用的个人主页任务')
+    expected=upload.target_key(entry['url'])
+    if upload.target_key(page.url)!=expected:
+        raise RuntimeError('当前网址不是配置的个人主页，未切换')
+    marker=login_marker(page)
+    if expected.startswith('id:') and marker!=hashlib.sha256(('person:'+expected[3:]).encode('ascii')).hexdigest():
+        raise RuntimeError('登录者与配置的个人主页数字 ID 不一致，未打开切换列表')
+    deadline=time.monotonic()+timeout_ms/1000
+    select_configured_profile(page,entry,marker,deadline)
+    while True:
+        upload.checkpoint(page)
+        if login_marker(page)!=marker:
+            raise RuntimeError('切回个人主页期间登录者变化，已停止')
+        personal=False
+        try:
+            upload.personal_actor_fingerprint(page,entry)
+            personal=True
+        except upload.PageActorActive:
+            pass
+        if personal and picker_dialog(page) is None:
+            break
+        page.wait_for_timeout(min(200,remaining(deadline)))
+    try:
+        at_target=upload.target_key(page.url)==expected
+    except ValueError:
+        at_target=False
+    if not at_target:
+        page.goto(upload.english_url(entry['url']),wait_until='commit',timeout=remaining(deadline,30000))
+    upload.checkpoint(page)
+    if login_marker(page)!=marker or upload.target_key(page.url)!=expected:
+        raise RuntimeError('切回个人主页后登录者或链接不一致，已停止')
+    upload.personal_actor_fingerprint(page,entry)
     return True
