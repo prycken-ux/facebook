@@ -9,6 +9,7 @@ from datetime import datetime
 import fb_upload as upload
 import resume_fourteen_round as rounds
 from add_fb_accounts import locked
+from diagnose_personal_identity import close_selected_window
 
 ALLOWED = {'preparing', 'posting', 'needs_review', 'failed_before_post'}
 
@@ -41,7 +42,8 @@ def select_pair(entry, state, row, old):
     return filename
 
 
-def retry_one(pair, source_path, report, verified=False, confirmation_id='first-user-verification'):
+def retry_one(pair, source_path, report, verified=False, confirmation_id='first-user-verification',
+              direct_publication=False, close_windows=False):
     if not verified:
         raise ValueError('只有本次已在 Facebook 核实对应视频不存在，才能使用 --verified-absent。')
     if not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', confirmation_id):
@@ -58,7 +60,15 @@ def retry_one(pair, source_path, report, verified=False, confirmation_id='first-
             raise ValueError('目标配置缺失或重复。')
         entry = entries[0]
         upload.validate_entry(entry)
-        if not entry.get('enabled') or not entry.get('prepared_at'):
+        if direct_publication:
+            if (report.get('schema')!='fb10-pages-direct-publication-v1' or pair[0]!='fb10'
+                    or entry.get('type')!='page' or upload.VERSION!='2.31'
+                    or upload.target_key(row.get('url',''))!=upload.target_key(entry['url'])
+                    or report.get('ai_label') not in {'off','on'}
+                    or not report.get('caption_text','').strip()):
+                raise ValueError('缺少本轮公共主页直接发布的明确授权与确切来源')
+            entry=dict(entry,enabled=True)
+        elif not entry.get('enabled') or not entry.get('prepared_at'):
             raise ValueError('目标尚未完成准备或启用。')
         state_path = upload.ROOT / 'logs/publish_state.json'
         state = upload.read_json(state_path, {})
@@ -89,13 +99,28 @@ def retry_one(pair, source_path, report, verified=False, confirmation_id='first-
             print('本轮此视频已记录成功，未重发：', '/'.join(pair), flush=True)
             return False
         filename = select_pair(entry, state, row, old)
+        def validate_direct(current):
+            if direct_publication:
+                common=(upload.ROOT/'common_caption_today.txt').read_text(encoding='utf-8-sig').strip()
+                if common!=report['caption_text'].strip():
+                    raise ValueError('统一文案与原发布批次不同，未补发')
+                if any(other_key!=key and (record.get('account'),record.get('target'))==pair
+                       and record.get('status') in {'preparing','posting','needs_review'}
+                       for other_key,record in current.items()):
+                    raise ValueError('此主页还有另一条待核实任务，未解除任何限制')
+                if old.get('ai_label_requested') is not (report['ai_label']=='on'):
+                    raise ValueError('原任务 AI 设置与原批次不一致，未补发')
+        validate_direct(state)
         # Existing live worker/profile/login failures must leave the original
         # uncertain record intact. The upload lock is held for this check.
+        if close_windows:
+            close_selected_window(pair[0])
         upload.check_identity(entry)
         actual = upload.read_json(state_path, {})
         if actual.get(key) != old:
             raise ValueError('身份核验期间任务记录变化，未解除原限制。')
         filename = select_pair(entry, actual, row, old)
+        validate_direct(actual)
         backup = upload.ROOT / 'backups' / ('verified-current-absent-' + datetime.now().strftime('%Y%m%d-%H%M%S-%f'))
         backup.mkdir(parents=True, exist_ok=False)
         shutil.copy2(state_path, backup / state_path.name)
@@ -120,7 +145,7 @@ def retry_one(pair, source_path, report, verified=False, confirmation_id='first-
         try:
             return upload.run_entry(entry, replacement, state_path, True, filename=filename,
                                     ai_label_override=report['ai_label'] == 'on',
-                                    new_video_with_old_review=True, expected_job_key=key)
+                                    new_video_with_old_review=not direct_publication, expected_job_key=key)
         finally:
             current = upload.read_json(state_path, {})
             if key not in current:
