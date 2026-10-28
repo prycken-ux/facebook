@@ -14,7 +14,7 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 ROOT = Path(__file__).resolve().parent
 CONFIG = ROOT / "upload_config.json"
-VERSION = "2.30"
+VERSION = "2.31"
 SUCCESS_PATTERN = (
     r"^(?:Your reel (?:is(?: now)?|has been|was) (?:successfully )?"
     r"(?:published|shared|posted)(?: successfully)?|"
@@ -1141,8 +1141,10 @@ def run_entry(entry, state, state_path, publish, filename=None, review_before_po
                         raise RuntimeError("核对期间源视频内容发生变化，未点击 Post。")
                     record["preview_review_method"] = "user_entered_POST"
                     record["preview_reviewed_at"] = datetime.now().astimezone().isoformat()
-                if new_video_with_old_review and job_key(entry, video) != key:
+                if (new_video_with_old_review or expected_job_key is not None) and job_key(entry, video) != key:
                     raise RuntimeError('准备期间源视频内容变化，未点击发布。')
+                if expected_job_key is not None and caption.read_text(encoding='utf-8-sig').strip() != text:
+                    raise RuntimeError('准备期间同名文案变化，未点击发布。')
                 install_receipt_watch(page)
                 recheck_publish_identity(page, entry, identity_proof)
                 # Persist the intent BEFORE clicking, so crashes cannot retry the Post.

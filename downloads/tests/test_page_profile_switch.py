@@ -240,7 +240,7 @@ class ProfilePickerTests(unittest.TestCase):
             self.page.get_by_role('heading',name=self.entry['name'],exact=True).wait_for()
             with patch.object(self.page,'goto',wraps=self.page.goto) as navigate:
                 self.assertTrue(switcher.switch_page_from_picker(self.page,self.entry,timeout_ms=3000))
-                self.assertEqual(navigate.call_args.kwargs['wait_until'],'commit')
+                navigate.assert_not_called()
             self.assertEqual(self.page.evaluate('document.readyState'),'loading')
             self.assertTrue(upload.page_actor_matches(self.page,self.entry))
             self.assertEqual(self.count('post'),0)
@@ -248,6 +248,27 @@ class ProfilePickerTests(unittest.TestCase):
             for route in blocked:
                 route.fulfill(content_type='application/javascript',body='')
             self.page.wait_for_load_state('domcontentloaded')
+
+    def test_switch_already_at_exact_target_never_reloads_even_if_goto_would_timeout(self):
+        self.recorded_account_header()
+        self.visit()
+        with patch.object(self.page,'goto',side_effect=AssertionError('redundant navigation must not happen')) as navigate:
+            self.assertTrue(switcher.switch_page_from_picker(self.page,self.entry,timeout_ms=1500))
+        navigate.assert_not_called()
+        self.assertEqual(self.count('pick'),1)
+        self.assertEqual(self.count('post'),0)
+
+    def test_switch_landing_on_home_returns_to_configured_page_once(self):
+        self.recorded_account_header()
+        self.html=self.html.replace("document.querySelector('#picker').hidden=true;}",
+                                    "document.querySelector('#picker').hidden=true;location.href='/';}")
+        self.visit()
+        with patch.object(self.page,'goto',wraps=self.page.goto) as navigate:
+            self.assertTrue(switcher.switch_page_from_picker(self.page,self.entry,timeout_ms=3000))
+        self.assertEqual(navigate.call_count,1)
+        self.assertEqual(navigate.call_args.kwargs['wait_until'],'commit')
+        self.assertEqual(upload.target_key(self.page.url),upload.target_key(self.entry['url']))
+        self.assertEqual(self.count('post'),0)
 
     def test_profile_ui_load_must_complete_even_after_correct_actor_switch(self):
         self.recorded_account_header()

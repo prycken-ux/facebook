@@ -164,10 +164,15 @@ def switch_page_from_picker(page, entry, timeout_ms=60000):
         if actor_matches and picker_dialog(page) is None:
             break
         page.wait_for_timeout(min(200, remaining(deadline)))
-    # A switched Page can already be usable while DOMContentLoaded is held up
-    # by other resources. Wait for navigation commit, then prove the actual
-    # profile UI and identity instead of extending the picker timeout.
-    page.goto(upload.english_url(entry['url']), wait_until='commit', timeout=remaining(deadline, 30000))
+    # Switching commonly keeps the configured Page open. Reloading that same
+    # route can collide with the switch's own navigation and time out despite
+    # the correct actor and usable UI. Navigate only if the switch left it.
+    try:
+        at_target = upload.target_key(page.url) == upload.target_key(entry['url'])
+    except ValueError:
+        at_target = False
+    if not at_target:
+        page.goto(upload.english_url(entry['url']), wait_until='commit', timeout=remaining(deadline, 30000))
     upload.checkpoint(page)
     if login_marker(page) != marker or not upload.page_actor_matches(page, entry):
         raise RuntimeError('返回目标公共主页后身份核对失败，未选择视频或点击发布。')
