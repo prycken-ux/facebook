@@ -1,0 +1,20 @@
+fb10 实际头像标签修复 v1
+
+依据用户上传的新版顶部诊断包：实际头像 DIV role=button 的 aria-label 是 Account, your profile，位于 Account Controls and Settings 导航内，包含 Your profile SVG。
+旧匹配支持 Account 和 Your profile，但遗漏这个组合完整标签，导致自动切换停在账号头像入口未加载。
+修复增加该完整标签；当角色定位没有结果时，仅允许实际记录的 role=button + 完整 aria-label 精确属性作为可见 DOM 后备。
+仍排除内容区、帖子、对话框及菜单中的冒名控件；不按头像位置、图片序号或坐标猜点，不选择 Notifications 或 Facebook menu。
+
+适用于已安装 prepare-fb10-pages-auto-v2.zip 的电脑。本包只替换 page_profile_switch.py，不修改核心、账号配置、媒体或发布记录。
+若旧任务仍在 READY / SKIP / CANCEL 提示，先 CANCEL 正常退出；不要覆盖仍运行的任务，不删除任务锁。
+更新后继续：
+.venv\Scripts\python.exe prepare_fb10_pages.py --prepare --ai-label off --use-common-caption --close-windows
+
+自动通过头像 → See all profiles → 已配置的确切主页名称后，仍必须核对登录者未变化、数字主页身份正确、返回确切配置链接后身份保持正确。
+相同名称但错误 ID、多个候选、登录者变化或安全验证均不通过，不凭名称或管理侧栏放行。
+成功自动核验无需 READY；未知布局或其他错误仍保留人工处理及新的诊断记录。
+预览阶段仍需核对画面、文案、Public 和 AI 关闭，再按回车。此工具不点击 Post，不把准备状态当发布成功，不重发已有任务。
+
+验证：76 项本地浏览器、头像列表、身份修复、预览和采集测试通过。
+包含根据实际顶部元数据重建的组合标签/相邻通知按钮场景，自动到达目标数字 ID、通知及 Post 零点击；可见但未暴露角色的精确属性后备、多个入口拒绝、内容区假入口拒绝、错误 ID 不通过。
+实际 Windows/Facebook 运行结果仍以本机输出为准；本更新不代表十个主页都已准备或发布。

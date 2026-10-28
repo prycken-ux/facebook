@@ -167,6 +167,68 @@ class ProfilePickerTests(unittest.TestCase):
         self.assertEqual(self.count('pick'), 1)
         self.assertEqual(self.count('post'), 0)
 
+    def recorded_account_header(self,aria_hidden=False):
+        # Reconstructed from the supplied top-controls metadata; no account
+        # names, URLs, screenshots or session data are committed as fixtures.
+        header='''<div role="navigation" aria-label="Account Controls and Settings" %s>
+          <div role="button" aria-label="Facebook menu" aria-haspopup="dialog" onclick="bump('unrelated')"></div>
+          <div role="button" aria-label="Notifications" aria-haspopup="dialog" onclick="bump('notifications')"></div>
+          <div role="button" aria-label="Account, your profile" aria-haspopup="dialog" aria-expanded="false"
+               onclick="bump('account');document.querySelector('#account').hidden=false">
+            <svg role="img" aria-label="Your profile"><image /></svg>
+          </div></div>''' % ('aria-hidden="true"' if aria_hidden else '')
+        start=self.html.index('<header')
+        end=self.html.index('</header>')+len('</header>')
+        self.html=self.html[:start]+header+self.html[end:]
+
+    def test_recorded_account_comma_your_profile_switches_without_notification_click(self):
+        self.recorded_account_header()
+        self.visit()
+        proof=upload.ensure_page_identity(self.page,self.entry,timeout_ms=2500,picker_delay_ms=0)
+        self.assertEqual(proof['switch_method'],'profile_picker')
+        self.assertEqual(proof['method'],'page_actor_id_match')
+        self.assertEqual(self.count('account'),1)
+        self.assertEqual(self.count('seeall'),1)
+        self.assertEqual(self.count('pick'),1)
+        self.assertEqual(self.count('notifications'),0)
+        self.assertEqual(self.count('unrelated'),0)
+        self.assertEqual(self.count('post'),0)
+
+    def test_recorded_visible_avatar_with_missing_accessibility_role_uses_exact_attribute(self):
+        self.recorded_account_header(aria_hidden=True)
+        self.visit()
+        self.assertEqual(self.page.get_by_role('button',name='Account, your profile',exact=True).count(),0)
+        self.assertTrue(switcher.switch_page_from_picker(self.page,self.entry,timeout_ms=1500))
+        self.assertEqual(self.count('account'),1)
+        self.assertEqual(self.count('notifications'),0)
+        self.assertEqual(self.count('post'),0)
+
+    def test_recorded_attribute_fallback_refuses_two_visible_avatars(self):
+        self.recorded_account_header(aria_hidden=True)
+        self.html=self.html.replace('</svg>', '</svg><div role="button" aria-label="Account, your profile">Second avatar</div>')
+        self.visit()
+        with self.assertRaisesRegex(RuntimeError,'多个可见入口'):
+            switcher.switch_page_from_picker(self.page,self.entry,timeout_ms=600)
+        self.assertEqual(self.count('account'),0)
+        self.assertEqual(self.count('pick'),0)
+
+    def test_recorded_label_in_feed_cannot_substitute_for_missing_avatar(self):
+        self.html=self.html.replace('aria-label="Your profile"','aria-label="Unknown control"').replace(
+            '<article>', '<article aria-hidden="true"><div role="button" aria-label="Account, your profile" onclick="bump(\'post\')">Misleading button</div>')
+        self.visit()
+        with self.assertRaisesRegex(RuntimeError,'未加载|切换超时'):
+            switcher.switch_page_from_picker(self.page,self.entry,timeout_ms=600)
+        self.assertEqual(self.count('post'),0)
+
+    def test_recorded_account_label_still_requires_exact_actor_and_same_login(self):
+        self.recorded_account_header()
+        self.html=self.html.replace('onclick="pick(\'1001\')"','onclick="pick(\'1002\')"')
+        self.visit()
+        with self.assertRaisesRegex(RuntimeError,'切换超时'):
+            switcher.switch_page_from_picker(self.page,self.entry,timeout_ms=600)
+        self.assertEqual(self.count('pick'),1)
+        self.assertEqual(self.count('post'),0)
+
     def test_account_label_with_current_profile_name_is_supported(self):
         self.html = self.html.replace('aria-label="Your profile"', 'aria-label="Your profile: Current Page"')
         self.visit()
