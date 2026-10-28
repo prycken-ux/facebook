@@ -20,6 +20,41 @@ CONTROLS_JS = r'''root => Array.from(root.querySelectorAll('button,a,[role="butt
     images:Array.from(el.querySelectorAll('img,svg[role="img"]')).slice(0,3).map(img=>({
         label:img.getAttribute('aria-label'),alt:img.getAttribute('alt'),title:img.getAttribute('title')}))}))'''
 
+# The supplied live failure has a Notifications dialog but no banner role.
+# Record the visible top strip independently of document roles. Coordinates are
+# evidence only: nothing here clicks, ranks an avatar, or changes identity.
+TOP_CONTROLS_JS = r'''root => {
+    const norm = value => (value || '').replace(/\s+/g,' ').trim().slice(0,160);
+    const nodes = Array.from(root.querySelectorAll(
+        'button,a,[role="button"],[role="link"],[aria-haspopup],[tabindex="0"]'));
+    const metadata = el => ({tag:el.tagName,role:el.getAttribute('role'),
+        label:el.getAttribute('aria-label'),title:el.getAttribute('title'),
+        testId:el.getAttribute('data-testid'),hasPopup:el.getAttribute('aria-haspopup'),
+        expanded:el.getAttribute('aria-expanded')});
+    return {viewport:{width:innerWidth,height:innerHeight},controls:nodes.filter(el => {
+        const rect=el.getBoundingClientRect(),style=getComputedStyle(el);
+        return rect.width>0 && rect.height>0 && rect.right>0 && rect.left<innerWidth &&
+            rect.top>=0 && rect.top<Math.min(180,innerHeight*0.25) &&
+            rect.bottom<=Math.max(240,innerHeight*0.35) &&
+            style.visibility!=='hidden' && style.display!=='none';
+    }).slice(0,120).map(el => {
+        const rect=el.getBoundingClientRect();
+        const labelIds=(el.getAttribute('aria-labelledby')||'').split(/\s+/).filter(Boolean);
+        const ancestors=[];
+        for(let parent=el.parentElement;parent && parent!==document.body && ancestors.length<3;parent=parent.parentElement)
+            ancestors.push(metadata(parent));
+        return {...metadata(el),text:norm(el.innerText),
+            labelledByText:norm(labelIds.map(id=>document.getElementById(id)?.textContent||'').join(' ')),
+            rect:{x:Math.round(rect.x),y:Math.round(rect.y),width:Math.round(rect.width),height:Math.round(rect.height)},
+            inDialog:!!el.closest('[role="dialog"],[role="menu"]'),
+            inContent:!!el.closest('main,[role="main"],article,[role="article"],[role="feed"]'),
+            ancestors,images:Array.from(el.querySelectorAll('img,image,svg')).slice(0,4).map(img=>({
+                tag:img.tagName,role:img.getAttribute('role'),label:img.getAttribute('aria-label'),
+                alt:img.getAttribute('alt'),title:img.getAttribute('title'),
+                svgTitle:norm(img.querySelector('title')?.textContent)}))};
+    })};
+}'''
+
 
 def clean_aria(snapshot):
     # Link destinations and incidental URLs are unnecessary for locating controls.
@@ -50,7 +85,21 @@ def capture(page, folder, label):
             except Exception:
                 sections.append(dict(role=role,index=index,unavailable=True))
     upload.save_json(folder / (label + '-controls.json'), sections)
+    top=page.locator('body').evaluate(TOP_CONTROLS_JS,timeout=5000)
+    upload.save_json(folder / (label + '-top-controls.json'), top)
     page.screenshot(path=str(folder / (label + '.png')), timeout=10000)
+
+
+def collect_stages(page,folder,automatic=False,read=input):
+    capture(page,folder,'initial')
+    if automatic:
+        for seconds,total in ((5,5),(10,15)):
+            print('自动采集顶部控件，等待界面加载；无需输入 READY。',flush=True)
+            page.wait_for_timeout(seconds*1000)
+            capture(page,folder,'loaded-'+str(total)+'s')
+    else:
+        wait_for_picker(page,read=read)
+        capture(page,folder,'picker')
 
 
 def wait_for_picker(page, read=input):
@@ -81,6 +130,7 @@ def main():
     parser.add_argument('--account', default='fb10')
     parser.add_argument('--target', default='page04')
     parser.add_argument('--close-windows', action='store_true')
+    parser.add_argument('--automatic', action='store_true',help='自动采集顶部区域及加载后控件，不等待 READY，不点击头像或切换主页')
     args = parser.parse_args()
     if not re.fullmatch(r'fb(?:0[1-9]|[1-9][0-9]+)',args.account) or not re.fullmatch(r'page[0-9]{2,}',args.target):
         raise ValueError('请指定有效的账号和公共主页编号。')
@@ -96,14 +146,12 @@ def main():
             context = upload.launch_context(playwright, entry)
             try:
                 page = context.pages[0] if context.pages else context.new_page()
-                page.goto(upload.english_url(entry['url']),wait_until='domcontentloaded',timeout=90000)
-                capture(page, folder, 'initial')
-                wait_for_picker(page)
-                capture(page, folder, 'picker')
+                upload.navigate_profile(page,entry['url'])
+                collect_stages(page,folder,automatic=args.automatic)
                 # If no dialog is exposed, collect only control labels globally;
                 # do not serialize form values, messages, links or raw DOM.
                 dialogs = page.get_by_role('dialog')
-                if not any(dialogs.nth(i).is_visible() for i in range(dialogs.count())):
+                if not args.automatic and not any(dialogs.nth(i).is_visible() for i in range(dialogs.count())):
                     upload.save_json(folder/'picker-page-controls.json',page.locator('body').evaluate(CONTROLS_JS,timeout=5000))
             finally:
                 context.close()

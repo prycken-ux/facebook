@@ -1,0 +1,22 @@
+顶部头像入口自动采集 v2
+
+实际用户上传的 automatic-failure-controls.json 只包含 Notifications 对话框，没有 banner/menu。
+旧采集器依赖 banner/menu/dialog 角色，因此不能从这些文件得出顶部头像的真实标签或判定已修好自动切换。
+本更新补充独立于 banner 的可见顶部控件记录，包括按钮/链接/弹出控件/可聚焦元素的标签、引用标签文本、图标标签、父层角色及视口位置。
+位置仅作为诊断信息；程序不会据此点击、猜选头像或切换账号。
+只记录界面元数据，不导出链接目的地、图片 URL、输入框值、Cookie、请求头或原始 DOM。
+
+若旧批次仍在 READY / SKIP / CANCEL 提示处，先输入 CANCEL 并回车，让原任务正常释放锁。
+不要在旧进程仍运行时覆盖脚本，不删除任务锁。
+
+运行：
+.venv\Scripts\python.exe capture_profile_switch_ui.py --account fb10 --target page01 --automatic --close-windows
+
+复用原 fb10 浏览器资料，只导航到已配置的 page01；按初始、加载5秒、加载15秒保存顶部控件与截图。
+全程不等待 READY、不选择头像/通知/主页、不选择视频、不启用目标、不点击 Post，不改发布记录。
+正常请求关闭已有 fb10 窗口，不强制结束浏览器进程。其他账号不处理。
+自动模式保留旧人工展开列表的采集模式，原命令未加 --automatic 时仍按旧方式工作。
+
+完成后上传完整 E:\FB-AutoUpload\logs\profile-switch-ui-fb10.zip，不用解压。
+其中 initial/loaded-5s/loaded-15s-top-controls.json 直接包含原先漏掉的顶部控件；同名 png 为对应视口截图。
+这些文件用于准确适配实际头像入口，本更新本身不宣称已修好自动切换或已发布。
