@@ -104,7 +104,7 @@ class PagePreparationTests(unittest.TestCase):
             self.assertEqual(app.run(True,False,'off',True,True),3) # only 2/10 have videos
             self.assertEqual(self.prepare.call_count,2)
             self.assertEqual(self.identity.call_count,2)
-            self.assertTrue(all(call.kwargs=={'auto_first':True} for call in self.identity.call_args_list))
+            self.assertTrue(all(call.kwargs=={'auto_first':True,'automatic_only':True} for call in self.identity.call_args_list))
             self.close.assert_called_once_with('fb10')
             self.button.click.assert_not_called()
             self.receipt.assert_not_called()
@@ -199,7 +199,7 @@ class PagePreparationTests(unittest.TestCase):
             self.prepare.assert_not_called()
             self.button.click.assert_not_called()
         self.assertEqual(upload.CONFIG.read_bytes(),before)
-        self.assertTrue(all(row['status']=='manual_skipped' for row in self.report()['results']))
+        self.assertTrue(all(row['status']=='needs_check' for row in self.report()['results']))
 
     def test_changed_video_after_identity_check_is_rejected_without_other_file_substitution(self):
         def repair(entry,**options):

@@ -164,10 +164,18 @@ def switch_page_from_picker(page, entry, timeout_ms=60000):
         if actor_matches and picker_dialog(page) is None:
             break
         page.wait_for_timeout(min(200, remaining(deadline)))
-    page.goto(upload.english_url(entry['url']), wait_until='domcontentloaded', timeout=remaining(deadline, 90000))
+    # A switched Page can already be usable while DOMContentLoaded is held up
+    # by other resources. Wait for navigation commit, then prove the actual
+    # profile UI and identity instead of extending the picker timeout.
+    page.goto(upload.english_url(entry['url']), wait_until='commit', timeout=remaining(deadline, 30000))
     upload.checkpoint(page)
     if login_marker(page) != marker or not upload.page_actor_matches(page, entry):
         raise RuntimeError('返回目标公共主页后身份核对失败，未选择视频或点击发布。')
     if upload.target_key(page.url) != upload.target_key(entry['url']):
         raise RuntimeError('切换后的公共主页网址与配置不一致。')
+    upload.wait_profile_name(page, entry, timeout_ms=45000)
+    upload.checkpoint(page)
+    if (login_marker(page) != marker or not upload.page_actor_matches(page, entry)
+            or upload.target_key(page.url) != upload.target_key(entry['url'])):
+        raise RuntimeError('主页内容加载后身份或网址变化，未选择视频或点击发布。')
     return True

@@ -2,6 +2,7 @@
 import contextlib
 import io
 import unittest
+from unittest.mock import patch
 from urllib.parse import urlparse
 
 from playwright.sync_api import sync_playwright
@@ -227,6 +228,43 @@ class ProfilePickerTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,'切换超时'):
             switcher.switch_page_from_picker(self.page,self.entry,timeout_ms=600)
         self.assertEqual(self.count('pick'),1)
+        self.assertEqual(self.count('post'),0)
+
+    def test_return_to_profile_uses_commit_and_actual_ui_when_domcontentloaded_is_blocked(self):
+        self.recorded_account_header()
+        self.html += '<script src="/blocked-page-script.js"></script>'
+        blocked=[]
+        self.context.route('**/blocked-page-script.js',lambda route:blocked.append(route))
+        try:
+            self.page.goto(self.entry['url'],wait_until='commit')
+            self.page.get_by_role('heading',name=self.entry['name'],exact=True).wait_for()
+            with patch.object(self.page,'goto',wraps=self.page.goto) as navigate:
+                self.assertTrue(switcher.switch_page_from_picker(self.page,self.entry,timeout_ms=3000))
+                self.assertEqual(navigate.call_args.kwargs['wait_until'],'commit')
+            self.assertEqual(self.page.evaluate('document.readyState'),'loading')
+            self.assertTrue(upload.page_actor_matches(self.page,self.entry))
+            self.assertEqual(self.count('post'),0)
+        finally:
+            for route in blocked:
+                route.fulfill(content_type='application/javascript',body='')
+            self.page.wait_for_load_state('domcontentloaded')
+
+    def test_profile_ui_load_must_complete_even_after_correct_actor_switch(self):
+        self.recorded_account_header()
+        self.visit()
+        with patch.object(upload,'wait_profile_name',side_effect=upload.ProfileNameNotReady('profile not loaded')):
+            with self.assertRaisesRegex(upload.ProfileNameNotReady,'profile not loaded'):
+                switcher.switch_page_from_picker(self.page,self.entry,timeout_ms=1500)
+        self.assertEqual(self.count('post'),0)
+
+    def test_owner_change_during_committed_profile_load_is_refused(self):
+        self.recorded_account_header()
+        self.visit()
+        def loaded(*args,**kwargs):
+            self.context.add_cookies([dict(name='c_user',value='9999',domain='.facebook.com',path='/')])
+        with patch.object(upload,'wait_profile_name',side_effect=loaded):
+            with self.assertRaisesRegex(RuntimeError,'内容加载后身份或网址变化'):
+                switcher.switch_page_from_picker(self.page,self.entry,timeout_ms=1500)
         self.assertEqual(self.count('post'),0)
 
     def test_account_label_with_current_profile_name_is_supported(self):

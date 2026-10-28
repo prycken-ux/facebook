@@ -62,7 +62,9 @@ def validate_job(config,state,row,caption):
     return entry
 
 
-def repair_identity(entry,read=input,auto_first=False):
+def repair_identity(entry,read=input,auto_first=False,automatic_only=False):
+    if automatic_only and not auto_first:
+        raise ValueError('automatic_only requires auto_first')
     from playwright.sync_api import sync_playwright
     with sync_playwright() as playwright:
         context=upload.launch_context(playwright,entry)
@@ -90,6 +92,8 @@ def repair_identity(entry,read=input,auto_first=False):
                         print('自动切换诊断：',output,flush=True)
                     except Exception:
                         print('未能保存切换界面诊断，原任务记录保留。',flush=True)
+                    if automatic_only:
+                        raise RuntimeError('自动身份核验未通过，本页已跳过，不等待人工输入：'+str(error).splitlines()[0]) from error
                     print('本页改为手动处理；SKIP 可跳过后继续其他主页。',flush=True)
                 else:
                     proof['checked_at']=datetime.now().astimezone().isoformat()

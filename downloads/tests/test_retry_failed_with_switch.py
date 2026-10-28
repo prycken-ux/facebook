@@ -161,6 +161,30 @@ class RetryTests(unittest.TestCase):
         self.assertEqual(self.state_path.read_bytes(),before)
         browser.close.assert_called_once()
 
+    def test_automatic_only_failure_never_waits_for_ready_or_changes_state(self):
+        browser=MagicMock()
+        browser.pages=[MagicMock()]
+        before=self.state_path.read_bytes()
+        read=MagicMock(side_effect=AssertionError('automatic-only must not prompt'))
+        with patch('playwright.sync_api.sync_playwright'),patch.object(upload,'launch_context',return_value=browser), \
+             patch.object(upload,'ensure_identity',side_effect=RuntimeError('navigation timeout')), \
+             patch('capture_profile_switch_ui.capture',side_effect=RuntimeError('no capture')):
+            with self.assertRaisesRegex(RuntimeError,'不等待人工输入'):
+                retry.repair_identity(self.entries[1],read=read,auto_first=True,automatic_only=True)
+        read.assert_not_called()
+        browser.close.assert_called_once()
+        self.assertEqual(self.state_path.read_bytes(),before)
+
+    def test_automatic_only_success_never_prompts(self):
+        browser=MagicMock()
+        browser.pages=[MagicMock()]
+        read=MagicMock(side_effect=AssertionError('automatic-only must not prompt'))
+        with patch('playwright.sync_api.sync_playwright'),patch.object(upload,'launch_context',return_value=browser), \
+             patch.object(upload,'ensure_identity',return_value={'method':'exact actor'}):
+            self.assertTrue(retry.repair_identity(self.entries[1],read=read,auto_first=True,automatic_only=True))
+        read.assert_not_called()
+        browser.close.assert_called_once()
+
 
 if __name__=='__main__':
     unittest.main()
