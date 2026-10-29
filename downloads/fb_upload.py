@@ -14,7 +14,7 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 ROOT = Path(__file__).resolve().parent
 CONFIG = ROOT / "upload_config.json"
-VERSION = "2.34"
+VERSION = "2.35"
 SUCCESS_PATTERN = (
     r"^(?:Your reel (?:is(?: now)?|has been|was) (?:successfully )?"
     r"(?:published|shared|posted)(?: successfully)?|"
@@ -1048,6 +1048,30 @@ def assist_reel_entry(page, entry, video, identity_proof):
     recheck_publish_identity(page, entry, identity_proof)
 
 
+def profile_composer_reel(page):
+    """Use only a unique real profile composer; never a feed, menu or modal."""
+    if page.locator('[role="dialog"]:visible,[role="alertdialog"]:visible,dialog:visible').count():
+        return None
+    candidates=page.get_by_role('button',name='Reel',exact=True)
+    eligible=[]
+    for index in range(candidates.count()):
+        button=candidates.nth(index)
+        if not button.is_visible() or not button.is_enabled():
+            continue
+        if button.evaluate("""e => {
+            if(e.closest('[role="feed"],article,[role="article"],nav,[role="navigation"],aside,[role="complementary"],[role="banner"],[role="dialog"],[role="menu"]')) return false;
+            for(let node=e.parentElement,depth=0;node && depth<4;node=node.parentElement,depth++) {
+                if(node.matches('main,body,[role="main"],[role="feed"],article,[role="article"],nav,aside')) break;
+                const controls=[...node.querySelectorAll('button,[role="button"]')].filter(x=>x.getClientRects().length);
+                const labels=controls.map(x=>(x.getAttribute('aria-label')||x.innerText||'').trim());
+                if(controls.length<=8 && labels.includes('Photo/video') && labels.includes('Live video')) return true;
+            }
+            return false;
+        }"""):
+            eligible.append(button)
+    return eligible[0] if len(eligible)==1 else None
+
+
 def prepare_reel(page, entry, video, text, pause_before_reel=False):
     from playwright.sync_api import expect
 
@@ -1058,13 +1082,18 @@ def prepare_reel(page, entry, video, text, pause_before_reel=False):
     identity_proof = ensure_identity(page, entry)
     page._fb_upload_stage = 'open_reel_menu'
     require_english_interface(page)
-    open_facebook_menu(page)
-    if pause_before_reel:
-        assist_reel_entry(page, entry, video, identity_proof)
-    if entry.get("type") == "personal":
-        reel_button = page.get_by_role("button", name="Reel", exact=True)
+    reel_button=profile_composer_reel(page) if entry.get('type')=='personal' and not pause_before_reel else None
+    if reel_button is not None:
+        print('已确认个人主页发帖区的 Reel 入口，直接进入，避开顶部菜单遮挡。',flush=True)
     else:
-        reel_button = page.get_by_role("dialog", name="Menu", exact=True).get_by_role("button", name="Reel", exact=True)
+        open_facebook_menu(page)
+        if pause_before_reel:
+            assist_reel_entry(page, entry, video, identity_proof)
+        drawer=page.get_by_role('dialog',name='Menu',exact=True)
+        if entry.get('type')!='personal' or (drawer.count()==1 and drawer.is_visible()):
+            reel_button=drawer.get_by_role('button',name='Reel',exact=True)
+        else:
+            reel_button=page.get_by_role('button',name='Reel',exact=True)
     page._fb_upload_stage = 'select_exact_video'
     select_reel_video(page, reel_button, video)
     page._fb_upload_stage = 'wait_reel_editor'

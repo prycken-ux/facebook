@@ -1,0 +1,37 @@
+上传核心 2.35 与原批次核实后补发
+
+此包为代码更新，不含账号配置、登录资料、视频、状态账本或真实诊断截图。
+
+本次明确范围：
+- fb06/page01：仅按用户确认补记原视频成功、归档原文件；不发布。
+- fb01/page01：用户本次确认原视频未发布，允许一次原视频补发。
+- fb09/personal、fb23/personal：仅状态仍明确为 failed_before_post 时允许一次原视频重试。
+- 其他目标不重发。配置中的定时启用状态不改写。
+
+所有目标必须在命令指定的原 other-accounts-publish 报告中有唯一匹配素材，
+并与本地账本、账号、URL、文件名、指纹、原文案和 AI 设置一致。
+fb23 沿用原报告内自己的文案，原 TXT 字节保持；其他目标沿用本轮已保存统一文案。
+成功、其他待核实任务、文件被替换、配置变化都会阻止不合适的重试。
+重试编号固定；同一编号消耗后不重复提交。未知回执不能再自动解除防重发。
+
+2.35 的入口改进：
+在个人身份已核验之后，优先选择真实主页发帖区的唯一 Reel 按钮。
+必须同时存在紧邻的 Live video 和 Photo/video，且不能在 feed/article/nav/aside/banner/dialog 内。
+多个匹配或任何可见弹窗时不使用该入口。
+若仍需菜单，则优先将 Reel 限定到已打开的 Menu 对话框，避免同时匹配主页按钮。
+已有的键盘激活仅针对同一已确认控件；未知弹窗和账号安全提示仍停止。
+
+保留已有的 Edit→Settings 真实状态检查、Public/AI 核验、身份核验、发布前指纹复核。
+在点击 Post 前保存意图；提交后未知不重发。只有成功回执才自动归档。
+
+新增工具 resume_confirmed_other_failures.py：
+python resume_confirmed_other_failures.py --source-report <确切原报告文件名> --fb06-verified-published --fb01-verified-absent --close-windows --output-dir <桌面路径>
+
+该工具不会让用户输入 READY/POST。
+结束时自动输出 UTF-8 CSV 和完整新诊断 ZIP 到指定目录。
+本地 logs/publication_failure_history.json 保留按原任务指纹绑定的历史原因、完整错误、阶段、规避措施与状态。
+诊断优先取当前核心错误与最新 repair_results，按实际时间比较；不将第一次旧日志误认成新失败。
+不打包媒体、Cookie、完整配置或完整状态账本。
+
+限制：Facebook 页面、网络与账号安全提示仍可能变化。本更新不能保证每次成功；
+失败会明确停在对应目标并记录。结果待核实时应检查原视频，不应直接重跑。
