@@ -34,6 +34,8 @@ def explanation(record,error):
         return '已确认发布成功；旧错误仅作为历史保留','已有成功记录，不重复发布'
     if 'chrome' in text and ('资料仍被占用' in error or 'profile is in use' in text):
         return '该账号 Chrome 资料被占用，本次未启动发布','先正常关闭这个账号的全部 Chrome 窗口；不强制终止其他浏览器，不删除资料或防重发记录'
+    if ('菜单' in error and 'Reel' in error and '加载' in error) or ('get_by_role(\"dialog\", name=\"Menu\"' in error and 'Timeout' in error and 'intercepts pointer events' not in text):
+        return 'Facebook 菜单未加载出可用 Reel 按钮；本次未选择或发布视频','先等待唯一 Reel 按钮可见且可用；仍未加载时仅在选择文件前重新加载目标主页一次'
     if 'advanced protection' in text or 'create passkey' in text:
         reason='账号安全提示阻断自动操作'
         action='由账号本人完成安全提示；程序检测到提示即停止，不代改安全设置'
@@ -142,7 +144,7 @@ def export(path,report,rows,output_dir):
             shot=upload.ROOT/'logs'/('review-'+event['key'][:12]+'.png')
             if shot.is_file() and event['status']!='published':
                 archive.write(shot,prefix+'-current-review.png')
-    print('\n本次四个目标最终状态：',flush=True)
+    print('\n本次所选目标最终状态：',flush=True)
     for event in events:
         print(event['account']+'/'+event['target'],event['filename'],event['status'],event['reason'],flush=True)
     print('原因和规避措施：',destination/(filename+'.csv'),flush=True)
@@ -154,9 +156,9 @@ def run(fb06_verified_published=False,fb01_verified_absent=False,output_dir=None
         also_verified_published=(),fresh_fb01_verification=False):
     if not fb06_verified_published or not fb01_verified_absent:
         raise ValueError('此工具只能使用用户本次已明确确认的 fb06 成功、fb01 未发布结果')
-    if upload.VERSION not in {'2.35','2.36'}:
+    if upload.VERSION not in {'2.35','2.36','2.37'}:
         raise ValueError('需先安装配套上传核心 2.35')
-    if fresh_fb01_verification and upload.VERSION!='2.36':
+    if fresh_fb01_verification and upload.VERSION not in {'2.36','2.37'}:
         raise ValueError('本次最新核验补发需先安装慢上传修复 2.36')
     extra=set(also_verified_published)
     if len(extra)!=len(also_verified_published) or not extra.issubset({('fb09','personal'),('fb23','personal')}):

@@ -14,7 +14,7 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 ROOT = Path(__file__).resolve().parent
 CONFIG = ROOT / "upload_config.json"
-VERSION = "2.36"
+VERSION = "2.37"
 SUCCESS_PATTERN = (
     r"^(?:Your reel (?:is(?: now)?|has been|was) (?:successfully )?"
     r"(?:published|shared|posted)(?: successfully)?|"
@@ -736,8 +736,40 @@ def check_identity(entry):
             context.close()
 
 
-def select_reel_video(page, reel_button, video, timeout_ms=60000):
+class ReelEntryNotReady(RuntimeError):
+    """No Reel activation or file selection occurred while waiting for the menu."""
+
+
+def wait_reel_button_ready(page, reel_button, timeout_ms=120000):
+    deadline=time.monotonic()+timeout_ms/1000
+    next_log=0
+    while True:
+        checkpoint(page)
+        require_no_advanced_protection(page)
+        modals=page.locator('[role="dialog"]:visible,[role="alertdialog"]:visible,dialog:visible')
+        menu=page.get_by_role('dialog',name='Menu',exact=True)
+        if modals.count() and not (modals.count()==1 and menu.count()==1 and menu.is_visible()):
+            raise RuntimeError('等待 Reel 入口时出现未知弹窗，未选择或发布视频。')
+        count=reel_button.count()
+        if count>1:
+            raise RuntimeError('Reel 入口不唯一，未选择或发布视频。')
+        if count==1 and reel_button.is_visible() and reel_button.is_enabled():
+            return
+        remaining=deadline-time.monotonic()
+        if remaining<=0:
+            raise ReelEntryNotReady('Facebook 菜单仍未加载出可用的 Reel 按钮；尚未选择视频或点击 Post。')
+        if time.monotonic()>=next_log:
+            print('等待 Facebook 菜单加载完成、Reel 按钮可用；尚未选择或发布视频。',flush=True)
+            next_log=time.monotonic()+15
+        page.wait_for_timeout(min(250,max(1,int(remaining*1000))))
+
+
+def select_reel_video(page, reel_button, video, timeout_ms=60000, entry_timeout_ms=120000):
     from playwright.sync_api import TimeoutError as BrowserTimeout
+    # Five seconds is a pointer-action timeout, not a menu-loading deadline.
+    # Keep readiness outside the filechooser listener: recovery may only occur
+    # here, before any Reel activation or automatic file selection.
+    wait_reel_button_ready(page,reel_button,entry_timeout_ms)
     # Some Pages open a native picker directly from Reel; others first expose
     # the recorded Reels form. Register before clicking to cover both flows.
     selected = {"method": None, "error": None, "started": False}
@@ -1142,20 +1174,39 @@ def prepare_reel(page, entry, video, text, pause_before_reel=False):
     identity_proof = ensure_identity(page, entry)
     page._fb_upload_stage = 'open_reel_menu'
     require_english_interface(page)
-    reel_button=profile_composer_reel(page) if entry.get('type')=='personal' and not pause_before_reel else None
-    if reel_button is not None:
-        print('已确认个人主页发帖区的 Reel 入口，直接进入，避开顶部菜单遮挡。',flush=True)
-    else:
-        open_facebook_menu(page)
-        if pause_before_reel:
-            assist_reel_entry(page, entry, video, identity_proof)
-        drawer=page.get_by_role('dialog',name='Menu',exact=True)
-        if entry.get('type')!='personal' or (drawer.count()==1 and drawer.is_visible()):
-            reel_button=drawer.get_by_role('button',name='Reel',exact=True)
+    for attempt in range(2):
+        page._fb_upload_stage='open_reel_menu'
+        reel_button=profile_composer_reel(page) if entry.get('type')=='personal' and not pause_before_reel else None
+        if reel_button is not None:
+            print('已确认个人主页发帖区的 Reel 入口，直接进入，避开顶部菜单遮挡。',flush=True)
         else:
-            reel_button=page.get_by_role('button',name='Reel',exact=True)
-    page._fb_upload_stage = 'select_exact_video'
-    select_reel_video(page, reel_button, video)
+            open_facebook_menu(page)
+            if pause_before_reel:
+                assist_reel_entry(page, entry, video, identity_proof)
+            drawer=page.get_by_role('dialog',name='Menu',exact=True)
+            if entry.get('type')!='personal' or (drawer.count()==1 and drawer.is_visible()):
+                reel_button=drawer.get_by_role('button',name='Reel',exact=True)
+            else:
+                reel_button=page.get_by_role('button',name='Reel',exact=True)
+        page._fb_upload_stage = 'select_exact_video'
+        try:
+            select_reel_video(page, reel_button, video)
+            break
+        except ReelEntryNotReady:
+            if attempt or pause_before_reel:
+                raise
+            checkpoint(page)
+            require_no_advanced_protection(page)
+            if (target_key(page.url)!=target_key(entry['url']) or
+                page.get_by_role('form',name='Reels',exact=True).locator('input[type="file"]').count()):
+                raise RuntimeError('页面已进入上传流程或离开目标主页，未刷新或重复选择视频。')
+            recheck_publish_identity(page,entry,identity_proof)
+            page._fb_upload_stage='recover_loading_menu_before_file'
+            print('菜单长时间未加载；尚未激活 Reel，仅重新加载目标主页一次并核验身份。',flush=True)
+            navigate_profile(page,entry['url'])
+            require_no_advanced_protection(page)
+            identity_proof=ensure_identity(page,entry)
+            require_english_interface(page)
     page._fb_upload_stage = 'wait_reel_editor'
     layout = wait_reel_layout(page)
     if layout == "modern":

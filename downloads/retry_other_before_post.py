@@ -2,6 +2,7 @@
 import argparse
 import sys
 from datetime import datetime
+from pathlib import Path
 
 import confirm_selected_round as confirmations
 import fb_upload as upload
@@ -11,7 +12,7 @@ from diagnose_personal_identity import parse_target_pairs
 from retry_current_verified_absent import retry_one
 
 
-def run(source_report,targets,close_windows=False):
+def run(source_report,targets,close_windows=False,output_dir=None):
     if not targets or len(set(targets))!=len(targets):
         raise ValueError('需提供明确、不重复的原批次目标')
     with locked():
@@ -58,6 +59,11 @@ def run(source_report,targets,close_windows=False):
             print('/'.join(pair),row['filename'],actual.get('status','missing'),flush=True)
         print('已更新原汇总：',path.with_suffix('.csv'),flush=True)
         print('其余目标未重新发布；新结果未知时不重复使用本次重试。',flush=True)
+        if output_dir is not None:
+            from resume_confirmed_other_failures import export
+            with locked():
+                current=upload.read_json(path,{})
+                export(path,current,bound,output_dir)
     return 0 if all(state.get(row['key'],{}).get('status')=='published' for row in bound) else 3
 
 
@@ -67,9 +73,10 @@ if __name__=='__main__':
     parser.add_argument('--source-report',required=True)
     parser.add_argument('--targets',required=True)
     parser.add_argument('--close-windows',action='store_true')
+    parser.add_argument('--output-dir',type=Path)
     args=parser.parse_args()
     try:
-        raise SystemExit(run(args.source_report,parse_target_pairs(args.targets),args.close_windows))
+        raise SystemExit(run(args.source_report,parse_target_pairs(args.targets),args.close_windows,args.output_dir))
     except KeyboardInterrupt:
         print('已中断，保留当前任务记录。',flush=True)
         raise SystemExit(130)

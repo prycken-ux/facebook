@@ -67,7 +67,7 @@ def retry_one(pair, source_path, report, verified=False, confirmation_id='first-
             allowed=(schema=='fb10-pages-direct-publication-v1' and pair[0]=='fb10' and entry.get('type')=='page') or (
                 schema=='other-accounts-direct-publication-v1' and re.fullmatch(r'fb(?:0[1-9]|1[0-9]|2[0-3])',pair[0])
                 and pair[0] not in {'fb16','fb18','fb21'} and not (pair[0]=='fb10' and entry.get('type')=='page'))
-            if (not allowed or upload.VERSION not in {'2.31','2.32','2.33','2.34','2.35','2.36'}
+            if (not allowed or upload.VERSION not in {'2.31','2.32','2.33','2.34','2.35','2.36','2.37'}
                     or upload.target_key(row.get('url',''))!=upload.target_key(entry['url'])
                     or report.get('ai_label') not in {'off','on'}
                     or not report.get('caption_text','').strip()):
@@ -101,7 +101,8 @@ def retry_one(pair, source_path, report, verified=False, confirmation_id='first-
                 print('此视频已按上次确认建立新任务；保留新结果，需重新核对 Facebook：', '/'.join(pair), flush=True)
                 return False
         if claim and claim.get('phase') not in {'not_started'}:
-            print('本轮此视频已经补发过；此次不重复使用旧核对结果：', '/'.join(pair), flush=True)
+            current_status=state.get(key,{}).get('status','missing')
+            print('本次重试许可已使用；当前记录状态：',current_status,'；不重复提交：', '/'.join(pair), flush=True)
             return False
         old = state.get(key)
         if old and old.get('status') == 'published':
