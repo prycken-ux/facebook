@@ -39,7 +39,7 @@ with locked():
     if data is None:
         raise RuntimeError('Both download sources failed; no scripts changed.')
 
-    names = ['fb_upload.py', 'publish_fb10_pages_direct.py', 'publish_other_accounts_direct.py', 'retry_current_verified_absent.py', 'confirm_selected_round.py', 'resume_confirmed_other_failures.py', 'safe_video_comments.py', 'scheduled_material_batch.py']
+    names = ['fb_upload.py', 'publish_fb10_pages_direct.py', 'publish_other_accounts_direct.py', 'retry_current_verified_absent.py', 'resume_confirmed_other_failures.py', 'safe_video_comments.py', 'scheduled_material_batch.py']
     with zipfile.ZipFile(io.BytesIO(data)) as archive:
         updates = {name: archive.read(name) for name in names}
     for content in updates.values():
