@@ -29,6 +29,10 @@ def now():
 def explanation(record,error):
     status=record.get('status','missing')
     text=error.lower()
+    if status=='published':
+        return '已确认发布成功；旧错误仅作为历史保留','已有成功记录，不重复发布'
+    if 'chrome' in text and ('资料仍被占用' in error or 'profile is in use' in text):
+        return '该账号 Chrome 资料被占用，本次未启动发布','先正常关闭这个账号的全部 Chrome 窗口；不强制终止其他浏览器，不删除资料或防重发记录'
     if 'advanced protection' in text or 'create passkey' in text:
         reason='账号安全提示阻断自动操作'
         action='由账号本人完成安全提示；程序检测到提示即停止，不代改安全设置'
@@ -53,9 +57,7 @@ def explanation(record,error):
     else:
         reason='操作未完成；完整原因已保留，需结合当前诊断核实' if error else '没有新的失败证据'
         action='保留原始证据，避免按旧错误猜测本次原因'
-    if status=='published':
-        action='已成功：保留历史原因，不重复发布。'+action
-    elif status in {'needs_review','posting','preparing'}:
+    if status in {'needs_review','posting','preparing'}:
         action='当前结果不明，禁止自动再次发布。'+action
     return reason,action
 
@@ -98,8 +100,13 @@ def snapshot(path,report,row,phase,extra_error=None):
     if extra_error is not None:
         error,source=extra_error,'current_repair_attempt'
     reason,prevention=explanation(record,error)
+    stage=record.get('failure_stage','unknown')
+    if record.get('status')=='published':
+        stage='completed'
+    elif 'chrome' in error.lower() and ('资料仍被占用' in error or 'profile is in use' in error.lower()):
+        stage='preflight_profile_in_use'
     event=dict(at=now(),phase=phase,account=row['account'],target=row['target'],key=row['key'],
-        filename=row['filename'],status=record.get('status'),failure_stage=record.get('failure_stage','unknown'),
+        filename=row['filename'],status=record.get('status'),failure_stage=stage,
         uploader_version=record.get('uploader_version'),error_source=source,error=error,
         reason=reason,prevention=prevention)
     ledger=upload.ROOT/'logs/publication_failure_history.json'
@@ -142,11 +149,16 @@ def export(path,report,rows,output_dir):
     return events
 
 
-def run(fb06_verified_published=False,fb01_verified_absent=False,output_dir=None,close_windows=False,source_report=None):
+def run(fb06_verified_published=False,fb01_verified_absent=False,output_dir=None,close_windows=False,source_report=None,
+        also_verified_published=()):
     if not fb06_verified_published or not fb01_verified_absent:
         raise ValueError('此工具只能使用用户本次已明确确认的 fb06 成功、fb01 未发布结果')
     if upload.VERSION!='2.35':
         raise ValueError('需先安装配套上传核心 2.35')
+    extra=set(also_verified_published)
+    if len(extra)!=len(also_verified_published) or not extra.issubset({('fb09','personal'),('fb23','personal')}):
+        raise ValueError('本次追加成功核实只接受明确、不重复的 fb09/personal、fb23/personal')
+    confirmed={('fb06','page01')} | extra
     with locked():
         path,report=confirmations.load_expanded_report(source_report or SOURCE)
         if report.get('schema')!='other-accounts-direct-publication-v1':
@@ -163,12 +175,12 @@ def run(fb06_verified_published=False,fb01_verified_absent=False,output_dir=None
             rows.append(copy.deepcopy(found[0]))
         for row in rows:
             snapshot(path,report,row,'before_user_reconciliation')
-    # Explicitly confirmed original fb06 video, never published again.
-    confirmations.confirm(None,[('fb06','page01')],True,source_report=path.name)
+    # Only user-confirmed exact source jobs; success is never inferred from a timeout.
+    confirmations.confirm(None,[pair for pair in PAIRS if pair in confirmed],True,source_report=path.name)
     try:
         for row in rows:
             pair=row['account'],row['target']
-            if pair==('fb06','page01'):
+            if pair in confirmed:
                 continue
             result=dict(account=pair[0],target=pair[1],key=row['key'],filename=row['filename'],
                 repair_version=upload.VERSION,attempted_at=now(),user_verified_absent=pair==('fb01','page01'))
@@ -209,9 +221,12 @@ if __name__=='__main__':
     parser.add_argument('--fb01-verified-absent',action='store_true')
     parser.add_argument('--output-dir',type=Path)
     parser.add_argument('--close-windows',action='store_true')
+    parser.add_argument('--also-verified-published',default='',
+        help='仅用户已核实成功时追加：fb09/personal,fb23/personal；这些目标只补记，不发布')
     args=parser.parse_args()
     try:
-        raise SystemExit(run(args.fb06_verified_published,args.fb01_verified_absent,args.output_dir,args.close_windows,args.source_report))
+        extra=tuple(tuple(value.split('/')) for value in args.also_verified_published.split(',')) if args.also_verified_published else ()
+        raise SystemExit(run(args.fb06_verified_published,args.fb01_verified_absent,args.output_dir,args.close_windows,args.source_report,extra))
     except KeyboardInterrupt:
         print('已中断；保留状态，核对实际发布结果后再处理。',flush=True)
         raise SystemExit(130)
