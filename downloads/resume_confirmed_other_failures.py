@@ -20,6 +20,7 @@ SOURCE=None
 PAIRS=(('fb01','page01'),('fb06','page01'),('fb09','personal'),('fb23','personal'))
 BOUND={}
 CLAIM='user-resume-20261029-v1-2-35'
+SLOW_UPLOAD_CLAIM='fb01-upload-wait-fresh-check-20261029-v1'
 
 
 def now():
@@ -150,11 +151,13 @@ def export(path,report,rows,output_dir):
 
 
 def run(fb06_verified_published=False,fb01_verified_absent=False,output_dir=None,close_windows=False,source_report=None,
-        also_verified_published=()):
+        also_verified_published=(),fresh_fb01_verification=False):
     if not fb06_verified_published or not fb01_verified_absent:
         raise ValueError('此工具只能使用用户本次已明确确认的 fb06 成功、fb01 未发布结果')
-    if upload.VERSION!='2.35':
+    if upload.VERSION not in {'2.35','2.36'}:
         raise ValueError('需先安装配套上传核心 2.35')
+    if fresh_fb01_verification and upload.VERSION!='2.36':
+        raise ValueError('本次最新核验补发需先安装慢上传修复 2.36')
     extra=set(also_verified_published)
     if len(extra)!=len(also_verified_published) or not extra.issubset({('fb09','personal'),('fb23','personal')}):
         raise ValueError('本次追加成功核实只接受明确、不重复的 fb09/personal、fb23/personal')
@@ -184,10 +187,13 @@ def run(fb06_verified_published=False,fb01_verified_absent=False,output_dir=None
                 continue
             result=dict(account=pair[0],target=pair[1],key=row['key'],filename=row['filename'],
                 repair_version=upload.VERSION,attempted_at=now(),user_verified_absent=pair==('fb01','page01'))
+            if pair==('fb01','page01') and fresh_fb01_verification:
+                result['absence_verified_after_latest_attempt']=True
             error=None
             print('\n本次仅补发原视频：','/'.join(pair),row['filename'],flush=True)
             try:
-                done=retry_one(pair,path,report,verified=pair==('fb01','page01'),confirmation_id=CLAIM,
+                claim=SLOW_UPLOAD_CLAIM if pair==('fb01','page01') and fresh_fb01_verification else CLAIM
+                done=retry_one(pair,path,report,verified=pair==('fb01','page01'),confirmation_id=claim,
                     direct_publication=True,close_windows=close_windows,before_post_only=pair!=('fb01','page01'))
                 result['attempt']='finished' if done is not False else 'skipped'
             except KeyboardInterrupt:
@@ -223,10 +229,12 @@ if __name__=='__main__':
     parser.add_argument('--close-windows',action='store_true')
     parser.add_argument('--also-verified-published',default='',
         help='仅用户已核实成功时追加：fb09/personal,fb23/personal；这些目标只补记，不发布')
+    parser.add_argument('--fb01-verified-absent-after-latest-attempt',action='store_true',
+        help='仅在检查最新补发之后的 Facebook 页面，确认原视频仍不存在时使用；固定许可只使用一次')
     args=parser.parse_args()
     try:
         extra=tuple(tuple(value.split('/')) for value in args.also_verified_published.split(',')) if args.also_verified_published else ()
-        raise SystemExit(run(args.fb06_verified_published,args.fb01_verified_absent,args.output_dir,args.close_windows,args.source_report,extra))
+        raise SystemExit(run(args.fb06_verified_published,args.fb01_verified_absent,args.output_dir,args.close_windows,args.source_report,extra,args.fb01_verified_absent_after_latest_attempt))
     except KeyboardInterrupt:
         print('已中断；保留状态，核对实际发布结果后再处理。',flush=True)
         raise SystemExit(130)

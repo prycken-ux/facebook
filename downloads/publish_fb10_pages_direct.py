@@ -49,7 +49,7 @@ def save(path,report,rows,results):
 def run(publish=False,ai_label=None,close_windows=False):
     if publish and ai_label not in {'on','off'}:
         raise ValueError('直接发布需要明确 --ai-label off 或 on')
-    if publish and upload.VERSION not in {'2.31','2.32','2.33','2.34','2.35'}:
+    if publish and upload.VERSION not in {'2.31','2.32','2.33','2.34','2.35','2.36'}:
         raise ValueError('请安装本包配套的上传核心 2.31，再直接发布')
     with locked():
         config=upload.read_json(upload.CONFIG,{})

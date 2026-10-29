@@ -14,7 +14,7 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 ROOT = Path(__file__).resolve().parent
 CONFIG = ROOT / "upload_config.json"
-VERSION = "2.35"
+VERSION = "2.36"
 SUCCESS_PATTERN = (
     r"^(?:Your reel (?:is(?: now)?|has been|was) (?:successfully )?"
     r"(?:published|shared|posted)(?: successfully)?|"
@@ -84,20 +84,80 @@ class ReceiptNeedsReview(RuntimeError):
     """Post was clicked, but no fresh success receipt could be established."""
 
 
-def wait_for_receipt(page, button):
+UPLOAD_ACTIVITY_JS = r"""button => {
+    if (!button.getClientRects().length) return {active:false};
+    const area=button.closest('[role="dialog"], [role="form"], main') || document.body;
+    const rx=/^(Uploading(?:\s+(?:video|reel))?\s*(\d{1,3})\s*%|Posting(?:\.{3}|…)?|Processing(?:\s+(?:video|reel))?(?:\.{3}|…)?)$/i;
+    for (const element of area.querySelectorAll('div,span,[role="status"],[role="progressbar"],progress')) {
+        const style=getComputedStyle(element);
+        if (!element.getClientRects().length || style.visibility==='hidden' || style.display==='none') continue;
+        const text=(element.innerText || element.getAttribute('aria-valuetext') || '').replace(/\s+/g,' ').trim();
+        const match=rx.exec(text);
+        if(match && (match[2]===undefined || Number(match[2])<=100)) return {active:true,label:text};
+    }
+    return {active:false};
+}"""
+
+
+def visible_upload_activity(page, button):
+    from playwright.sync_api import Error as BrowserError
+    try:
+        result=button.evaluate(UPLOAD_ACTIVITY_JS,timeout=5000)
+    except BrowserError:
+        checkpoint(page)
+        return None
+    if (isinstance(result,dict) and result.get('active') is True
+            and isinstance(result.get('label'),str)):
+        return result['label']
+    return None
+
+
+def wait_for_receipt(page, button, timeout_ms=900000, poll_ms=30000, completion_grace_ms=120000):
     from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
-    try:
-        page.wait_for_function("() => Boolean(window.__fbUploadWatch && window.__fbUploadWatch.message)", timeout=120000)
-    except PlaywrightTimeoutError as error:
-        # A login/checkpoint is an operational stop, not a deferred receipt.
-        checkpoint(page)
-        raise ReceiptNeedsReview("已点击发布，120 秒内未识别到成功回执；保留待核对，不会自动重发。") from error
+    if timeout_ms<=0 or poll_ms<=0 or completion_grace_ms<0:
+        raise ValueError('发布等待参数无效')
+    waited=0
+    had_activity=False
+    quiet_after_activity=0
+    while True:
+        chunk=min(poll_ms,max(1,timeout_ms-waited)) if waited<timeout_ms else poll_ms
+        try:
+            page.wait_for_function("() => Boolean(window.__fbUploadWatch && window.__fbUploadWatch.message)", timeout=chunk)
+            break
+        except PlaywrightTimeoutError as error:
+            waited+=chunk
+            checkpoint(page)
+            activity=visible_upload_activity(page,button)
+            if activity:
+                had_activity=True
+                quiet_after_activity=0
+                print('发布仍在处理：',activity,'；已等待',waited//1000,'秒，保持浏览器，不再次点击 Post。',flush=True)
+                continue
+            if had_activity:
+                quiet_after_activity+=chunk
+            if waited>=timeout_ms and (not had_activity or quiet_after_activity>=completion_grace_ms):
+                final_message=page.evaluate('() => window.__fbUploadWatch && window.__fbUploadWatch.message')
+                if isinstance(final_message,str) and re.fullmatch(SUCCESS_PATTERN,final_message,re.I):
+                    break
+                raise ReceiptNeedsReview('已点击发布，等待成功回执超时；当前未检测到进行中的上传提示，保留待核对，不会自动重发。') from error
     message = page.evaluate("() => window.__fbUploadWatch.message")
     if not isinstance(message, str) or not re.fullmatch(SUCCESS_PATTERN, message, re.I):
         raise RuntimeError("没有收到本次发布的有效成功提示。")
     # A notification alone must not mark an open upload composer as completed.
-    button.wait_for(state="hidden", timeout=30000)
+    # Do not close an active upload just because composer dismissal is delayed.
+    while True:
+        try:
+            button.wait_for(state="hidden", timeout=min(30000,poll_ms))
+            break
+        except PlaywrightTimeoutError as error:
+            checkpoint(page)
+            activity=visible_upload_activity(page,button)
+            if not activity:
+                if button.is_hidden():
+                    break
+                raise ReceiptNeedsReview('收到发布提示，但编辑器未关闭；保留待核对，不会自动重发。') from error
+            print('收到发布提示，页面仍显示',activity,'；继续保持浏览器，等待编辑器关闭。',flush=True)
     checkpoint(page)
     return message
 
@@ -1287,7 +1347,7 @@ def run_entry(entry, state, state_path, publish, filename=None, review_before_po
                 page._fb_upload_stage = 'post_click'
                 button.click()
                 page._fb_upload_stage = 'wait_success_receipt'
-                print('已点击发布，正在等待成功回执（最长 120 秒）：', entry['account'], entry['target'], flush=True)
+                print('已点击发布，等待成功回执（基础等待 15 分钟；仍显示 Uploading/Posting 时继续等待并保持浏览器）：', entry['account'], entry['target'], flush=True)
                 record["success_message"] = wait_for_receipt(page, button)
                 record["confirmation_method"] = "fresh_success_ui_and_composer_closed"
                 record["status"] = "published"

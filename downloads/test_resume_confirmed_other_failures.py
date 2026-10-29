@@ -26,7 +26,7 @@ class ResumeConfirmedFailuresTests(unittest.TestCase):
     def tearDown(self):
         self.fixture.tearDown()
 
-    def execute(self,unknown=False,failed=(),confirmed=(),occupied=False):
+    def execute(self,unknown=False,failed=(),confirmed=(),occupied=False,fresh=False):
         from unittest.mock import MagicMock
         button=MagicMock();browser=MagicMock();browser.pages=[MagicMock()]
         def prepare(page,entry,video,caption):
@@ -39,7 +39,7 @@ class ResumeConfirmedFailuresTests(unittest.TestCase):
              patch.object(upload,'install_receipt_watch'),patch.object(upload,'wait_for_receipt',return_value='Your reel is published.',
                  side_effect=upload.ReceiptNeedsReview('receipt timeout') if unknown else None), \
              patch('builtins.input',side_effect=AssertionError('no prompts')):
-            result=resume.run(True,True,self.desktop,True,also_verified_published=confirmed)
+            result=resume.run(True,True,self.desktop,True,also_verified_published=confirmed,fresh_fb01_verification=fresh)
         return result,button
 
     def test_new_user_confirmation_records_fb09_fb23_and_only_posts_fb01(self):
@@ -74,6 +74,19 @@ class ResumeConfirmedFailuresTests(unittest.TestCase):
         for pairs in [(('fb01','page01'),),(('fb10','personal'),),(('fb09','personal'),('fb09','personal'))]:
             with self.assertRaises(ValueError):resume.run(True,True,self.desktop,also_verified_published=pairs)
         self.assertEqual((self.root/'logs/publish_state.json').read_bytes(),original)
+
+    def test_latest_fb01_absence_can_retry_once_after_old_claim_is_consumed(self):
+        confirmed=(('fb09','personal'),('fb23','personal'))
+        result,button=self.execute(unknown=True,confirmed=confirmed)
+        self.assertEqual(result,3);button.click.assert_called_once()
+        result,button=self.execute(confirmed=confirmed)
+        self.assertEqual(result,3);button.click.assert_not_called()
+        result,button=self.execute(confirmed=confirmed,fresh=True)
+        self.assertEqual(result,0);button.click.assert_called_once()
+        result,button=self.execute(confirmed=confirmed,fresh=True)
+        self.assertEqual(result,0);button.click.assert_not_called()
+        claims=upload.read_json(self.root/'logs/verified-current-absence-claims.json',{})
+        self.assertEqual(len(claims),2)
 
     def test_exact_user_success_and_absence_plus_before_post_failures(self):
         original=upload.read_json(self.root/'logs/publish_state.json',{})
