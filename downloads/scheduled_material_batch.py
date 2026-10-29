@@ -48,7 +48,7 @@ def start_time(date,time_text,now):
 
 
 def freeze(date,time_text,include_pages,comment,now):
-    if upload.VERSION!='2.38':raise ValueError('需安装配套上传核心 2.38')
+    if upload.VERSION not in {'2.38','2.39'}:raise ValueError('需安装配套上传核心 2.38 或 2.39')
     if not comment.strip() or len(comment)>5000:raise ValueError('评论文案为空或过长')
     effective=start_time(date,time_text,now)
     config=upload.read_json(upload.CONFIG,{})
@@ -236,7 +236,7 @@ def run(path,output_dir=None):
     now=datetime.now(timezone.utc)
     if now.astimezone(BJ).date().isoformat()!=payload['date']:raise ValueError('已不是本批授权日期，不补跑过期计划')
     if now<datetime.fromisoformat(payload['start']):raise ValueError('尚未到指定开始时间，不提前发布')
-    if upload.VERSION!='2.38':raise ValueError('上传核心版本不匹配')
+    if upload.VERSION not in {'2.38','2.39'}:raise ValueError('上传核心版本不匹配')
     attempts=[]
     with locked(),path.with_suffix('.log').open('a',encoding='utf-8') as log:
         with contextlib.redirect_stdout(Tee(sys.stdout,log)),contextlib.redirect_stderr(Tee(sys.stderr,log)):

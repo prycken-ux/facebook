@@ -14,7 +14,7 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 ROOT = Path(__file__).resolve().parent
 CONFIG = ROOT / "upload_config.json"
-VERSION = "2.38"
+VERSION = "2.39"
 SUCCESS_PATTERN = (
     r"^(?:Your reel (?:is(?: now)?|has been|was) (?:successfully )?"
     r"(?:published|shared|posted)(?: successfully)?|"
@@ -123,54 +123,43 @@ def visible_upload_activity(page, button):
     return None
 
 
-def wait_for_receipt(page, button, timeout_ms=900000, poll_ms=30000, completion_grace_ms=120000):
+def wait_for_receipt(page, button, timeout_ms=180000, poll_ms=15000,
+                     completion_grace_ms=0, started_at=None):
+    """One wall-clock budget for both the fresh receipt and composer dismissal.
+
+    completion_grace_ms is retained for older callers but never extends the cap.
+    Uploading/Posting activity does not reset the budget or trigger another Post.
+    """
     from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
     if timeout_ms<=0 or poll_ms<=0 or completion_grace_ms<0:
         raise ValueError('发布等待参数无效')
-    waited=0
-    had_activity=False
-    quiet_after_activity=0
+    started = time.monotonic() if started_at is None else started_at
+    deadline = started + min(timeout_ms, 180000) / 1000
+    message = None
     while True:
-        chunk=min(poll_ms,max(1,timeout_ms-waited)) if waited<timeout_ms else poll_ms
+        checkpoint(page)
+        remaining_ms = int((deadline - time.monotonic()) * 1000)
+        if remaining_ms <= 0:
+            raise ReceiptNeedsReview('已达到本条发布等待上限（最多 3 分钟）；结果待核实，继续下一个，不自动重发。')
+        chunk = max(1, min(poll_ms, remaining_ms))
         try:
-            page.wait_for_function("() => Boolean(window.__fbUploadWatch && window.__fbUploadWatch.message)", timeout=chunk)
-            break
-        except PlaywrightTimeoutError as error:
-            waited+=chunk
-            checkpoint(page)
-            activity=visible_upload_activity(page,button)
-            if activity:
-                had_activity=True
-                quiet_after_activity=0
-                print('发布仍在处理：',activity,'；已等待',waited//1000,'秒，保持浏览器，不再次点击 Post。',flush=True)
+            if message is None:
+                page.wait_for_function("() => Boolean(window.__fbUploadWatch && window.__fbUploadWatch.message)", timeout=chunk)
+                message = page.evaluate("() => window.__fbUploadWatch.message")
+                if not isinstance(message, str) or not re.fullmatch(SUCCESS_PATTERN, message, re.I):
+                    raise RuntimeError("没有收到本次发布的有效成功提示。")
+            # The composer shares the same deadline; success text alone is insufficient.
+            remaining_ms = int((deadline - time.monotonic()) * 1000)
+            if remaining_ms <= 0:
                 continue
-            if had_activity:
-                quiet_after_activity+=chunk
-            if waited>=timeout_ms and (not had_activity or quiet_after_activity>=completion_grace_ms):
-                final_message=page.evaluate('() => window.__fbUploadWatch && window.__fbUploadWatch.message')
-                if isinstance(final_message,str) and re.fullmatch(SUCCESS_PATTERN,final_message,re.I):
-                    break
-                raise ReceiptNeedsReview('已点击发布，等待成功回执超时；当前未检测到进行中的上传提示，保留待核对，不会自动重发。') from error
-    message = page.evaluate("() => window.__fbUploadWatch.message")
-    if not isinstance(message, str) or not re.fullmatch(SUCCESS_PATTERN, message, re.I):
-        raise RuntimeError("没有收到本次发布的有效成功提示。")
-    # A notification alone must not mark an open upload composer as completed.
-    # Do not close an active upload just because composer dismissal is delayed.
-    while True:
-        try:
-            button.wait_for(state="hidden", timeout=min(30000,poll_ms))
-            break
-        except PlaywrightTimeoutError as error:
+            button.wait_for(state="hidden", timeout=max(1, min(poll_ms, remaining_ms)))
             checkpoint(page)
-            activity=visible_upload_activity(page,button)
-            if not activity:
-                if button.is_hidden():
-                    break
-                raise ReceiptNeedsReview('收到发布提示，但编辑器未关闭；保留待核对，不会自动重发。') from error
-            print('收到发布提示，页面仍显示',activity,'；继续保持浏览器，等待编辑器关闭。',flush=True)
-    checkpoint(page)
-    return message
+            return message
+        except PlaywrightTimeoutError:
+            elapsed = int(time.monotonic() - started)
+            print('发布结果仍待确认：已等待', elapsed,
+                  '秒；最多 180 秒，到时转待核实并继续下一条，不重复点击 Post。', flush=True)
 
 
 def read_json(path, default):
@@ -1421,10 +1410,11 @@ def run_entry(entry, state, state_path, publish, filename=None, review_before_po
                 if link_collector is not None:
                     link_collector.armed=True
                 page._fb_upload_stage = 'post_click'
-                button.click()
+                receipt_started = time.monotonic()
+                button.click(timeout=30000)
                 page._fb_upload_stage = 'wait_success_receipt'
-                print('已点击发布，等待成功回执（基础等待 15 分钟；仍显示 Uploading/Posting 时继续等待并保持浏览器）：', entry['account'], entry['target'], flush=True)
-                record["success_message"] = wait_for_receipt(page, button)
+                print('已点击发布，最多等待 3 分钟；超时记录待核实并继续下一个：', entry['account'], entry['target'], flush=True)
+                record["success_message"] = wait_for_receipt(page, button, started_at=receipt_started)
                 record["confirmation_method"] = "fresh_success_ui_and_composer_closed"
                 record["status"] = "published"
                 save_json(state_path, state)
@@ -1440,6 +1430,13 @@ def run_entry(entry, state, state_path, publish, filename=None, review_before_po
                         record.update(comment_status='manual_required',comment_error=str(comment_error)[:2000])
                     save_json(state_path,state)
                     print('视频发布成功；评论状态：',record['comment_status'],record.get('comment_error',''),flush=True)
+            except KeyboardInterrupt:
+                if publish and record["status"] != "published":
+                    record["status"] = "needs_review" if posted else "failed_before_post"
+                    record["error"] = "用户中断；已提交则需核实，禁止自动重发"
+                    record["failure_stage"] = getattr(page, '_fb_upload_stage', 'unknown')
+                    save_json(state_path, state)
+                raise
             except Exception as error:
                 if publish and record["status"] != "published":
                     record["status"] = "needs_review" if posted else "failed_before_post"
