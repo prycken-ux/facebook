@@ -14,7 +14,7 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 ROOT = Path(__file__).resolve().parent
 CONFIG = ROOT / "upload_config.json"
-VERSION = "2.37"
+VERSION = "2.38"
 SUCCESS_PATTERN = (
     r"^(?:Your reel (?:is(?: now)?|has been|was) (?:successfully )?"
     r"(?:published|shared|posted)(?: successfully)?|"
@@ -26,12 +26,13 @@ SUCCESS_PATTERN = (
 # Install before Post so a short-lived success message cannot disappear before
 # the click returns. Ignore old notification cards and unchanged existing text.
 RECEIPT_WATCH_JS = r"""pattern => {
+    for(const node of document.querySelectorAll('[data-local-current-publication-receipt]'))node.removeAttribute('data-local-current-publication-receipt');
     if (window.__fbUploadWatch && window.__fbUploadWatch.observer) {
         window.__fbUploadWatch.observer.disconnect();
     }
     const rx = new RegExp(pattern, 'i');
     const seen = new WeakMap();
-    const watch = {armed: false, message: null, observer: null};
+    const watch = {armed: false, message: null, observer: null, receiptLinks: [], receiptArea: null};
     window.__fbUploadWatch = watch;
     const norm = t => (t || '').normalize('NFKC').replace(/\s+/g, ' ').trim();
     function isHistory(el) {
@@ -57,6 +58,9 @@ RECEIPT_WATCH_JS = r"""pattern => {
         const heading = el.matches('h1, h2, h3, h4, h5, h6, [role="heading"]');
         if (!(receiptArea || heading) || !el.getClientRects().length) return;
         watch.message = text;
+        watch.receiptArea = el.closest('[role="alert"], [role="status"], [role="dialog"], [aria-live]');
+        if(watch.receiptArea && (watch.receiptArea===document.body || watch.receiptArea.textContent.length>2000))watch.receiptArea=null;
+        if(watch.receiptArea)watch.receiptArea.setAttribute('data-local-current-publication-receipt','true');
     }
     function scan(root) {
         if (!root) return;
@@ -70,6 +74,13 @@ RECEIPT_WATCH_JS = r"""pattern => {
         for (const change of changes) {
             if (change.type === 'characterData') scan(change.target.parentElement);
             for (const node of change.addedNodes) scan(node);
+        }
+        if(watch.armed && watch.message && watch.receiptArea && watch.receiptArea.isConnected){
+          for(const link of watch.receiptArea.querySelectorAll('a[href]')){
+            if(/^(?:View|See) (?:your )?reel$/i.test(norm(link.innerText || link.getAttribute('aria-label')))){
+              const value=link.href;if(!watch.receiptLinks.includes(value))watch.receiptLinks.push(value);
+            }
+          }
         }
     });
     watch.observer.observe(document.body, {childList: true, subtree: true, characterData: true});
@@ -1285,7 +1296,8 @@ def launch_context(playwright, entry):
 
 
 def run_entry(entry, state, state_path, publish, filename=None, review_before_post=False, pause_before_reel=False,
-              ai_label_override=None, new_video_with_old_review=False, expected_job_key=None):
+              ai_label_override=None, new_video_with_old_review=False, expected_job_key=None,
+              preserve_old_review_for_exact_job=False):
     from playwright.sync_api import sync_playwright
 
     if ai_label_override is not None:
@@ -1301,13 +1313,15 @@ def run_entry(entry, state, state_path, publish, filename=None, review_before_po
         raise ValueError('保留旧记录发布新视频仅用于已准备目标的 publish，并且必须指定文件名。')
     if expected_job_key is not None and (not filename or not re.fullmatch(r'[a-f0-9]{64}', expected_job_key)):
         raise ValueError('核对素材指纹必须是完整任务编号，并指定确切文件名。')
+    if preserve_old_review_for_exact_job and (not publish or not filename or not expected_job_key or new_video_with_old_review):
+        raise ValueError('保留旧待核实任务仅用于已冻结的确切全新素材')
     identity = (entry["account"], entry["target"])
     if publish and not entry.get("enabled", False):
         raise RuntimeError("尚未启用发布。先完成 prepare 检查，再执行 enable。")
     blocking = [(key, row) for key, row in state.items()
                 if (row['account'], row['target']) == identity
                 and row['status'] in {'preparing', 'posting', 'needs_review'}]
-    if blocking and (not new_video_with_old_review
+    if blocking and (not (new_video_with_old_review or preserve_old_review_for_exact_job)
                      or any(row['status'] != 'needs_review' for _, row in blocking)):
         raise RuntimeError("该目标有待核对任务。先检查主页并 confirm 或 retry，避免重复发布。")
     if filename:
@@ -1320,6 +1334,10 @@ def run_entry(entry, state, state_path, publish, filename=None, review_before_po
         return False
     if expected_job_key is not None and jobs[0][0] != expected_job_key:
         raise ValueError('发布时素材内容与核对结果不同，未打开浏览器或选择其他视频。')
+    if preserve_old_review_for_exact_job:
+        for old_key,row in blocking:
+            if old_key==expected_job_key or target_key(row.get('url',''))!=target_key(entry['url']):
+                raise ValueError('当前素材已有待核实记录或旧记录目标不一致，未发布')
     if new_video_with_old_review:
         for old_key, row in blocking:
             if target_key(row.get('url', '')) != target_key(entry['url']):
@@ -1334,7 +1352,7 @@ def run_entry(entry, state, state_path, publish, filename=None, review_before_po
     # Existing published tasks never reach this point; no historical backfill occurs.
     key, video, caption, text = jobs[0]
     comment_plan = None
-    if publish and (ROOT / 'post_comment_config.json').is_file():
+    if publish and not entry.get('_authorized_comment_text') and (ROOT / 'post_comment_config.json').is_file():
         from post_comment_plan import build_plan
         comment_plan = build_plan(entry, video, key)
     with sync_playwright() as playwright:
@@ -1349,10 +1367,15 @@ def run_entry(entry, state, state_path, publish, filename=None, review_before_po
                       "created": datetime.now().astimezone().isoformat(), "status": "preparing",
                       "ai_label_requested": bool(entry.get("ai_label", False))}
             record['uploader_version'] = VERSION
+            comment_text=entry.get('_authorized_comment_text')
+            link_collector=None
+            if comment_text:
+                from safe_video_comments import PublicationLinks
+                link_collector=PublicationLinks(context,entry,text,record['created'])
             if comment_plan is not None:
                 record['post_comment_plan'] = comment_plan
                 print('已绑定本条产品评论文案；当前仅记录待办，自动发送尚未启用。', flush=True)
-            if new_video_with_old_review:
+            if new_video_with_old_review or preserve_old_review_for_exact_job:
                 record['preserved_older_review_jobs'] = [old_key for old_key, _ in blocking]
             if publish:
                 state[key] = record
@@ -1395,6 +1418,8 @@ def run_entry(entry, state, state_path, publish, filename=None, review_before_po
                 print('准备提交发布：', entry['account'], entry['target'], video.name, flush=True)
                 page.evaluate("() => { window.__fbUploadWatch.armed = true; }")
                 posted = True
+                if link_collector is not None:
+                    link_collector.armed=True
                 page._fb_upload_stage = 'post_click'
                 button.click()
                 page._fb_upload_stage = 'wait_success_receipt'
@@ -1405,6 +1430,16 @@ def run_entry(entry, state, state_path, publish, filename=None, review_before_po
                 save_json(state_path, state)
                 archive(video, caption)
                 print("发布成功，已归档：", video.name)
+                if comment_text:
+                    try:
+                        from safe_video_comments import after_publication
+                        result=after_publication(page,context,entry,identity_proof,key,record,comment_text,link_collector)
+                        record['comment_status']=result['status']
+                        record['comment_error']=result.get('error','')
+                    except Exception as comment_error:
+                        record.update(comment_status='manual_required',comment_error=str(comment_error)[:2000])
+                    save_json(state_path,state)
+                    print('视频发布成功；评论状态：',record['comment_status'],record.get('comment_error',''),flush=True)
             except Exception as error:
                 if publish and record["status"] != "published":
                     record["status"] = "needs_review" if posted else "failed_before_post"

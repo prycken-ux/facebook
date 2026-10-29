@@ -156,9 +156,9 @@ def run(fb06_verified_published=False,fb01_verified_absent=False,output_dir=None
         also_verified_published=(),fresh_fb01_verification=False):
     if not fb06_verified_published or not fb01_verified_absent:
         raise ValueError('此工具只能使用用户本次已明确确认的 fb06 成功、fb01 未发布结果')
-    if upload.VERSION not in {'2.35','2.36','2.37'}:
+    if upload.VERSION not in {'2.35','2.36','2.37','2.38','2.38'}:
         raise ValueError('需先安装配套上传核心 2.35')
-    if fresh_fb01_verification and upload.VERSION not in {'2.36','2.37'}:
+    if fresh_fb01_verification and upload.VERSION not in {'2.36','2.37','2.38','2.38'}:
         raise ValueError('本次最新核验补发需先安装慢上传修复 2.36')
     extra=set(also_verified_published)
     if len(extra)!=len(also_verified_published) or not extra.issubset({('fb09','personal'),('fb23','personal')}):
