@@ -1,0 +1,31 @@
+其他账号失败修复及原发布前失败重试 v1（核心2.34）
+
+依据用户上传的原批次错误和五张截图定位：
+fb01：Next 后仍在 Edit，程序已等待 Settings 的公开范围；已改为验证真正出现 Settings 控件，只有明确还在 Edit、原文案一致、Next可用时再试一次 Next。
+fb09：正确 Reel 按钮被 banner 截获鼠标事件；现在只对同一唯一、可见、可用、可聚焦的 Reel 控件使用键盘入口，并保留原生/表单选文件单次保护。
+fb06/fb13：截图已是有 Edit 的可管理主页，但名称/管理区未被程序核验通过；补充无heading标签、同头部有有效Edit的名称候选，与原已有管理区证明保持同等要求，仍不能覆盖错误数字actor。
+fb23：Your account needs Advanced Protection / Create passkey 安全弹窗挡住 Facebook menu。程序明确报 AccountActionRequired，交由账号本人处理，不自动关闭或更改通行密钥。
+
+本轮用户已确认 fb23 安全提示已本人处理、菜单正常，重试五个明确的发布前失败：
+.venv\Scripts\python.exe retry_other_before_post.py --source-report other-accounts-publish-20261028-180507-117297.json --targets fb01/page01,fb06/page01,fb09/personal,fb13/page01,fb23/personal --close-windows
+
+只有原完整任务指纹、文件名、主页链接、原文案及AI设置全部匹配，且当前状态仍明确 failed_before_post、无成功证据，才可重试。
+这使用程序记录的“Post前失败”证据，不伪造用户“已在Facebook检查不存在”的陈述。
+身份检查先完成，状态/原记录备份后只替换所选失败任务。若没建立新任务，恢复旧记录；一旦建立新任务，本修复版本的单次重试被消耗。
+旧成功不会重发；已有 needs_review/posting/preparing 未知结果不能用此命令解除；新尝试若无回执不再次提交。
+不改永久启用设置，原批次 rows/results 不变，追加 repair_results 并按真实任务状态更新原 CSV/JSON。
+用户确认的五条成功及原三个自动成功不重发；七个旧待核实拦截不清空。
+
+本轮 fb23 已由用户本人处理安全提示；若提示重新出现，程序仍明确停止，不代改安全设置。
+它仍使用原报告绑定的每条自有 TXT；缺失、为空或变化会停止，不生成或覆盖统一文案。
+原文件即使有UTF8 BOM/换行，也保持原字节直到正常归档。
+
+界面保护：
+Next 重试不重新选择媒体，Settings出现后不再点Next；Post仍只点击一次并需新回执。
+Reel点击超时若原生 chooser 已开始或Reels表单已出现，不再激活另一个入口；处理事件回调后重新检查选择状态。
+未知遮罩、错误actor/登录者、只有旁栏/帖子名称或无有效Edit的名称不能通过。
+Advanced Protection 检测覆盖dialog/alertdialog，并在选视频前及菜单异常时明确停止；没有操作Create passkey/Close/安全配置。
+
+本包五个代码文件及说明，不含原截图、日志、账号目录、文案、媒体、Cookie或状态。
+对应本地界面/发布/事务回归覆盖239项，专项重试和安全弹窗等复验通过；实际Windows结果仍以新回执与原报告为准。
+可修复已复现的程序问题，不能保证Facebook后续页面变化或网络永远不产生新错误。

@@ -64,6 +64,7 @@ class NavigationTests(unittest.TestCase):
     def test_prepare_never_retries_editor_file_selection_or_post(self):
         entry=dict(url=self.page.url,name='Example',type='personal')
         with patch.object(upload,'navigate_profile') as navigate, \
+             patch.object(upload,'require_no_advanced_protection'), \
              patch.object(upload,'ensure_identity',return_value={}), \
              patch.object(upload,'require_english_interface'), \
              patch.object(upload,'open_facebook_menu'), \

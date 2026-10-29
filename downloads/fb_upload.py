@@ -14,7 +14,7 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 ROOT = Path(__file__).resolve().parent
 CONFIG = ROOT / "upload_config.json"
-VERSION = "2.33"
+VERSION = "2.34"
 SUCCESS_PATTERN = (
     r"^(?:Your reel (?:is(?: now)?|has been|was) (?:successfully )?"
     r"(?:published|shared|posted)(?: successfully)?|"
@@ -457,13 +457,14 @@ def profile_name_candidates(page, entry):
                 candidates.append(candidate)
         except BrowserTimeout:
             continue
-    if entry.get('type') == 'personal' and not candidates:
+    if entry.get('type') in {'personal','page'} and not candidates:
+        kind=entry['type']
         labels = page.get_by_text(entry['name'], exact=True)
         for index in range(labels.count()):
             candidate = labels.nth(index)
             try:
                 if (candidate.is_visible() and candidate.evaluate(PROFILE_NAME_ALLOWED_JS, timeout=1000)
-                        and candidate.evaluate(HEADER_MANAGEMENT_JS, 'personal', timeout=1000) == 'active_personal_header_management_control'):
+                        and candidate.evaluate(HEADER_MANAGEMENT_JS, kind, timeout=1000) == 'active_'+kind+'_header_management_control'):
                     candidates.append(candidate)
             except BrowserTimeout:
                 continue
@@ -665,6 +666,7 @@ def check_identity(entry):
         try:
             page = context.pages[0] if context.pages else context.new_page()
             navigate_profile(page, entry["url"])
+            require_no_advanced_protection(page)
             result = ensure_identity(page, entry)
             result["checked_at"] = datetime.now().astimezone().isoformat()
             upload_log = ROOT / "logs" / ("identity-" + entry["account"] + "-" + entry["target"] + ".json")
@@ -675,6 +677,7 @@ def check_identity(entry):
 
 
 def select_reel_video(page, reel_button, video, timeout_ms=60000):
+    from playwright.sync_api import TimeoutError as BrowserTimeout
     # Some Pages open a native picker directly from Reel; others first expose
     # the recorded Reels form. Register before clicking to cover both flows.
     selected = {"method": None, "error": None, "started": False}
@@ -692,7 +695,30 @@ def select_reel_video(page, reel_button, video, timeout_ms=60000):
 
     page.on("filechooser", choose_native)
     try:
-        reel_button.click(timeout=timeout_ms)
+        require_no_advanced_protection(page)
+        try:
+            reel_button.click(timeout=min(timeout_ms,5000))
+        except BrowserTimeout:
+            # A real chooser or form may already have opened before click's
+            # wait timed out; never trigger a second selection in that case.
+            field=page.get_by_role('form',name='Reels',exact=True).locator('input[type="file"]')
+            field_count=field.count()
+            if not selected['started'] and field_count==0:
+                require_no_advanced_protection(page)
+                if reel_button.count()!=1 or not reel_button.is_visible() or not reel_button.is_enabled():
+                    raise
+                modals=page.locator('[role="dialog"]:visible,[role="alertdialog"]:visible,dialog:visible')
+                menu=page.get_by_role('dialog',name='Menu',exact=True)
+                if modals.count() and not (modals.count()==1 and menu.count()==1 and menu.is_visible()):
+                    raise RuntimeError('Reel 入口被未知弹窗遮挡，未选择视频。')
+                if not reel_button.evaluate("e => e.matches('button,a[href],input') || e.hasAttribute('tabindex')"):
+                    raise
+                print('Reel 鼠标入口被遮挡，改用键盘激活同一个已确认的 Reel 按钮。',flush=True)
+                reel_button.focus(timeout=min(timeout_ms,5000))
+                from playwright.sync_api import expect
+                expect(reel_button).to_be_focused(timeout=min(timeout_ms,5000))
+                if not selected['started']:
+                    reel_button.press('Enter',timeout=min(timeout_ms,5000))
         deadline = time.monotonic() + timeout_ms / 1000
         while not selected["method"] and selected["error"] is None:
             remaining = deadline - time.monotonic()
@@ -845,27 +871,61 @@ def set_ai_label(page, entry, modern=False):
     print("AI 标签已核对：", "开启" if desired else "关闭", flush=True)
 
 
+def advance_modern_reel(page,text,timeout_ms=90000,retry_after_ms=3000):
+    """Require the Settings UI; one retry is allowed only in proven Edit UI."""
+    next_button=page.get_by_role('button',name='Next',exact=True)
+    next_button.click(timeout=min(timeout_ms,30000))
+    started=time.monotonic()
+    deadline=started+timeout_ms/1000
+    retried=False
+    while True:
+        checkpoint(page)
+        require_no_advanced_protection(page)
+        audience=page.get_by_role('button',name=re.compile(r'^Post audience\b'))
+        visible=[audience.nth(i) for i in range(audience.count()) if audience.nth(i).is_visible()]
+        if len(visible)>1:
+            raise RuntimeError('存在多个公开范围控件，未猜选或发布。')
+        if visible:
+            return
+        if time.monotonic()>=deadline:
+            raise RuntimeError('点 Next 后未确认进入 Settings；保留原视频，未点击发布。')
+        navigation=page.get_by_role('navigation',name='Reel creation steps',exact=True)
+        settings=navigation.get_by_role('button',name='Settings',exact=True)
+        # In the supplied stalled Edit screenshot, Settings is a navigation
+        # button while Edit is plain current-step text. Never retry a generic
+        # Next from a different editor state or reset/reselect the media.
+        editing=(navigation.count()==1 and navigation.is_visible() and settings.count()==1 and settings.is_visible()
+                 and navigation.get_by_role('button',name='Edit',exact=True).count()==0)
+        if (not retried and editing and (time.monotonic()-started)*1000>=retry_after_ms
+                and next_button.count()==1 and next_button.is_visible() and next_button.is_enabled()):
+            verify_caption(modern_caption_field(page,timeout_ms=min(3000,max(1,int((deadline-time.monotonic())*1000)))),text)
+            retried=True
+            print('仍在 Edit 且 Next 可用，核对文案后仅重试一次 Next。',flush=True)
+            next_button.click(timeout=min(10000,max(1,int((deadline-time.monotonic())*1000))))
+        page.wait_for_timeout(100)
+
+
 def prepare_modern_reel(page, entry, text):
     from playwright.sync_api import expect
 
     field = modern_caption_field(page)
     fill_caption(field, text)
-    page.get_by_role("button", name="Next", exact=True).click(timeout=240000)
+    advance_modern_reel(page,text)
     checkpoint(page)
-    audience = page.get_by_role("button", name=re.compile(r"^Post audience Post audience"))
+    audience = page.get_by_role("button", name=re.compile(r"^Post audience\b"))
     expect(audience).to_be_visible(timeout=60000)
     set_ai_label(page, entry, modern=True)
     # Facebook renders separate label/value nodes whose textContent is
     # "Post audiencePublic". Its accessible name retains the separation.
     expect(audience).to_be_enabled(timeout=240000)
     public_audience = page.get_by_role(
-        "button", name=re.compile(r"^Post audience\s+Post audience\s+Public$")
+        "button", name=re.compile(r"^Post audience(?:\s+Post audience)?\s+Public$")
     )
     if public_audience.count() == 1 and public_audience.is_visible():
         print("本条 Reel 已是 Public，保留当前公开范围。", flush=True)
     else:
         friends_audience = page.get_by_role(
-            "button", name=re.compile(r"^Post audience\s+Post audience\s+Friends$")
+            "button", name=re.compile(r"^Post audience(?:\s+Post audience)?\s+Friends$")
         )
         if friends_audience.count() != 1 or not friends_audience.is_visible():
             raise RuntimeError("新版 Reel 未显示已识别的 Public/Friends 范围，未点击发布。")
@@ -876,7 +936,7 @@ def prepare_modern_reel(page, entry, text):
         expect(public).to_be_checked()
         page.get_by_role("button", name="Done", exact=True).click()
     expect(audience).to_have_accessible_name(
-        re.compile(r"^Post audience\s+Post audience\s+Public$"), timeout=30000
+        re.compile(r"^Post audience(?:\s+Post audience)?\s+Public$"), timeout=30000
     )
     button = page.get_by_role("button", name="Post", exact=True)
     expect(button).to_be_enabled(timeout=240000)
@@ -884,10 +944,23 @@ def prepare_modern_reel(page, entry, text):
     return button
 
 
+class AccountActionRequired(RuntimeError):
+    pass
+
+
+def require_no_advanced_protection(page):
+    title=re.compile(r'^Your account needs Advanced Protection$',re.I)
+    for role in ('dialog','alertdialog'):
+        dialogs=page.get_by_role(role).filter(has=page.get_by_text(title))
+        if any(dialogs.nth(i).is_visible() for i in range(dialogs.count())):
+            raise AccountActionRequired('Facebook 要求账号本人处理 Advanced Protection／通行密钥提示；尚未选择或发布视频，程序不会代改安全设置。')
+
+
 def open_facebook_menu(page, click_timeout_ms=5000, keyboard_timeout_ms=5000):
     """Use the known menu's accessible keyboard action if a nonmodal banner blocks its pointer."""
     from playwright.sync_api import expect, TimeoutError as PlaywrightTimeoutError
     prompt = page.get_by_role("alertdialog", name="Push notifications request", exact=True)
+    require_no_advanced_protection(page)
 
     def dismiss_prompt():
         from playwright.sync_api import expect
@@ -927,6 +1000,7 @@ def open_facebook_menu(page, click_timeout_ms=5000, keyboard_timeout_ms=5000):
             menu.click(timeout=click_timeout_ms)
             return
         except PlaywrightTimeoutError:
+            require_no_advanced_protection(page)
             if opened():
                 return
             if (menu.count() != 1 or not menu.is_visible() or not menu.is_enabled()
@@ -979,6 +1053,7 @@ def prepare_reel(page, entry, video, text, pause_before_reel=False):
 
     page._fb_upload_stage = 'open_target_profile'
     navigate_profile(page, entry["url"])
+    require_no_advanced_protection(page)
     page._fb_upload_stage = 'verify_identity'
     identity_proof = ensure_identity(page, entry)
     page._fb_upload_stage = 'open_reel_menu'
@@ -1209,7 +1284,8 @@ def run_entry(entry, state, state_path, publish, filename=None, review_before_po
                     page.screenshot(path=str(shot))
                 except Exception:
                     pass
-                exception_type = ReceiptNeedsReview if posted and isinstance(error, ReceiptNeedsReview) else RuntimeError
+                exception_type = (AccountActionRequired if isinstance(error, AccountActionRequired) else
+                                  ReceiptNeedsReview if posted and isinstance(error, ReceiptNeedsReview) else RuntimeError)
                 raise exception_type("操作未完成或结果需核对。记录：" + key[:12] + "；" + str(error)) from error
         finally:
             context.close()

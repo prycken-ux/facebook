@@ -232,6 +232,35 @@ class ModernEditorTests(unittest.TestCase):
             upload.modern_caption_field(self.page, timeout_ms=100)
         self.assertEqual(self.page.get_by_role("combobox", name="Search").inner_text(), "Keep search unchanged")
 
+    def test_stalled_next_is_retried_once_only_while_confirmed_edit_step_remains(self):
+        self.editor=EDITOR.replace('<div id="edit">','''<div id="edit"><nav aria-label="Reel creation steps">
+            <span>Edit ›</span><button type="button">Settings</button></nav>''').replace(
+            'onclick="window.savedCaption=',"onclick=\"window.attempts=(window.attempts||0)+1;if(window.attempts===1)return;window.savedCaption=")
+        self.page.goto('https://www.facebook.com/reels/create')
+        upload.fill_caption(upload.modern_caption_field(self.page),self.caption)
+        upload.advance_modern_reel(self.page,self.caption,timeout_ms=1500,retry_after_ms=100)
+        self.assertEqual(self.page.evaluate('window.attempts'),2)
+        self.assertEqual(self.page.evaluate('window.nextClicks'),1)
+        self.assertEqual(self.page.evaluate('window.savedCaption'),self.caption)
+        self.assertIsNone(self.page.evaluate('window.postClicks'))
+
+    def test_unknown_stalled_edit_layout_is_not_blindly_clicked_again(self):
+        self.editor=EDITOR.replace('onclick="window.savedCaption=',
+            'onclick="window.attempts=(window.attempts||0)+1;return;window.savedCaption=')
+        self.page.goto('https://www.facebook.com/reels/create')
+        upload.fill_caption(upload.modern_caption_field(self.page),self.caption)
+        with self.assertRaisesRegex(RuntimeError,'未确认进入 Settings'):
+            upload.advance_modern_reel(self.page,self.caption,timeout_ms=300,retry_after_ms=50)
+        self.assertEqual(self.page.evaluate('window.attempts'),1)
+        self.assertIsNone(self.page.evaluate('window.postClicks'))
+
+    def test_single_audience_label_is_verified_without_requiring_duplicated_text(self):
+        self.editor=EDITOR.replace('<span role="img" aria-label="Post audience"></span>','')
+        button,proof=self.prepare()
+        self.assertTrue(button.is_enabled())
+        self.assertIn('Public',self.page.locator('#audience').inner_text())
+        self.assertIsNone(self.page.evaluate('window.postClicks'))
+
 
 if __name__ == "__main__":
     unittest.main()

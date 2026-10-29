@@ -191,6 +191,32 @@ class IdentityLayoutTests(unittest.TestCase):
         self.assertEqual(upload.ensure_page_identity(self.page, self.entry, timeout_ms=1500)['method'],
                          'active_page_header_management_control')
 
+    def test_page_name_without_heading_and_same_header_edit_control_can_be_verified(self):
+        self.as_page()
+        self.html=self.html.replace('<h1>Example Page</h1>','<span>Example Page</span>').replace(
+            '<div id="controls"></div>','<div id="controls"><button>Business Dashboard</button><button>Edit</button></div>')
+        self.visit()
+        self.assertEqual(self.page.get_by_role('heading',name='Example Page',exact=True).count(),1) # sidebar heading only
+        proof=upload.ensure_page_identity(self.page,self.entry,timeout_ms=1000)
+        self.assertEqual(proof['method'],'active_page_header_management_control')
+
+    def test_nonheading_page_name_with_follow_or_disabled_edit_does_not_prove_management(self):
+        self.as_page()
+        for control in ('<button>Follow</button>','<button disabled>Edit</button>'):
+            self.html=PAGE.replace('<h1>Example Page</h1>','<span>Example Page</span>').replace(
+                '<div id="controls"></div>','<div id="controls">'+control+'</div>')
+            self.visit()
+            with self.assertRaises(upload.ProfileNameNotReady):
+                upload.wait_profile_name(self.page,self.entry,timeout_ms=100)
+
+    def test_nonheading_page_name_still_cannot_override_different_numeric_actor(self):
+        self.as_page('99999')
+        self.html=self.html.replace('<h1>Example Page</h1>','<span>Example Page</span>').replace(
+            '<div id="controls"></div>','<div id="controls"><button>Edit</button></div>')
+        self.visit()
+        with self.assertRaisesRegex(RuntimeError,'发布身份与目标公共主页不一致'):
+            upload.ensure_page_identity(self.page,self.entry,timeout_ms=150)
+
     def test_sidebar_management_buttons_never_establish_active_page_identity(self):
         self.as_page()
         self.visit()

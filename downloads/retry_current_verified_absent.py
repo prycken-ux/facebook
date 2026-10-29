@@ -31,20 +31,20 @@ def validate_record(entry, row, old):
     return name
 
 
-def select_pair(entry, state, row, old):
+def select_pair(entry, state, row, old, expected_text=None):
     filename = validate_record(entry, row, old)
     selection_state = dict(state)
     selection_state.pop(row['key'], None)
     selected = upload.named_job(entry, selection_state, filename)
-    common = (upload.ROOT / 'common_caption_today.txt').read_text(encoding='utf-8-sig').strip()
+    common = expected_text if expected_text is not None else (upload.ROOT / 'common_caption_today.txt').read_text(encoding='utf-8-sig').strip()
     if selected is None or selected[0] != row['key'] or not common or selected[3] != common:
         raise ValueError('原视频指纹或统一文案不匹配，未选择其他素材代替。')
     return filename
 
 
 def retry_one(pair, source_path, report, verified=False, confirmation_id='first-user-verification',
-              direct_publication=False, close_windows=False):
-    if not verified:
+              direct_publication=False, close_windows=False, before_post_only=False):
+    if not verified and not before_post_only:
         raise ValueError('只有本次已在 Facebook 核实对应视频不存在，才能使用 --verified-absent。')
     if not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', confirmation_id):
         raise ValueError('本次核验编号格式无效。')
@@ -60,14 +60,23 @@ def retry_one(pair, source_path, report, verified=False, confirmation_id='first-
             raise ValueError('目标配置缺失或重复。')
         entry = entries[0]
         upload.validate_entry(entry)
+        expected_text=None
+        preserve_caption=False
         if direct_publication:
-            if (report.get('schema')!='fb10-pages-direct-publication-v1' or pair[0]!='fb10'
-                    or entry.get('type')!='page' or upload.VERSION not in {'2.31','2.32','2.33'}
+            schema=report.get('schema')
+            allowed=(schema=='fb10-pages-direct-publication-v1' and pair[0]=='fb10' and entry.get('type')=='page') or (
+                schema=='other-accounts-direct-publication-v1' and re.fullmatch(r'fb(?:0[1-9]|1[0-9]|2[0-3])',pair[0])
+                and pair[0] not in {'fb16','fb18','fb21'} and not (pair[0]=='fb10' and entry.get('type')=='page'))
+            if (not allowed or upload.VERSION not in {'2.31','2.32','2.33','2.34'}
                     or upload.target_key(row.get('url',''))!=upload.target_key(entry['url'])
                     or report.get('ai_label') not in {'off','on'}
                     or not report.get('caption_text','').strip()):
                 raise ValueError('缺少本轮公共主页直接发布的明确授权与确切来源')
-            entry=dict(entry,enabled=True)
+            preserve_caption=schema=='other-accounts-direct-publication-v1' and pair[0]=='fb23'
+            expected_text=(row.get('caption_text','') if preserve_caption else report['caption_text']).strip()
+            if not expected_text:
+                raise ValueError('原批次缺少此视频的确切文案，不补写或替换')
+            entry=dict(entry,enabled=True,auto_switch_personal=True)
         elif not entry.get('enabled') or not entry.get('prepared_at'):
             raise ValueError('目标尚未完成准备或启用。')
         state_path = upload.ROOT / 'logs/publish_state.json'
@@ -98,11 +107,13 @@ def retry_one(pair, source_path, report, verified=False, confirmation_id='first-
         if old and old.get('status') == 'published':
             print('本轮此视频已记录成功，未重发：', '/'.join(pair), flush=True)
             return False
-        filename = select_pair(entry, state, row, old)
+        if before_post_only and (not isinstance(old,dict) or old.get('status')!='failed_before_post'):
+            raise ValueError('只允许原记录明确在 Post 前失败的任务；未知结果不重试')
+        filename = select_pair(entry, state, row, old,expected_text)
         def validate_direct(current):
             if direct_publication:
-                common=(upload.ROOT/'common_caption_today.txt').read_text(encoding='utf-8-sig').strip()
-                if common!=report['caption_text'].strip():
+                common=(upload.ROOT/'common_caption_today.txt').read_text(encoding='utf-8-sig').strip() if not preserve_caption else None
+                if not preserve_caption and common!=report['caption_text'].strip():
                     raise ValueError('统一文案与原发布批次不同，未补发')
                 if any(other_key!=key and (record.get('account'),record.get('target'))==pair
                        and record.get('status') in {'preparing','posting','needs_review'}
@@ -119,12 +130,12 @@ def retry_one(pair, source_path, report, verified=False, confirmation_id='first-
         actual = upload.read_json(state_path, {})
         if actual.get(key) != old:
             raise ValueError('身份核验期间任务记录变化，未解除原限制。')
-        filename = select_pair(entry, actual, row, old)
+        filename = select_pair(entry, actual, row, old,expected_text)
         validate_direct(actual)
         backup = upload.ROOT / 'backups' / ('verified-current-absent-' + datetime.now().strftime('%Y%m%d-%H%M%S-%f'))
         backup.mkdir(parents=True, exist_ok=False)
         shutil.copy2(state_path, backup / state_path.name)
-        upload.save_json(backup / 'assertion.json', dict(assertion='user_freshly_verified_current_video_absent',
+        upload.save_json(backup / 'assertion.json', dict(assertion='ledger_failure_before_post' if before_post_only else 'user_freshly_verified_current_video_absent',
             account=pair[0], target=pair[1], key=key, filename=filename, source_report=str(source_path), original_record=old))
         if claims_path.is_file():
             shutil.copy2(claims_path, backup / claims_path.name)
@@ -141,7 +152,8 @@ def retry_one(pair, source_path, report, verified=False, confirmation_id='first-
             claim['phase'] = 'not_started'
             upload.save_json(claims_path, claims)
             raise
-        print('只补发已核实不存在的原视频：', '/'.join(pair), filename, key[:12], flush=True)
+        print('只重试原记录明确在 Post 前失败的视频：' if before_post_only else '只补发已核实不存在的原视频：',
+              '/'.join(pair), filename, key[:12], flush=True)
         try:
             return upload.run_entry(entry, replacement, state_path, True, filename=filename,
                                     ai_label_override=report['ai_label'] == 'on',
