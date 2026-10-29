@@ -87,7 +87,7 @@ def validate_current(row,text,require_caption=True):
 def run(publish=False,ai_label=None,close_windows=False):
     if publish and ai_label not in {'on','off'}:
         raise ValueError('直接发布需要明确 --ai-label off 或 on')
-    if publish and upload.VERSION!='2.32':
+    if publish and upload.VERSION not in {'2.32','2.33'}:
         raise ValueError('请安装本包配套的上传核心 2.32，再直接发布')
     with locked():
         config=upload.read_json(upload.CONFIG,{})
@@ -100,7 +100,7 @@ def run(publish=False,ai_label=None,close_windows=False):
             if row['eligible']:
                 row.update(status='ready_to_publish',reason='本轮确切新视频，可自动核验后发布')
         path=upload.ROOT/'logs'/('other-accounts-publish-'+datetime.now().strftime('%Y%m%d-%H%M%S-%f')+'.json')
-        report=dict(schema='other-accounts-direct-publication-v1',created=stamp(),
+        report=dict(schema='other-accounts-direct-publication-v1',created=stamp(),uploader_version=upload.VERSION,
             caption_text=text,ai_label=ai_label,rows=today.public_rows(rows),
             phase='publishing' if publish else 'plan_only',
             excluded_accounts=sorted(EXCLUDED),excluded_fb10_pages=True,preserve_caption_accounts=['fb23'],

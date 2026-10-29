@@ -14,7 +14,7 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 ROOT = Path(__file__).resolve().parent
 CONFIG = ROOT / "upload_config.json"
-VERSION = "2.32"
+VERSION = "2.33"
 SUCCESS_PATTERN = (
     r"^(?:Your reel (?:is(?: now)?|has been|was) (?:successfully )?"
     r"(?:published|shared|posted)(?: successfully)?|"
@@ -537,7 +537,7 @@ def ensure_page_identity(page, entry, timeout_ms=90000, picker_delay_ms=2000):
                     # A different active Page cannot be accepted via a generic
                     # management control; allow a delayed Switch Now to arrive.
                     actor_error = error
-        if (method is None and actor_error is not None and not switched and not picker_used
+        if (method is None and candidates and not switched and not picker_used
                 and (time.monotonic() - started) * 1000 >= picker_delay_ms
                 and deadline - time.monotonic() >= 1):
             from page_profile_switch import switch_page_from_picker
@@ -977,8 +977,11 @@ def assist_reel_entry(page, entry, video, identity_proof):
 def prepare_reel(page, entry, video, text, pause_before_reel=False):
     from playwright.sync_api import expect
 
+    page._fb_upload_stage = 'open_target_profile'
     navigate_profile(page, entry["url"])
+    page._fb_upload_stage = 'verify_identity'
     identity_proof = ensure_identity(page, entry)
+    page._fb_upload_stage = 'open_reel_menu'
     require_english_interface(page)
     open_facebook_menu(page)
     if pause_before_reel:
@@ -987,19 +990,28 @@ def prepare_reel(page, entry, video, text, pause_before_reel=False):
         reel_button = page.get_by_role("button", name="Reel", exact=True)
     else:
         reel_button = page.get_by_role("dialog", name="Menu", exact=True).get_by_role("button", name="Reel", exact=True)
+    page._fb_upload_stage = 'select_exact_video'
     select_reel_video(page, reel_button, video)
+    page._fb_upload_stage = 'wait_reel_editor'
     layout = wait_reel_layout(page)
     if layout == "modern":
+        page._fb_upload_stage = 'modern_caption_audience_ai'
         button = prepare_modern_reel(page, entry, text)
         return button, dict(identity_proof, editor_layout="modern")
+    page._fb_upload_stage = 'classic_next_1'
     page.get_by_role("button", name="Next", exact=True).click(timeout=240000)
+    page._fb_upload_stage = 'classic_next_2'
     page.get_by_role("button", name="Next", exact=True).click(timeout=240000)
     checkpoint(page)
     if entry.get("type") == "personal":
+        page._fb_upload_stage = 'verify_public_audience'
         ensure_personal_public_audience(page)
+    page._fb_upload_stage = 'fill_caption'
     field = page.get_by_role("textbox", name="Describe your reel...", exact=True)
     fill_caption(field, text)
+    page._fb_upload_stage = 'verify_ai_label'
     set_ai_label(page, entry)
+    page._fb_upload_stage = 'ready_to_post'
     button = page.get_by_role("button", name="Post", exact=True)
     expect(button).to_be_enabled(timeout=240000)
     return button, identity_proof
@@ -1115,11 +1127,13 @@ def run_entry(entry, state, state_path, publish, filename=None, review_before_po
         try:
             page = context.pages[0] if context.pages else context.new_page()
             page.set_default_timeout(30000)
+            page._fb_upload_stage = 'browser_opened'
             # One video per invocation; scheduled repetitions handle the queue.
             record = {"account": entry["account"], "target": entry["target"],
                       "url": entry["url"], "video": str(video), "caption": str(caption),
                       "created": datetime.now().astimezone().isoformat(), "status": "preparing",
                       "ai_label_requested": bool(entry.get("ai_label", False))}
+            record['uploader_version'] = VERSION
             if comment_plan is not None:
                 record['post_comment_plan'] = comment_plan
                 print('已绑定本条产品评论文案；当前仅记录待办，自动发送尚未启用。', flush=True)
@@ -1156,6 +1170,7 @@ def run_entry(entry, state, state_path, publish, filename=None, review_before_po
                     raise RuntimeError('准备期间源视频内容变化，未点击发布。')
                 if expected_job_key is not None and caption.read_text(encoding='utf-8-sig').strip() != text:
                     raise RuntimeError('准备期间同名文案变化，未点击发布。')
+                page._fb_upload_stage = 'final_identity_check'
                 install_receipt_watch(page)
                 recheck_publish_identity(page, entry, identity_proof)
                 # Persist the intent BEFORE clicking, so crashes cannot retry the Post.
@@ -1165,7 +1180,9 @@ def run_entry(entry, state, state_path, publish, filename=None, review_before_po
                 print('准备提交发布：', entry['account'], entry['target'], video.name, flush=True)
                 page.evaluate("() => { window.__fbUploadWatch.armed = true; }")
                 posted = True
+                page._fb_upload_stage = 'post_click'
                 button.click()
+                page._fb_upload_stage = 'wait_success_receipt'
                 print('已点击发布，正在等待成功回执（最长 120 秒）：', entry['account'], entry['target'], flush=True)
                 record["success_message"] = wait_for_receipt(page, button)
                 record["confirmation_method"] = "fresh_success_ui_and_composer_closed"
@@ -1179,7 +1196,14 @@ def run_entry(entry, state, state_path, publish, filename=None, review_before_po
                     if posted and isinstance(error, ReceiptNeedsReview):
                         record["review_reason"] = "publication_receipt_timeout"
                     record["error"] = str(error)[:1600]
+                    stage = getattr(page, '_fb_upload_stage', 'unknown')
+                    record['failure_stage'] = stage if isinstance(stage, str) else 'unknown'
                     save_json(state_path, state)
+                detail = ROOT / 'logs' / ('review-' + key[:12] + '-error.txt')
+                try:
+                    detail.write_text(str(error), encoding='utf-8')
+                except OSError:
+                    pass
                 shot = ROOT / "logs" / ("review-" + key[:12] + ".png")
                 try:
                     page.screenshot(path=str(shot))

@@ -81,6 +81,24 @@ class ProfilePickerTests(unittest.TestCase):
         self.assertTrue(proof['switched'])
         self.assertEqual(self.count('pick'), 1)
 
+    def test_personal_identity_without_page_cookie_can_switch_to_managed_page(self):
+        self.context.clear_cookies(name='i_user')
+        self.visit()
+        proof=upload.ensure_page_identity(self.page,self.entry,timeout_ms=2500,picker_delay_ms=0)
+        self.assertEqual(proof['method'],'page_actor_id_match')
+        self.assertEqual(proof['switch_method'],'profile_picker')
+        self.assertEqual(self.count('pick'),1)
+        self.assertEqual(self.count('post'),0)
+
+    def test_missing_page_cookie_still_cannot_pass_wrong_id_after_selection(self):
+        self.context.clear_cookies(name='i_user')
+        self.html=self.html.replace('onclick="pick(\'1001\')"','onclick="pick(\'1002\')"')
+        self.visit()
+        with self.assertRaisesRegex(RuntimeError,'切换超时'):
+            upload.ensure_page_identity(self.page,self.entry,timeout_ms=1700,picker_delay_ms=0)
+        self.assertEqual(self.count('pick'),1)
+        self.assertEqual(self.count('post'),0)
+
     def test_already_open_picker_is_not_toggled_closed(self):
         self.html += '<script>document.querySelector("#picker").hidden=false</script>'
         self.visit()

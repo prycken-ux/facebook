@@ -62,7 +62,7 @@ def retry_one(pair, source_path, report, verified=False, confirmation_id='first-
         upload.validate_entry(entry)
         if direct_publication:
             if (report.get('schema')!='fb10-pages-direct-publication-v1' or pair[0]!='fb10'
-                    or entry.get('type')!='page' or upload.VERSION not in {'2.31','2.32'}
+                    or entry.get('type')!='page' or upload.VERSION not in {'2.31','2.32','2.33'}
                     or upload.target_key(row.get('url',''))!=upload.target_key(entry['url'])
                     or report.get('ai_label') not in {'off','on'}
                     or not report.get('caption_text','').strip()):

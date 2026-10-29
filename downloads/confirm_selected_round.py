@@ -18,17 +18,20 @@ def basename(value):
 
 
 def load_expanded_report(filename):
-    if not re.fullmatch(r'available-today-\d{8}-\d{6}-\d{6}\.json',filename):
-        raise ValueError('需提供 logs 中确切的 available-today 报告文件名')
+    match=re.fullmatch(r'(available-today|other-accounts-publish)-(\d{8})-\d{6}-\d{6}\.json',filename)
+    if not match:
+        raise ValueError('需提供 logs 中确切的 available-today 或 other-accounts-publish 报告文件名')
+    expected_schema={'available-today':'available-current-publication-v1',
+                     'other-accounts-publish':'other-accounts-direct-publication-v1'}[match[1]]
     path=upload.ROOT/'logs'/filename
     report=upload.read_json(path,{})
-    if (not isinstance(report,dict) or report.get('schema')!='available-current-publication-v1'
+    if (not isinstance(report,dict) or report.get('schema')!=expected_schema
             or report.get('phase')=='plan_only' or not isinstance(report.get('rows'),list)
             or any(not isinstance(row,dict) for row in report['rows'])
             or report.get('ai_label') not in {'off','on'} or not report.get('caption_text','').strip()):
         raise ValueError('没有有效的原新账号实际发布报告')
     created=datetime.fromisoformat(report.get('created',''))
-    if created.tzinfo is None or created.strftime('%Y%m%d')!=filename[16:24]:
+    if created.tzinfo is None or created.strftime('%Y%m%d')!=match[2]:
         raise ValueError('原报告日期或时区与文件名不一致')
     return path,report
 
@@ -151,6 +154,12 @@ def confirm(round_start,targets,verified=False,source_report=None,allow_unrecord
             if row.get('key') in selected:
                 row.update(status='published',reason='用户已确认该原批次视频发布成功；不重发')
         report['final_rows']=finals
+        if 'manual_checks' in report:
+            report['manual_checks']=[row for row in finals if row.get('status') in {
+                'needs_review','posting','preparing','needs_check','failed_before_post',
+                'invalid','blocked_by_older_review','not_registered'} or any(
+                item.get('status') in {'needs_review','posting','preparing','failed_before_post'}
+                for item in row.get('recorded_inbox',[]))]
         confirmations=report.setdefault('selected_user_confirmations',[])
         if not any(set(item.get('keys',[]))==selected for item in confirmations):
             confirmations.append(dict(confirmed_at=now,keys=sorted(selected),backup=str(backup)))
