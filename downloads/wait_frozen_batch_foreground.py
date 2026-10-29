@@ -30,7 +30,7 @@ def main():
     if datetime.now(timezone.utc).astimezone(batch.BJ).date().isoformat()!='2026-10-29':
         raise RuntimeError('已不是本批授权日期，不补跑过期计划。')
     kernel=ctypes.WinDLL('kernel32',use_last_error=True)
-    kernel.CreateMutexW.argtypes=[ctypes.c_void_p,ctypes.c_bool,ctypes.c_wchar_p]
+    kernel.CreateMutexW.argtypes=[ctypes.c_void_p,ctypes.c_int,ctypes.c_wchar_p]
     kernel.CreateMutexW.restype=ctypes.c_void_p
     kernel.CloseHandle.argtypes=[ctypes.c_void_p]
     kernel.CloseHandle.restype=ctypes.c_int
