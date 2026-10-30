@@ -158,4 +158,5 @@ class TodayFirstOrderTests(unittest.TestCase):
             self.assertEqual(events,['all-today-videos','today-comments'])
             load.assert_called_once_with(daily.TODAY,required=False)
             self.assertTrue(run.call_args.kwargs['defer_comments'])
+            self.assertFalse(run.call_args.kwargs['retry_before_post'])
             self.assertEqual(send.call_args.args[0]['payload']['date'],daily.TODAY)

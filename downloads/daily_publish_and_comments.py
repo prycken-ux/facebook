@@ -216,7 +216,7 @@ def execute(output_dir=None,links_path=None,comments_only=False):
         if datetime.now(timezone.utc)<datetime.fromisoformat(value['payload']['start']):
             print('等待文案文件稳定后开始，请保持窗口打开。',flush=True)
         while datetime.now(timezone.utc)<datetime.fromisoformat(value['payload']['start']):time.sleep(1)
-        batch.run(path,output_dir,defer_comments=True,retry_before_post=True)
+        batch.run(path,output_dir,defer_comments=True,retry_before_post=False)
     print('第二阶段：只给今天已经确认发布成功的视频评论；不再上传视频。',flush=True)
     rows=backfill(value,output_dir,links_path)
     report_path=path.with_name(path.stem+'-results.json')
