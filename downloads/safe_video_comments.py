@@ -4,7 +4,7 @@ import json
 import re
 import time
 from datetime import datetime,timezone
-from urllib.parse import urlparse
+from urllib.parse import urlparse,parse_qs
 
 import fb_upload as upload
 
@@ -20,8 +20,14 @@ def normalized(text):
 def direct_link(value):
     try:
         parsed=urlparse(value)
-        if parsed.scheme!='https' or parsed.hostname not in {'facebook.com','www.facebook.com'} or parsed.username or parsed.password:
+        if parsed.scheme!='https' or parsed.hostname not in {'facebook.com','www.facebook.com'} or parsed.username or parsed.password or parsed.port:
             return None
+        if parsed.path.rstrip('/') in {'/watch','/video.php'}:
+            values=parse_qs(parsed.query).get('v',[])
+            if len(values)==1 and values[0].isdecimal():return 'https://www.facebook.com/reel/'+values[0]
+            return None
+        match=re.fullmatch(r'/(?:reels/|[A-Za-z0-9._-]+/videos/)([0-9]+)/?',parsed.path)
+        if match:return 'https://www.facebook.com/reel/'+match[1]
         return upload.normalize_video_permalink('https://www.facebook.com'+parsed.path)
     except (ValueError,TypeError):
         return None
@@ -104,7 +110,7 @@ def _published_link_once(page,context,collector):
     if len(links)==1:return next(iter(links)),'fresh_success_view_reel_link'
     if len(proven)==1:return next(iter(proven)),'published_video_owner_caption_creation_match'
     area=page.locator('[data-local-current-publication-receipt="true"]')
-    views=area.get_by_role('button',name=re.compile(r'^(?:View|See) (?:your )?reel$',re.I))
+    views=area.get_by_role('button',name=re.compile(r'^(?:View|See) (?:your )?(?:reel|video)$',re.I))
     visible=[views.nth(i) for i in range(views.count()) if views.nth(i).is_visible()]
     opened=page.evaluate('() => Boolean(window.__fbUploadWatch && window.__fbUploadWatch.viewOpened)')
     if len(visible)==1 and not opened:
@@ -126,13 +132,20 @@ def _published_link_once(page,context,collector):
 
 
 def resolve_published_link(page,context,collector,timeout_ms=0):
+    from playwright.sync_api import Error as BrowserError
     deadline=time.monotonic()+timeout_ms/1000
+    navigation_retries=0
     while True:
         try:return _published_link_once(page,context,collector)
         except PublishedLinkNotReady:
             upload.checkpoint(page);upload.require_no_advanced_protection(page)
             if time.monotonic()>=deadline:raise
             page.wait_for_timeout(250)
+        except BrowserError as error:
+            if 'Execution context was destroyed' not in str(error) or navigation_retries or time.monotonic()>=deadline:raise
+            navigation_retries+=1
+            upload.checkpoint(page)
+            page.wait_for_load_state('domcontentloaded',timeout=max(1,min(5000,int((deadline-time.monotonic())*1000))))
 
 
 COMMENT_SCAN_JS=r'''({name,text,urls}) => {
@@ -168,7 +181,7 @@ class CommentComposerMissing(RuntimeError):pass
 
 
 def comment_field(page):
-    fields=page.get_by_role('textbox',name=re.compile(r'^(?:Write a (?:public )?comment(?:\.{3}|…)?|Comment as .+)$',re.I))
+    fields=page.get_by_role('textbox',name=re.compile(r'^(?:Write a (?:public )?comment(?: as .+)?(?:\.{3}|…)?|Comment as .+)$',re.I))
     visible=[fields.nth(i) for i in range(fields.count()) if fields.nth(i).is_visible() and fields.nth(i).is_editable()]
     if not visible:raise CommentComposerMissing('评论输入框尚未出现')
     if len(visible)!=1:raise RuntimeError('未找到唯一顶层评论输入框，不使用 Reply 或猜测位置；请手动评论')
@@ -211,7 +224,7 @@ def send_control(field):
     for _ in range(4):
         if area.evaluate("e=>e.matches('body,main,[role=main]')"):break
         if area.locator('video').count() or area.get_by_role('textbox').count()!=1 or area.get_by_role('button').count()>8:break
-        controls=area.get_by_role('button',name=re.compile(r'^(?:Comment|Send comment|Post comment)$',re.I))
+        controls=area.get_by_role('button',name=re.compile(r'^(?:Comment|Send comment|Post comment|Post a comment|Send)$',re.I))
         visible=[controls.nth(i) for i in range(controls.count()) if controls.nth(i).is_visible()]
         if len(visible)==1:
             from playwright.sync_api import expect
@@ -219,7 +232,21 @@ def send_control(field):
             return visible[0]
         if len(visible)>1:raise RuntimeError('评论发送按钮不唯一，未发送')
         area=area.locator('..')
-    raise RuntimeError('没有唯一明确的评论发送按钮，未使用 Enter 猜测发送；请手动评论')
+    # Enter is allowed only when this exact field has an explicit UI instruction.
+    hint=field.evaluate(r"""e=>{
+      let text=e.getAttribute('aria-description')||'';
+      for(const id of (e.getAttribute('aria-describedby')||'').split(/\s+/)){
+        const node=document.getElementById(id);if(node)text+=' '+node.innerText;
+      }return text;
+    }""")
+    if isinstance(hint,str) and re.search(r'\bPress Enter to (?:post|send)(?: your comment)?[.!]?(?:\s|$)',hint,re.I):
+        return ExplicitEnter(field)
+    raise RuntimeError('没有唯一明确的评论发送按钮或明确的 Enter 发送说明，需手动评论')
+
+
+class ExplicitEnter:
+    def __init__(self,field):self.field=field
+    def click(self,timeout=10000):self.field.press('Enter',timeout=timeout)
 
 
 def capture_failure(page,key,error):
@@ -232,7 +259,7 @@ def capture_failure(page,key,error):
     except Exception:pass
 
 
-def after_publication(page,context,entry,proof,key,record,text,collector):
+def after_publication(page,context,entry,proof,key,record,text,collector,verified_link=None):
     if record.get('status')!='published':raise ValueError('视频未确认成功，不评论')
     if not text.strip() or len(text)>5000:raise ValueError('评论文案为空或过长')
     ledger_path=upload.ROOT/'logs/video_comments.json'
@@ -247,9 +274,24 @@ def after_publication(page,context,entry,proof,key,record,text,collector):
     item=dict(account=entry['account'],target=entry['target'],video_job=key,text=text,
         text_sha256=text_hash(text),created=datetime.now(timezone.utc).isoformat(),status='preparing')
     try:
-        permalink,method=resolve_published_link(page,context,collector,timeout_ms=30000)
+        if verified_link is not None:
+            permalink,method=verified_link
+            if method not in {'verified_owner_caption_time','user_supplied_exact_job_link','previously_verified_exact_job_link'} or not direct_link(permalink):
+                raise ValueError('补评论链接缺少确切任务核验')
+            permalink=direct_link(permalink)
+        else:
+            try:
+                permalink,method=resolve_published_link(page,context,collector,timeout_ms=15000)
+            except PublishedLinkNotReady:
+                caption_text=record.get('published_caption_text')
+                if not isinstance(caption_text,str) or not caption_text.strip():raise
+                from published_video_lookup import find_published
+                since=datetime.fromisoformat(record['created']).timestamp()-5
+                permalink,method=find_published(page,context,entry,caption_text,since,time.time()+60,timeout_ms=15000)
         item.update(permalink=permalink,link_method=method)
         record['permalink']=permalink
+        record['comment_link_job_key']=key
+        record['comment_link_method']=method
         if direct_link(page.url)!=permalink:
             page.goto(upload.english_url(permalink),wait_until='domcontentloaded',timeout=90000)
         upload.checkpoint(page);upload.require_no_advanced_protection(page)

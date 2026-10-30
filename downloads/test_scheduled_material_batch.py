@@ -89,7 +89,7 @@ class ScheduledMaterialTests(unittest.TestCase):
         self.assertEqual(schedule.start_time('2026-10-29','17:00',late).date(),late.astimezone(schedule.BJ).date())
         with self.assertRaises(ValueError):schedule.start_time('2026-10-28','17:00',self.now)
 
-    def pipeline(self,path,unknown=False,comment_failure=False):
+    def pipeline(self,path,unknown=False,comment_failure=False,before_job=None):
         browser=MagicMock();browser.pages=[MagicMock()];button=MagicMock()
         with patch.object(schedule,'datetime',wraps=datetime) as clock,patch('playwright.sync_api.sync_playwright'), \
              patch.object(upload,'launch_context',return_value=browser),patch.object(upload,'prepare_reel',return_value=(button,{})), \
@@ -100,7 +100,7 @@ class ScheduledMaterialTests(unittest.TestCase):
             clock.now.return_value=datetime(2026,10,29,9,1,tzinfo=timezone.utc)
             # Captions were frozen at setup; simulate the scheduled stable-file interval.
             for file in self.root.rglob('*.txt'):os.utime(file,(time.time()-180,time.time()-180))
-            result=schedule.run(path)
+            result=schedule.run(path,before_job=before_job)
         return result,button,comment
 
     def test_run_posts_exact_frozen_jobs_comments_once_and_preserves_old_review_without_enabling_config(self):
@@ -116,6 +116,17 @@ class ScheduledMaterialTests(unittest.TestCase):
         self.assertTrue(old.exists())
         result,button,comment=self.pipeline(path)
         self.assertEqual(result,0);button.click.assert_not_called();comment.assert_not_called()
+
+    def test_before_job_comment_updates_are_reloaded_before_saving_new_publication_state(self):
+        path,_=self.freeze()
+        old_key='f'*64
+        def hook(job):
+            state=upload.read_json(self.state_path,{})
+            state[old_key]=dict(account='fb99',target='personal',url='https://www.facebook.com/profile.php?id=9999',status='published',comment_status='sent')
+            upload.save_json(self.state_path,state)
+        result,button,comment=self.pipeline(path,before_job=hook)
+        self.assertEqual(result,0)
+        self.assertEqual(upload.read_json(self.state_path,{})[old_key]['comment_status'],'sent')
 
     def test_comment_failure_never_changes_published_video_to_failed_or_causes_reupload(self):
         path,_=self.freeze();result,button,comment=self.pipeline(path,comment_failure=True)

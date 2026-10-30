@@ -108,6 +108,21 @@ class VideoCommentTests(unittest.TestCase):
         self.assertIsNone(self.page.evaluate('window.sent'))
 
 
+    def test_explicit_enter_to_post_instruction_allows_top_level_send_with_intent_guard(self):
+        self.page.evaluate("""()=>{const f=document.querySelector('#field'),b=document.querySelector('#compose button');
+          const send=b.onclick;b.remove();f.setAttribute('aria-description','Press Enter to post.');
+          f.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();send()}})}""")
+        self.assertEqual(self.send()['status'],'sent');self.assertEqual(self.page.evaluate('window.sent'),1)
+
+    def test_missing_send_button_without_explicit_enter_instruction_does_not_send(self):
+        self.page.locator('#compose button').evaluate('e=>e.remove()')
+        self.assertEqual(self.send()['status'],'manual_required');self.assertIsNone(self.page.evaluate('window.sent'))
+
+    def test_comment_as_owner_label_is_supported(self):
+        self.page.locator('#field').evaluate("e=>e.setAttribute('aria-label','Write a comment as Example Page')")
+        self.assertEqual(self.send()['status'],'sent')
+
+
 class PublicVideoLinkTests(unittest.TestCase):
     def test_only_new_published_owned_video_with_exact_caption_can_supply_link(self):
         now=time.time();video=dict(__typename='Video',id='9001',owner={'id':'1001'},description={'text':'Exact caption'},creation_time=now,is_published=True)

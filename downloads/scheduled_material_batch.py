@@ -48,7 +48,7 @@ def start_time(date,time_text,now):
 
 
 def freeze(date,time_text,include_pages,comment,now):
-    if upload.VERSION not in {'2.38','2.39'}:raise ValueError('需安装配套上传核心 2.38 或 2.39')
+    if upload.VERSION not in {'2.38','2.39','2.40'}:raise ValueError('需安装配套上传核心 2.38、2.39 或 2.40')
     if not comment.strip() or len(comment)>5000:raise ValueError('评论文案为空或过长')
     effective=start_time(date,time_text,now)
     config=upload.read_json(upload.CONFIG,{})
@@ -227,7 +227,7 @@ class Tee:
         for stream in self.streams:stream.flush()
 
 
-def run(path,output_dir=None):
+def run(path,output_dir=None,before_job=None):
     path=Path(path)
     path.resolve().relative_to((upload.ROOT/'logs').resolve())
     manifest=upload.read_json(path,{})
@@ -236,7 +236,7 @@ def run(path,output_dir=None):
     now=datetime.now(timezone.utc)
     if now.astimezone(BJ).date().isoformat()!=payload['date']:raise ValueError('已不是本批授权日期，不补跑过期计划')
     if now<datetime.fromisoformat(payload['start']):raise ValueError('尚未到指定开始时间，不提前发布')
-    if upload.VERSION not in {'2.38','2.39'}:raise ValueError('上传核心版本不匹配')
+    if upload.VERSION not in {'2.38','2.39','2.40'}:raise ValueError('上传核心版本不匹配')
     attempts=[]
     with locked(),path.with_suffix('.log').open('a',encoding='utf-8') as log:
         with contextlib.redirect_stdout(Tee(sys.stdout,log)),contextlib.redirect_stderr(Tee(sys.stderr,log)):
@@ -251,6 +251,9 @@ def run(path,output_dir=None):
                         if any(r.get('account')==job['account'] and r.get('status') in {'preparing','posting'} for r in state.values()):
                             raise RuntimeError('该账号仍有准备中或提交中的旧任务，不关闭其浏览器、不解除记录；需手动核实')
                         entry=validate_job(job)
+                        if before_job is not None:
+                            before_job(job)
+                            state=upload.read_json(state_path,{})
                         close_selected_window(entry['account'])
                         entry=dict(entry,enabled=True,auto_switch_personal=True,_authorized_comment_text=payload['comment_text'])
                         print('\n开始本批原视频：',job['account'],job['target'],job['filename'],flush=True)

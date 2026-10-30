@@ -14,7 +14,7 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 ROOT = Path(__file__).resolve().parent
 CONFIG = ROOT / "upload_config.json"
-VERSION = "2.39"
+VERSION = "2.40"
 SUCCESS_PATTERN = (
     r"^(?:Your reel (?:is(?: now)?|has been|was) (?:successfully )?"
     r"(?:published|shared|posted)(?: successfully)?|"
@@ -77,7 +77,7 @@ RECEIPT_WATCH_JS = r"""pattern => {
         }
         if(watch.armed && watch.message && watch.receiptArea && watch.receiptArea.isConnected){
           for(const link of watch.receiptArea.querySelectorAll('a[href]')){
-            if(/^(?:View|See) (?:your )?reel$/i.test(norm(link.innerText || link.getAttribute('aria-label')))){
+            if(/^(?:View|See) (?:your )?(?:reel|video)$/i.test(norm(link.innerText || link.getAttribute('aria-label')))){
               const value=link.href;if(!watch.receiptLinks.includes(value))watch.receiptLinks.push(value);
             }
           }
@@ -1009,7 +1009,7 @@ def prepare_modern_reel(page, entry, text):
     set_ai_label(page, entry, modern=True)
     # Facebook renders separate label/value nodes whose textContent is
     # "Post audiencePublic". Its accessible name retains the separation.
-    expect(audience).to_be_enabled(timeout=240000)
+    expect(audience).to_be_enabled(timeout=180000)
     public_audience = page.get_by_role(
         "button", name=re.compile(r"^Post audience(?:\s+Post audience)?\s+Public$")
     )
@@ -1031,7 +1031,7 @@ def prepare_modern_reel(page, entry, text):
         re.compile(r"^Post audience(?:\s+Post audience)?\s+Public$"), timeout=30000
     )
     button = page.get_by_role("button", name="Post", exact=True)
-    expect(button).to_be_enabled(timeout=240000)
+    expect(button).to_be_enabled(timeout=180000)
     print("新版 Reel 检查通过：TXT 文案已填写，Public 和所需 AI 标签已核对。", flush=True)
     return button
 
@@ -1228,7 +1228,7 @@ def prepare_reel(page, entry, video, text, pause_before_reel=False):
     set_ai_label(page, entry)
     page._fb_upload_stage = 'ready_to_post'
     button = page.get_by_role("button", name="Post", exact=True)
-    expect(button).to_be_enabled(timeout=240000)
+    expect(button).to_be_enabled(timeout=180000)
     return button, identity_proof
 
 
@@ -1356,6 +1356,7 @@ def run_entry(entry, state, state_path, publish, filename=None, review_before_po
                       "created": datetime.now().astimezone().isoformat(), "status": "preparing",
                       "ai_label_requested": bool(entry.get("ai_label", False))}
             record['uploader_version'] = VERSION
+            record['published_caption_text'] = text
             comment_text=entry.get('_authorized_comment_text')
             link_collector=None
             if comment_text:
@@ -1418,7 +1419,10 @@ def run_entry(entry, state, state_path, publish, filename=None, review_before_po
                 record["confirmation_method"] = "fresh_success_ui_and_composer_closed"
                 record["status"] = "published"
                 save_json(state_path, state)
-                archive(video, caption)
+                archived=archive(video, caption)
+                record.update(archived_video=str(archived/video.name),archived_caption=str(archived/caption.name),
+                              archived_at=datetime.now().astimezone().isoformat())
+                save_json(state_path,state)
                 print("发布成功，已归档：", video.name)
                 if comment_text:
                     try:
