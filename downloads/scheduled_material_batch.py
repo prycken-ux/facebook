@@ -1,5 +1,6 @@
 """Freeze today's exact new media and register one Beijing-time Windows task."""
 import argparse
+import traceback
 import base64
 import contextlib
 import csv
@@ -48,7 +49,7 @@ def start_time(date,time_text,now):
 
 
 def freeze(date,time_text,include_pages,comment,now):
-    if upload.VERSION not in {'2.38','2.39','2.40'}:raise ValueError('需安装配套上传核心 2.38、2.39 或 2.40')
+    if upload.VERSION not in {'2.38','2.39','2.40','2.41'}:raise ValueError('需安装配套上传核心 2.38～2.41')
     if not comment.strip() or len(comment)>5000:raise ValueError('评论文案为空或过长')
     effective=start_time(date,time_text,now)
     config=upload.read_json(upload.CONFIG,{})
@@ -204,7 +205,7 @@ def results(path,manifest,attempts,output_dir,final=False):
     with zipfile.ZipFile(output,'w',zipfile.ZIP_DEFLATED) as archive:
         archive.write(report_path,'results.json');archive.write(csv_path,'results.csv')
         for job in manifest['payload']['jobs']:
-            for prefix in ['review-','comment-']:
+            for prefix in ['review-','comment-','batch-']:
                 for suffix in ['.png','-error.txt','.aria.txt']:
                     artifact=upload.ROOT/'logs'/(prefix+job['key'][:12]+suffix)
                     if artifact.is_file():archive.write(artifact,artifact.name)
@@ -213,7 +214,7 @@ def results(path,manifest,attempts,output_dir,final=False):
     for row in rows:
         if not final and not any(a['key']==row['key'] for a in attempts):continue
         if row['video_status']!='published' or row['comment_status'] not in {'sent','already_present'}:
-            print('需手动核实：',row['account']+'/'+row['target'],row['filename'],row['video_status'],row['comment_status'],row['reason'].splitlines()[0] if row['reason'] else '',flush=True)
+            print('需手动核实：',row['account']+'/'+row['target'],row['filename'],row['video_status'],row['comment_status'],str(row['reason']).split('\n',1)[0],flush=True)
     print('完整结果：',output,flush=True)
     return rows
 
@@ -227,7 +228,7 @@ class Tee:
         for stream in self.streams:stream.flush()
 
 
-def run(path,output_dir=None,before_job=None):
+def run(path,output_dir=None,before_job=None,defer_comments=False,retry_before_post=False):
     path=Path(path)
     path.resolve().relative_to((upload.ROOT/'logs').resolve())
     manifest=upload.read_json(path,{})
@@ -236,7 +237,7 @@ def run(path,output_dir=None,before_job=None):
     now=datetime.now(timezone.utc)
     if now.astimezone(BJ).date().isoformat()!=payload['date']:raise ValueError('已不是本批授权日期，不补跑过期计划')
     if now<datetime.fromisoformat(payload['start']):raise ValueError('尚未到指定开始时间，不提前发布')
-    if upload.VERSION not in {'2.38','2.39','2.40'}:raise ValueError('上传核心版本不匹配')
+    if upload.VERSION not in {'2.38','2.39','2.40','2.41'}:raise ValueError('上传核心版本不匹配')
     attempts=[]
     with locked(),path.with_suffix('.log').open('a',encoding='utf-8') as log:
         with contextlib.redirect_stdout(Tee(sys.stdout,log)),contextlib.redirect_stderr(Tee(sys.stderr,log)):
@@ -245,7 +246,10 @@ def run(path,output_dir=None,before_job=None):
                     attempt=dict(account=job['account'],target=job['target'],key=job['key'],started_at=datetime.now(timezone.utc).isoformat())
                     try:
                         state_path=upload.ROOT/'logs/publish_state.json';state=upload.read_json(state_path,{})
-                        if job['key'] in state:
+                        old=state.get(job['key'],{})
+                        can_retry=(retry_before_post and old.get('status')=='failed_before_post'
+                            and not any(old.get(k) for k in ('success_message','permalink','post_intent_at','today_first_retry_used')))
+                        if job['key'] in state and not can_retry:
                             print('原素材已有记录，不重发：',job['account'],job['filename'],state[job['key']].get('status'),flush=True)
                             attempt['action']='existing_record';continue
                         if any(r.get('account')==job['account'] and r.get('status') in {'preparing','posting'} for r in state.values()):
@@ -258,13 +262,17 @@ def run(path,output_dir=None,before_job=None):
                         entry=dict(entry,enabled=True,auto_switch_personal=True,_authorized_comment_text=payload['comment_text'])
                         print('\n开始本批原视频：',job['account'],job['target'],job['filename'],flush=True)
                         upload.run_entry(entry,state,state_path,True,filename=job['filename'],ai_label_override=False,
-                            expected_job_key=job['key'],preserve_old_review_for_exact_job=True)
+                            expected_job_key=job['key'],preserve_old_review_for_exact_job=True,
+                            defer_comments=defer_comments,retry_before_post=can_retry)
                         attempt['action']='finished'
                     except KeyboardInterrupt:
                         attempt.update(action='interrupted',error='用户中断，保留原状态，禁止直接重复发布');raise
                     except Exception as error:
-                        attempt.update(action='manual_required',error=str(error))
-                        print('此目标停止并保留记录，继续其他确切素材：',str(error).splitlines()[0],flush=True)
+                        message=str(error).strip() or type(error).__name__
+                        attempt.update(action='manual_required',error=message)
+                        try:(upload.ROOT/'logs'/('batch-'+job['key'][:12]+'-error.txt')).write_text(traceback.format_exc(),encoding='utf-8')
+                        except OSError:pass
+                        print('此目标停止并保留记录，继续其他确切素材：',message.split('\n',1)[0],flush=True)
                     finally:
                         attempts.append(attempt)
                         results(path,manifest,attempts,output_dir)

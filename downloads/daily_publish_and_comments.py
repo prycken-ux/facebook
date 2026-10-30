@@ -1,5 +1,6 @@
 """Reconcile the confirmed Oct-29 batch, comment without reupload, then new Oct-30 media."""
 import argparse
+import traceback
 import copy
 import contextlib
 import csv
@@ -112,7 +113,7 @@ def manual_links(path,jobs):
 
 
 def write_backfill_report(manifest,rows,output_dir):
-    stem='昨日补评论-'+OLD_DATE+'-'+manifest['sha256'][:8]
+    stem='视频补评论-'+manifest['payload']['date']+'-'+manifest['sha256'][:8]
     path=upload.ROOT/'logs'/(stem+'.json')
     upload.save_json(path,dict(schema='confirmed-published-comments-v1',rows=rows))
     csv_path=path.with_suffix('.csv')
@@ -124,17 +125,17 @@ def write_backfill_report(manifest,rows,output_dir):
     with zipfile.ZipFile(out/(stem+'.zip'),'w',zipfile.ZIP_DEFLATED) as archive:
         archive.write(path,'results.json');archive.write(csv_path,'results.csv')
         for row in rows:
-            for suffix in ['-error.txt','.png','.aria.txt']:
+            for suffix in ['-error.txt','-close-error.txt','.png','.aria.txt']:
                 file=upload.ROOT/'logs'/('comment-'+row['key'][:12]+suffix)
                 if file.is_file():archive.write(file,file.name)
-    print('昨日补评论结果：',out/(stem+'.zip'),flush=True)
+    print('视频评论结果：',out/(stem+'.zip'),flush=True)
 
 
 def backfill(manifest,output_dir,links_path=None,only_keys=None,rows=None,already_locked=False):
     from playwright.sync_api import sync_playwright
     jobs=manifest['payload']['jobs'];links=manual_links(links_path,jobs)
     state_path=upload.ROOT/'logs/publish_state.json';rows=[] if rows is None else rows
-    start=datetime.fromisoformat(OLD_DATE+'T00:00:00+08:00').timestamp()
+    start=datetime.fromisoformat(manifest['payload']['date']+'T00:00:00+08:00').timestamp()
     # Each job keeps the first confirmation cutoff, before any video from today's new batch.
     with (contextlib.nullcontext() if already_locked else locked()):
         for job in jobs:
@@ -142,7 +143,12 @@ def backfill(manifest,output_dir,links_path=None,only_keys=None,rows=None,alread
             result=dict(account=job['account'],target=job['target'],filename=job['filename'],key=job['key'],status='manual_required',permalink='',error='')
             try:
                 state=upload.read_json(state_path,{});record=state[job['key']]
-                end=datetime.fromisoformat(record['confirmed_batch_lookup_cutoff']).timestamp()
+                end_text=record.get('confirmed_batch_lookup_cutoff') or record.get('published_at') or record.get('archived_at')
+                end=datetime.fromisoformat(end_text).timestamp()+60 if end_text else time.time()
+                since=max(start,datetime.fromisoformat(record['created']).timestamp()-5) if manifest['payload']['date']==TODAY else start
+                if record.get('status')!='published':
+                    result.update(status='video_not_confirmed',error='视频未确认成功，保留记录，不发送评论')
+                    continue
                 comment_key=comments.hashlib.sha256((job['key']+'\0'+comments.text_hash(COMMENT)).encode()).hexdigest()
                 existing=upload.read_json(upload.ROOT/'logs/video_comments.json',{}).get(comment_key,{})
                 if existing.get('status') in {'sent','already_present','sending','needs_review'}:
@@ -152,73 +158,71 @@ def backfill(manifest,output_dir,links_path=None,only_keys=None,rows=None,alread
                     raise RuntimeError('该账号另有提交中的任务，未关闭其浏览器或补评论')
                 entry=dict(configured(job),auto_switch_personal=True)
                 close_selected_window(entry['account'])
-                print('补昨天原视频的评论：',job['account'],job['target'],job['filename'],flush=True)
+                print('给本批已成功视频评论：',job['account'],job['target'],job['filename'],flush=True)
                 with sync_playwright() as playwright:
                     context=upload.launch_context(playwright,entry)
+                    page=None
                     try:
-                        page=context.pages[0] if context.pages else context.new_page();page.set_default_timeout(15000)
+                        pages=list(context.pages)
+                        page=pages[0] if pages else context.new_page();page.set_default_timeout(15000)
                         page.goto(upload.english_url(entry['url']),wait_until='domcontentloaded',timeout=30000)
                         proof=upload.ensure_identity(page,entry)
                         link=links.get(job['key'])
                         if link:verified=(link,'user_supplied_exact_job_link')
                         elif record.get('comment_link_job_key')==job['key'] and comments.direct_link(record.get('permalink','')):
                             verified=(comments.direct_link(record['permalink']),'previously_verified_exact_job_link')
-                        else:verified=find_published(page,context,entry,job['caption_text'],start,end)
+                        else:verified=find_published(page,context,entry,job['caption_text'],since,end)
                         value=comments.after_publication(page,context,entry,proof,job['key'],record,COMMENT,None,verified_link=verified)
                         record.update(comment_status=value['status'],comment_error=value.get('error',''))
                         upload.save_json(state_path,state)
                         result.update(status=value['status'],permalink=value.get('permalink',''),error=value.get('error',''))
                     except Exception as error:
-                        comments.capture_failure(page,job['key'],error);raise
-                    finally:context.close()
+                        if page is not None:comments.capture_failure(page,job['key'],error)
+                        raise
+                    finally:
+                        try:context.close()
+                        except Exception as close_error:
+                            try:(upload.ROOT/'logs'/('comment-'+job['key'][:12]+'-close-error.txt')).write_text(traceback.format_exc(),encoding='utf-8')
+                            except OSError:pass
+                            print('评论窗口关闭需核实，发送记录保留：',str(close_error) or type(close_error).__name__,flush=True)
             except KeyboardInterrupt:raise
             except Exception as error:
-                result['error']=str(error)[:2000]
+                result['error']=(str(error).strip() or type(error).__name__)[:2000]
                 current=upload.read_json(state_path,{})
                 if current.get(job['key'],{}).get('status')=='published':
                     current[job['key']].update(comment_status='manual_required',comment_error=result['error'])
                     upload.save_json(state_path,current)
             finally:
                 rows.append(result);write_backfill_report(manifest,rows,output_dir)
-                print('昨日评论：',job['account'],job['target'],result['status'],result['error'].splitlines()[0] if result['error'] else '',flush=True)
+                print('本批视频评论：',job['account'],job['target'],result['status'],str(result['error']).split('\n',1)[0],flush=True)
     return rows
 
 
 def execute(output_dir=None,links_path=None,comments_only=False):
-    if upload.VERSION!='2.40':raise ValueError('需安装配套上传核心 2.40')
+    if upload.VERSION!='2.41':raise ValueError('需安装配套上传核心 2.41')
     now=datetime.now(timezone.utc)
     if now.astimezone(batch.BJ).date().isoformat()!=TODAY:raise ValueError('不是本次授权的北京时间日期，不自动改日发布')
     with locked():
-        old_path,old=load_unique(OLD_DATE,expected_prefix='64658f5a')
-        confirm_yesterday(old_path,old)
-        path,value=(None,None) if comments_only else load_unique(TODAY,required=False)
-        if not comments_only and path is None:
-            try:
-                current=datetime.now(timezone.utc)
-                path,value=batch.freeze(TODAY,current.astimezone(batch.BJ).strftime('%H:%M'),True,COMMENT,current)
-                if output_dir:value['output_dir']=str(output_dir);upload.save_json(path,value)
-            except ValueError as error:
-                if '没有可冻结的全新视频' not in str(error):raise
-                print('没有新视频可发布；仍执行昨天漏评论。',flush=True)
-        if value and value['payload'].get('comment_text')!=COMMENT:raise ValueError('今天已有清单的评论文案不一致，未覆盖')
-    visited=set();old_rows=[]
-    def before_new(job):
-        selected={j['key'] for j in old['payload']['jobs']
-                  if (j['account'],j['target'])==(job['account'],job['target'])}-visited
-        if selected:
-            backfill(old,output_dir,links_path,only_keys=selected,rows=old_rows,already_locked=True)
-            visited.update(selected)
-    result=0
-    if path:
-        print('逐目标补昨天评论、发布今天的新视频。排除 fb16/fb18/fb21；成功记录及归档自动保存。',flush=True)
+        # Yesterday's comments are cancelled. Do not load or traverse yesterday's jobs.
+        path,value=load_unique(TODAY,required=False)
+        if path is None:
+            if comments_only:raise ValueError('没有今天的原视频清单，未用昨天的视频代替')
+            current=datetime.now(timezone.utc)
+            path,value=batch.freeze(TODAY,current.astimezone(batch.BJ).strftime('%H:%M'),True,COMMENT,current)
+            if output_dir:value['output_dir']=str(output_dir);upload.save_json(path,value)
+        if value['payload'].get('comment_text')!=COMMENT:raise ValueError('本批评论文案不一致，未覆盖')
+    if not comments_only:
+        print('已取消补昨天评论。第一阶段：先处理今天原清单的视频；排除 fb16/fb18/fb21。',flush=True)
         if datetime.now(timezone.utc)<datetime.fromisoformat(value['payload']['start']):
-            print('等待刚写入的文案文件稳定（最多约 75 秒），之后自动开始，请保持窗口打开。',flush=True)
+            print('等待文案文件稳定后开始，请保持窗口打开。',flush=True)
         while datetime.now(timezone.utc)<datetime.fromisoformat(value['payload']['start']):time.sleep(1)
-        result=batch.run(path,output_dir,before_job=before_new)
-    remaining={j['key'] for j in old['payload']['jobs']}-visited
-    if remaining:backfill(old,output_dir,links_path,only_keys=remaining,rows=old_rows)
-    if any(r['status'] not in {'sent','already_present'} for r in old_rows):result=3
-    return result
+        batch.run(path,output_dir,defer_comments=True,retry_before_post=True)
+    print('第二阶段：只给今天已经确认发布成功的视频评论；不再上传视频。',flush=True)
+    rows=backfill(value,output_dir,links_path)
+    report_path=path.with_name(path.stem+'-results.json')
+    attempts=upload.read_json(report_path,{}).get('attempts',[])
+    final=batch.results(path,value,attempts,output_dir,final=True)
+    return 0 if all(r['video_status']=='published' and r['comment_status'] in {'sent','already_present'} for r in final) else 3
 
 
 @contextlib.contextmanager
@@ -237,7 +241,7 @@ def keep_awake():
 
 if __name__=='__main__':
     sys.stdout.reconfigure(encoding='utf-8')
-    parser=argparse.ArgumentParser(description='补昨日评论并立即发布今天新视频；不重发旧视频')
+    parser=argparse.ArgumentParser(description='先发布今天的视频，再评论今天成功的视频；不补昨天评论')
     parser.add_argument('--output-dir',type=Path)
     parser.add_argument('--links-csv',type=Path,help='仅补无法自动确定的原视频链接，CSV 完整指纹不得改动')
     parser.add_argument('--comments-only',action='store_true')
@@ -245,4 +249,8 @@ if __name__=='__main__':
     try:
         with keep_awake():raise SystemExit(execute(args.output_dir,args.links_csv,args.comments_only))
     except KeyboardInterrupt:print('已中断；保留记录，不自动重发。',flush=True);raise SystemExit(130)
-    except Exception as error:print('STOP：',error,flush=True);raise SystemExit(1)
+    except Exception as error:
+        try:(upload.ROOT/'logs/today-first-run-error.txt').write_text(traceback.format_exc(),encoding='utf-8')
+        except OSError:pass
+        print('STOP：',str(error) or type(error).__name__,'；完整错误：logs/today-first-run-error.txt',flush=True)
+        raise SystemExit(1)

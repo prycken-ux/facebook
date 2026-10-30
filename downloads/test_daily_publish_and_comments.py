@@ -114,11 +114,24 @@ class ConfirmedDailyTests(unittest.TestCase):
         with self.assertRaises(ValueError):daily.load_unique(daily.OLD_DATE)
 
     def test_unknown_comment_intent_is_skipped_without_opening_browser_or_sending_again(self):
-        job=self.jobs[0];key=comments.hashlib.sha256((job['key']+'\0'+comments.text_hash(daily.COMMENT)).encode()).hexdigest()
+        job=self.jobs[0]
+        self.state[job['key']]['status']='published';upload.save_json(self.state_path,self.state)
+        key=comments.hashlib.sha256((job['key']+'\0'+comments.text_hash(daily.COMMENT)).encode()).hexdigest()
         upload.save_json(self.root/'logs/video_comments.json',{key:dict(status='sending',permalink='https://www.facebook.com/reel/9001')})
         with patch.object(daily,'close_selected_window') as close:
             rows=daily.backfill(self.manifest,None,only_keys={job['key']})
         close.assert_not_called();self.assertEqual(rows[0]['status'],'sending')
+
+    def test_comment_browser_close_error_does_not_turn_a_sent_comment_into_failure(self):
+        job=self.jobs[0];self.state[job['key']]['status']='published';upload.save_json(self.state_path,self.state)
+        browser=MagicMock();browser.pages=[MagicMock()];browser.close.side_effect=IndexError('list index out of range')
+        with patch('playwright.sync_api.sync_playwright'),patch.object(upload,'launch_context',return_value=browser), \
+             patch.object(upload,'ensure_identity',return_value={}),patch.object(daily,'close_selected_window'), \
+             patch.object(daily,'find_published',return_value=('https://www.facebook.com/reel/9001','verified_owner_caption_time')), \
+             patch.object(comments,'after_publication',return_value={'status':'sent','permalink':'https://www.facebook.com/reel/9001'}):
+            rows=daily.backfill(self.manifest,None,only_keys={job['key']})
+        self.assertEqual(rows[0]['status'],'sent')
+        self.assertEqual(upload.read_json(self.state_path,{})[job['key']]['comment_status'],'sent')
 
     def test_user_link_requires_exact_job_target_and_full_fingerprint(self):
         path=self.root/'links.csv';job=self.jobs[0]
@@ -126,3 +139,23 @@ class ConfirmedDailyTests(unittest.TestCase):
         self.assertEqual(daily.manual_links(path,self.jobs),{job['key']:'https://www.facebook.com/reel/9001'})
         path.write_text(path.read_text().replace(job['account'],'fb99'))
         with self.assertRaises(ValueError):daily.manual_links(path,self.jobs)
+
+
+class TodayFirstOrderTests(unittest.TestCase):
+    def test_all_today_uploads_run_before_today_comments_and_yesterday_is_not_loaded(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);(root/'logs').mkdir()
+            manifest={'payload':{'date':daily.TODAY,'start':'2026-10-30T17:00:00+08:00','comment_text':daily.COMMENT,'jobs':[]},'sha256':'a'*64}
+            path=root/'logs/frozen-material-2026-10-30-aaaaaaaaaaaaaaaa.json';events=[]
+            with patch.object(upload,'ROOT',root),patch.object(add_fb_accounts,'ROOT',root),patch.object(daily,'datetime',wraps=datetime) as clock, \
+                 patch.object(daily,'load_unique',return_value=(path,manifest)) as load, \
+                 patch.object(daily,'confirm_yesterday',side_effect=AssertionError('yesterday was cancelled')), \
+                 patch.object(batch,'run',side_effect=lambda *a,**k:events.append('all-today-videos') or 3) as run, \
+                 patch.object(daily,'backfill',side_effect=lambda value,*a:events.append('today-comments') or []) as send, \
+                 patch.object(batch,'results',return_value=[dict(video_status='published',comment_status='sent')]):
+                clock.now.return_value=datetime(2026,10,30,12,0,tzinfo=timezone.utc)
+                self.assertEqual(daily.execute(),0)
+            self.assertEqual(events,['all-today-videos','today-comments'])
+            load.assert_called_once_with(daily.TODAY,required=False)
+            self.assertTrue(run.call_args.kwargs['defer_comments'])
+            self.assertEqual(send.call_args.args[0]['payload']['date'],daily.TODAY)

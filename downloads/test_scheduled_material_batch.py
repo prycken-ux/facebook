@@ -89,18 +89,19 @@ class ScheduledMaterialTests(unittest.TestCase):
         self.assertEqual(schedule.start_time('2026-10-29','17:00',late).date(),late.astimezone(schedule.BJ).date())
         with self.assertRaises(ValueError):schedule.start_time('2026-10-28','17:00',self.now)
 
-    def pipeline(self,path,unknown=False,comment_failure=False,before_job=None):
+    def pipeline(self,path,unknown=False,comment_failure=False,before_job=None,defer_comments=False,retry_before_post=False,empty_close_error=False,browser_close_error=False):
         browser=MagicMock();browser.pages=[MagicMock()];button=MagicMock()
+        if browser_close_error:browser.close.side_effect=IndexError('list index out of range')
         with patch.object(schedule,'datetime',wraps=datetime) as clock,patch('playwright.sync_api.sync_playwright'), \
              patch.object(upload,'launch_context',return_value=browser),patch.object(upload,'prepare_reel',return_value=(button,{})), \
              patch.object(upload,'recheck_publish_identity'),patch.object(upload,'install_receipt_watch'), \
              patch.object(upload,'wait_for_receipt',return_value='Your reel is published.',side_effect=upload.ReceiptNeedsReview('unknown') if unknown else None), \
              patch('safe_video_comments.after_publication',return_value={'status':'sent'},side_effect=RuntimeError('comment UI unavailable') if comment_failure else None) as comment, \
-             patch.object(schedule,'close_selected_window'),patch('builtins.input',side_effect=AssertionError('must never prompt')):
+             patch.object(schedule,'close_selected_window',side_effect=[RuntimeError(),None,None,None] if empty_close_error else None),patch('builtins.input',side_effect=AssertionError('must never prompt')):
             clock.now.return_value=datetime(2026,10,29,9,1,tzinfo=timezone.utc)
             # Captions were frozen at setup; simulate the scheduled stable-file interval.
             for file in self.root.rglob('*.txt'):os.utime(file,(time.time()-180,time.time()-180))
-            result=schedule.run(path,before_job=before_job)
+            result=schedule.run(path,before_job=before_job,defer_comments=defer_comments,retry_before_post=retry_before_post)
         return result,button,comment
 
     def test_run_posts_exact_frozen_jobs_comments_once_and_preserves_old_review_without_enabling_config(self):
@@ -147,6 +148,58 @@ class ScheduledMaterialTests(unittest.TestCase):
         with self.assertRaises(ValueError):schedule.validate_job(job)
         video.write_bytes((entry['account']+entry['target']).encode());video.with_suffix('.txt').write_text('changed caption')
         with self.assertRaises(ValueError):schedule.validate_job(job)
+
+    def test_deferred_comments_do_not_send_during_any_upload_and_successes_are_archived(self):
+        path,manifest=self.freeze()
+        result,button,comment=self.pipeline(path,defer_comments=True)
+        self.assertEqual(button.click.call_count,4);comment.assert_not_called()
+        state=upload.read_json(self.state_path,{})
+        self.assertTrue(all(row['status']=='published' and row['comment_status']=='deferred' for row in state.values()))
+        self.assertTrue(all(Path(row['archived_video']).is_file() for row in state.values()))
+
+    def test_empty_exception_in_target_setup_does_not_abort_remaining_jobs(self):
+        path,_=self.freeze()
+        result,button,comment=self.pipeline(path,empty_close_error=True)
+        self.assertEqual(result,3);self.assertEqual(button.click.call_count,3)
+        report=upload.read_json(path.with_name(path.stem+'-results.json'),{})
+        self.assertEqual(report['attempts'][0]['error'],'RuntimeError')
+
+    def test_browser_close_index_error_does_not_mask_published_receipt_or_stop_next_target(self):
+        path,_=self.freeze();result,button,comment=self.pipeline(path,browser_close_error=True)
+        self.assertEqual(result,0);self.assertEqual(button.click.call_count,4)
+        self.assertTrue(all(row['status']=='published' for row in upload.read_json(self.state_path,{}).values()))
+
+    def test_proven_before_post_failure_can_retry_exact_job_once_and_keeps_old_attempt(self):
+        path,manifest=self.freeze();job=manifest['payload']['jobs'][0]
+        entry=next(e for e in self.entries if (e['account'],e['target'])==(job['account'],job['target']))
+        old=dict(account=job['account'],target=job['target'],url=entry['url'],video=str(upload.inbox_for(entry)/job['filename']),status='failed_before_post',error='old setup failure')
+        upload.save_json(self.state_path,{job['key']:old})
+        result,button,comment=self.pipeline(path,retry_before_post=True)
+        self.assertEqual(result,0);self.assertEqual(button.click.call_count,4)
+        row=upload.read_json(self.state_path,{})[job['key']]
+        self.assertTrue(row['today_first_retry_used']);self.assertEqual(row['previous_before_post_attempt'],old)
+        result,button,comment=self.pipeline(path,retry_before_post=True)
+        button.click.assert_not_called()
+
+    def test_retry_flag_never_reopens_preparing_posting_or_unknown_publication(self):
+        path,manifest=self.freeze();job=manifest['payload']['jobs'][0]
+        for status in ['preparing','posting','needs_review']:
+            with self.subTest(status=status):
+                state={j['key']:dict(account=j['account'],target=j['target'],url=j['url'],video=j['filename'],status='published') for j in manifest['payload']['jobs']}
+                state[job['key']]['status']=status;old=dict(state[job['key']]);upload.save_json(self.state_path,state)
+                result,button,comment=self.pipeline(path,retry_before_post=True)
+                self.assertEqual(upload.read_json(self.state_path,{})[job['key']],old)
+                button.click.assert_not_called();comment.assert_not_called()
+
+    def test_before_post_retry_never_overrides_success_evidence_or_a_consumed_retry(self):
+        path,manifest=self.freeze();job=manifest['payload']['jobs'][0]
+        for evidence in [{'post_intent_at':'2026-10-29T17:01:00+08:00'},{'permalink':'https://www.facebook.com/reel/9001'},{'today_first_retry_used':True}]:
+            with self.subTest(evidence=evidence):
+                state={j['key']:dict(account=j['account'],target=j['target'],url=j['url'],video=j['filename'],status='published') for j in manifest['payload']['jobs']}
+                state[job['key']].update(status='failed_before_post',**evidence);old=dict(state[job['key']]);upload.save_json(self.state_path,state)
+                result,button,comment=self.pipeline(path,retry_before_post=True)
+                self.assertEqual(upload.read_json(self.state_path,{})[job['key']],old)
+                button.click.assert_not_called()
 
     def test_before_start_and_tampered_manifest_cannot_publish(self):
         path,manifest=self.freeze()

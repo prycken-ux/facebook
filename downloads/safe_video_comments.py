@@ -131,6 +131,20 @@ def _published_link_once(page,context,collector):
     raise PublishedLinkNotReady('无法唯一定位刚发布的视频直达链接，视频保留成功状态；评论需手动处理')
 
 
+
+def publication_link_hint(page,collector):
+    """Collect only passive evidence while uploads take priority; never open comments."""
+    links=set(collector.links) if collector else set()
+    current=direct_link(page.url)
+    if current:links.add(current)
+    receipts=page.evaluate('() => window.__fbUploadWatch && window.__fbUploadWatch.receiptLinks || []')
+    if isinstance(receipts,list):
+        links.update(value for item in receipts if (value:=direct_link(item)))
+    ids={urlparse(value).path.rstrip('/').split('/')[-1] for value in links}
+    if len(ids)==1:return 'https://www.facebook.com/reel/'+next(iter(ids))
+    return None
+
+
 def resolve_published_link(page,context,collector,timeout_ms=0):
     from playwright.sync_api import Error as BrowserError
     deadline=time.monotonic()+timeout_ms/1000

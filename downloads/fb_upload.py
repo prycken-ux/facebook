@@ -1,5 +1,7 @@
 """Local Windows uploader based on the user's recorded Page and personal flows."""
 import argparse
+import copy
+import traceback
 import hashlib
 import json
 import os
@@ -14,7 +16,7 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 ROOT = Path(__file__).resolve().parent
 CONFIG = ROOT / "upload_config.json"
-VERSION = "2.40"
+VERSION = "2.41"
 SUCCESS_PATTERN = (
     r"^(?:Your reel (?:is(?: now)?|has been|was) (?:successfully )?"
     r"(?:published|shared|posted)(?: successfully)?|"
@@ -337,7 +339,7 @@ def validate_video_filename(filename):
         raise ValueError('需填写有效 MP4 文件名，支持中文，不能包含路径、控制字符或 Windows 保留名称。')
 
 
-def named_job(entry, state, filename):
+def named_job(entry, state, filename, retry_before_post=False):
     """Resolve exactly one inbox file; never fall back to another queued video."""
     validate_video_filename(filename)
     folder = inbox_for(entry)
@@ -362,7 +364,11 @@ def named_job(entry, state, filename):
                 entry["account"], entry["target"], "published"):
             print("指定视频内容已有成功记录，跳过：", entry["account"], filename)
             return None
-        raise ValueError("指定视频已有任务记录（" + str(row.get("status")) + "），请先核对；不会重发。")
+        if not (retry_before_post and row.get('status')=='failed_before_post'
+                and (row.get('account'),row.get('target'))==(entry['account'],entry['target'])
+                and target_key(row.get('url',''))==target_key(entry['url'])
+                and not any(row.get(k) for k in ('success_message','permalink','post_intent_at','today_first_retry_used'))):
+            raise ValueError("指定视频已有任务记录（" + str(row.get("status")) + "），请先核对；不会重发。")
     if filename.lower() in {name.lower() for name in entry.get("excluded_files", [])}:
         raise ValueError("指定视频在排除名单中：" + filename)
     caption = video.with_suffix(".txt")
@@ -724,7 +730,8 @@ def check_identity(entry):
     with sync_playwright() as playwright:
         context = launch_context(playwright, entry)
         try:
-            page = context.pages[0] if context.pages else context.new_page()
+            pages=list(context.pages)
+            page = pages[0] if pages else context.new_page()
             navigate_profile(page, entry["url"])
             require_no_advanced_protection(page)
             result = ensure_identity(page, entry)
@@ -1276,7 +1283,7 @@ def launch_context(playwright, entry):
         detail = ROOT / 'logs' / ('browser-start-' + entry['account'] + '-' + datetime.now().strftime('%Y%m%d-%H%M%S-%f') + '.txt')
         try:
             detail.parent.mkdir(parents=True, exist_ok=True)
-            detail.write_text(str(error), encoding='utf-8')
+            detail.write_text(traceback.format_exc(), encoding='utf-8')
             saved = '完整启动日志：' + str(detail)
         except OSError:
             saved = '完整启动日志未能保存。'
@@ -1286,7 +1293,7 @@ def launch_context(playwright, entry):
 
 def run_entry(entry, state, state_path, publish, filename=None, review_before_post=False, pause_before_reel=False,
               ai_label_override=None, new_video_with_old_review=False, expected_job_key=None,
-              preserve_old_review_for_exact_job=False):
+              preserve_old_review_for_exact_job=False,defer_comments=False,retry_before_post=False):
     from playwright.sync_api import sync_playwright
 
     if ai_label_override is not None:
@@ -1304,6 +1311,8 @@ def run_entry(entry, state, state_path, publish, filename=None, review_before_po
         raise ValueError('核对素材指纹必须是完整任务编号，并指定确切文件名。')
     if preserve_old_review_for_exact_job and (not publish or not filename or not expected_job_key or new_video_with_old_review):
         raise ValueError('保留旧待核实任务仅用于已冻结的确切全新素材')
+    if retry_before_post and (not publish or not filename or not expected_job_key):
+        raise ValueError('发布前失败重试必须绑定本次确切文件及完整指纹')
     identity = (entry["account"], entry["target"])
     if publish and not entry.get("enabled", False):
         raise RuntimeError("尚未启用发布。先完成 prepare 检查，再执行 enable。")
@@ -1314,7 +1323,7 @@ def run_entry(entry, state, state_path, publish, filename=None, review_before_po
                      or any(row['status'] != 'needs_review' for _, row in blocking)):
         raise RuntimeError("该目标有待核对任务。先检查主页并 confirm 或 retry，避免重复发布。")
     if filename:
-        selected = named_job(entry, state, filename)
+        selected = named_job(entry, state, filename,retry_before_post=retry_before_post)
         jobs = [selected] if selected else []
     else:
         jobs = list(pending_jobs(entry, state))
@@ -1340,14 +1349,18 @@ def run_entry(entry, state, state_path, publish, filename=None, review_before_po
     # Bind optional product comment text to this exact new task before opening Chrome.
     # Existing published tasks never reach this point; no historical backfill occurs.
     key, video, caption, text = jobs[0]
+    previous_record=copy.deepcopy(state.get(key)) if retry_before_post else None
     comment_plan = None
     if publish and not entry.get('_authorized_comment_text') and (ROOT / 'post_comment_config.json').is_file():
         from post_comment_plan import build_plan
         comment_plan = build_plan(entry, video, key)
     with sync_playwright() as playwright:
         context = launch_context(playwright, entry)
+        record=None
+        posted=False
         try:
-            page = context.pages[0] if context.pages else context.new_page()
+            pages=list(context.pages)
+            page = pages[0] if pages else context.new_page()
             page.set_default_timeout(30000)
             page._fb_upload_stage = 'browser_opened'
             # One video per invocation; scheduled repetitions handle the queue.
@@ -1357,6 +1370,9 @@ def run_entry(entry, state, state_path, publish, filename=None, review_before_po
                       "ai_label_requested": bool(entry.get("ai_label", False))}
             record['uploader_version'] = VERSION
             record['published_caption_text'] = text
+            if previous_record is not None:
+                record['previous_before_post_attempt']=previous_record
+                record['today_first_retry_used']=True
             comment_text=entry.get('_authorized_comment_text')
             link_collector=None
             if comment_text:
@@ -1404,6 +1420,7 @@ def run_entry(entry, state, state_path, publish, filename=None, review_before_po
                 # Persist the intent BEFORE clicking, so crashes cannot retry the Post.
                 record["identity_validation"] = identity_proof
                 record["status"] = "posting"
+                record["post_intent_at"] = datetime.now().astimezone().isoformat()
                 save_json(state_path, state)
                 print('准备提交发布：', entry['account'], entry['target'], video.name, flush=True)
                 page.evaluate("() => { window.__fbUploadWatch.armed = true; }")
@@ -1418,13 +1435,25 @@ def run_entry(entry, state, state_path, publish, filename=None, review_before_po
                 record["success_message"] = wait_for_receipt(page, button, started_at=receipt_started)
                 record["confirmation_method"] = "fresh_success_ui_and_composer_closed"
                 record["status"] = "published"
+                record["published_at"] = datetime.now().astimezone().isoformat()
                 save_json(state_path, state)
                 archived=archive(video, caption)
                 record.update(archived_video=str(archived/video.name),archived_caption=str(archived/caption.name),
                               archived_at=datetime.now().astimezone().isoformat())
                 save_json(state_path,state)
                 print("发布成功，已归档：", video.name)
-                if comment_text:
+                if comment_text and defer_comments:
+                    from safe_video_comments import publication_link_hint
+                    try:
+                        hint=publication_link_hint(page,link_collector)
+                        if hint:
+                            record.update(permalink=hint,comment_link_job_key=key,comment_link_method='fresh_publication_hint')
+                    except Exception as hint_error:
+                        record['comment_link_error']=str(hint_error) or type(hint_error).__name__
+                    record['comment_status']='deferred'
+                    save_json(state_path,state)
+                    print('今天视频已成功并归档；评论统一留到全部视频处理后。',flush=True)
+                elif comment_text:
                     try:
                         from safe_video_comments import after_publication
                         result=after_publication(page,context,entry,identity_proof,key,record,comment_text,link_collector)
@@ -1452,7 +1481,7 @@ def run_entry(entry, state, state_path, publish, filename=None, review_before_po
                     save_json(state_path, state)
                 detail = ROOT / 'logs' / ('review-' + key[:12] + '-error.txt')
                 try:
-                    detail.write_text(str(error), encoding='utf-8')
+                    detail.write_text(traceback.format_exc(), encoding='utf-8')
                 except OSError:
                     pass
                 shot = ROOT / "logs" / ("review-" + key[:12] + ".png")
@@ -1463,8 +1492,23 @@ def run_entry(entry, state, state_path, publish, filename=None, review_before_po
                 exception_type = (AccountActionRequired if isinstance(error, AccountActionRequired) else
                                   ReceiptNeedsReview if posted and isinstance(error, ReceiptNeedsReview) else RuntimeError)
                 raise exception_type("操作未完成或结果需核对。记录：" + key[:12] + "；" + str(error)) from error
+        except Exception as outer_error:
+            message=str(outer_error).strip() or type(outer_error).__name__
+            if record is not None and state.get(key) is record and record.get('status') in {'preparing','posting'}:
+                record.update(status='needs_review' if posted or record.get('post_intent_at') else 'failed_before_post',
+                              error=message,failure_stage=getattr(page,'_fb_upload_stage','unknown'))
+                save_json(state_path,state)
+            try:(ROOT/'logs'/('review-'+key[:12]+'-error.txt')).write_text(traceback.format_exc(),encoding='utf-8')
+            except OSError:pass
+            if isinstance(outer_error,(AccountActionRequired,ReceiptNeedsReview)):raise
+            raise RuntimeError('本条异常已记录，保留任务状态：'+message) from outer_error
         finally:
-            context.close()
+            try:context.close()
+            except Exception as close_error:
+                detail=ROOT/'logs'/('review-'+key[:12]+'-close-error.txt')
+                try:detail.write_text(traceback.format_exc(),encoding='utf-8')
+                except OSError:pass
+                print('浏览器关闭需核实，保留发布记录并继续其他目标：',str(close_error) or type(close_error).__name__,flush=True)
 
 
 def main():
