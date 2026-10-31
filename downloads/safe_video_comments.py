@@ -8,7 +8,7 @@ from urllib.parse import urlparse,parse_qs
 
 import fb_upload as upload
 
-COMMENT_WORKFLOW_VERSION = "1.1-url-dedup"
+COMMENT_WORKFLOW_VERSION = "1.2-future-reload"
 
 
 def text_hash(text):
@@ -164,24 +164,34 @@ def resolve_published_link(page,context,collector,timeout_ms=0):
             page.wait_for_load_state('domcontentloaded',timeout=max(1,min(5000,int((deadline-time.monotonic())*1000))))
 
 
-COMMENT_SCAN_JS=r'''({name,text,urls}) => {
+COMMENT_SCAN_JS=r'''({name,text,urls,owner}) => {
  const norm=s=>(s||'').replace(/\s+/g,' ').trim();
- const matches=[];
- for(const node of document.querySelectorAll('[role="article"][aria-label]')){
-   const label=node.getAttribute('aria-label')||'';
-   if(!label.toLowerCase().startsWith('comment by '+name.toLowerCase())) continue;
+ const identity=value=>{try{const u=new URL(value,location.href);if(!['facebook.com','www.facebook.com'].includes(u.hostname))return null;
+   return u.pathname==='/profile.php'?'id:'+u.searchParams.get('id'):'path:'+u.pathname.replace(/\/$/,'').toLowerCase()}catch{return null}};
+ const outgoing=value=>{try{let u=new URL(value,location.href);for(let i=0;i<2 && ['l.facebook.com','lm.facebook.com'].includes(u.hostname);i++)u=new URL(u.searchParams.get('u'));
+   if(u.protocol!=='https:'||u.username||u.password)return null;
+   u.hash='';u.searchParams.delete('fbclid');u.searchParams.sort();return u.href}catch{return null}};
+ const expected=urls.map(outgoing);const matches=[];
+ for(const node of document.querySelectorAll('[role="article"]')){
    if(!node.getClientRects().length)continue;
+   const label=norm(node.getAttribute('aria-label')||[...(node.getAttribute('aria-labelledby')||'').split(/\s+/)].map(id=>document.getElementById(id)?.textContent||'').join(' '));
+   const labelled=label.toLowerCase().startsWith('comment by '+name.toLowerCase());
+   if(label && !labelled)continue;
+   // Unlabelled containers require an explicit comment permalink and Reply action.
+   if(!labelled && !(node.querySelector('a[href*="comment_id="]') && [...node.querySelectorAll('a,button,[role="button"]')].some(e=>norm(e.textContent)==='Reply')))continue;
    const copy=node.cloneNode(true);
-   for(const e of copy.querySelectorAll('[contenteditable],textarea,[role="textbox"]')) e.remove();
+   for(const e of copy.querySelectorAll('[contenteditable],textarea,[role="textbox"],[role="article"]'))e.remove();
    const body=norm(copy.textContent);
-   const prefix=norm(text.split('\n')[0]);
-   if(!body.includes(prefix))continue;
-   const found=[...node.querySelectorAll('a[href]')].map(a=>{
-     try{let u=new URL(a.href);if(u.hostname==='l.facebook.com')return u.searchParams.get('u');return u.href}catch{return null}
-   });
-   if(!urls.every(url=>found.includes(url)||body.includes(url)))continue;
-   const author=[...node.querySelectorAll('a[href]')].some(a=>norm(a.innerText)===norm(name));
-   if(author) matches.push({label,body:body.slice(0,600)});
+   const plain=norm(text.replace(/https:\/\/[^\s]+/g,''));
+   if(!body.includes(plain))continue;
+   const anchors=[...copy.querySelectorAll('a[href]')];
+   const author=anchors.some(a=>norm(a.textContent)===norm(name) && identity(a.getAttribute('href'))===identity(owner));
+   if(!author)continue;
+   const found=anchors.map(a=>outgoing(a.getAttribute('href')));
+   // Raw full URLs cover plain-text comments, never drafts (removed above).
+   found.push(...(body.match(/https:\/\/[^\s]+/g)||[]).map(outgoing));
+   if(expected.some(url=>!url||!found.includes(url)))continue;
+   matches.push({label,body:body.slice(0,600)});
  }
  return matches;
 }'''
@@ -189,8 +199,44 @@ COMMENT_SCAN_JS=r'''({name,text,urls}) => {
 
 def scan_comments(page,entry,text):
     urls=re.findall(r'https://[^\s]+',text)
-    found=page.evaluate(COMMENT_SCAN_JS,dict(name=entry['name'],text=text,urls=urls))
+    found=page.evaluate(COMMENT_SCAN_JS,dict(name=entry['name'],text=text,urls=urls,owner=entry['url']))
     return found if isinstance(found,list) else []
+
+
+def verify_after_reload(page,entry,proof,key,text,item,timeout_ms=30000):
+    """Verify only the just-attempted comment; never resend or reconcile old receipts."""
+    if item.get('status') not in {'verifying','already_present'}:return item
+    ledger_path=upload.ROOT/'logs/video_comments.json'
+    comment_key=hashlib.sha256((key+'\0'+text_hash(text)).encode()).hexdigest()
+    ledger=upload.read_json(ledger_path,{})
+    current=ledger.get(comment_key)
+    if not current or current.get('status')!=item['status'] or current.get('permalink')!=item.get('permalink'):
+        raise RuntimeError('本次评论核验记录不一致，未修改其他记录')
+    try:
+        link=direct_link(item['permalink'])
+        if not link:raise ValueError('本次评论链接无效')
+        page.goto(upload.english_url(link),wait_until='domcontentloaded',timeout=30000)
+        upload.checkpoint(page);upload.require_no_advanced_protection(page)
+        upload.recheck_publish_identity(page,entry,proof)
+        if entry.get('type')=='page' and not upload.page_actor_matches(page,entry):raise ValueError('刷新后评论身份未确认')
+        deadline=time.monotonic()+timeout_ms/1000;expanded=False
+        while True:
+            if direct_link(page.url)!=link:raise ValueError('刷新后视频链接变化')
+            if scan_comments(page,entry,text):break
+            if time.monotonic()>=deadline:raise ValueError('刷新后未看到本人规定评论，未重复发送')
+            if not expanded:
+                try:ready_comment_field(page,timeout_ms=min(5000,max(1,int((deadline-time.monotonic())*1000))))
+                except CommentComposerMissing:pass
+                expanded=True
+            page.wait_for_timeout(250)
+        current.update(status='already_present' if item['status']=='already_present' else 'sent',
+            verification='own_comment_seen_after_reload',verified_at=datetime.now(timezone.utc).isoformat(),error='')
+    except Exception as error:
+        current.update(status='needs_review',error='刷新核验未完成，勿重复发：'+(str(error) or type(error).__name__))
+        capture_failure(page,key,error)
+    ledger[comment_key]=current;upload.save_json(ledger_path,ledger)
+    return current
+
 
 
 class CommentComposerMissing(RuntimeError):pass
@@ -372,7 +418,10 @@ def after_publication(page,context,entry,proof,key,record,text,collector,verifie
             page.wait_for_timeout(500)
         raise RuntimeError('已尝试发送，但未确认本人评论出现并清空输入框；结果需手动核实，勿重复发')
     except Exception as error:
-        item.update(status='needs_review' if attempted else 'manual_required',error=str(error)[:2000])
+        # A fresh attempted send may be visible only after navigation. The caller
+        # can read once more; verifying still blocks any second send after a crash.
+        pending='verifying' if attempted and require_reload_verification else 'needs_review' if attempted else 'manual_required'
+        item.update(status=pending,error=str(error)[:2000])
         ledger[comment_key]=item;upload.save_json(ledger_path,ledger)
         capture_failure(page,key,error)
         return item

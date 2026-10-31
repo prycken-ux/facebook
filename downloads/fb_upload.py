@@ -16,7 +16,7 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 ROOT = Path(__file__).resolve().parent
 CONFIG = ROOT / "upload_config.json"
-VERSION = "2.42"
+VERSION = "2.43"
 SUCCESS_PATTERN = (
     r"^(?:Your reel (?:is(?: now)?|has been|was) (?:successfully )?"
     r"(?:published|shared|posted)(?: successfully)?|"
@@ -49,6 +49,15 @@ RECEIPT_WATCH_JS = r"""pattern => {
         }
         return false;
     }
+    function headingArea(el) {
+        if(!el || !el.isConnected)return null;
+        for(let parent=el.parentElement,depth=0;parent && depth<3;parent=parent.parentElement,depth++){
+            if(parent.matches('body,main,[role="main"],[role="feed"],[role="article"]') || parent.querySelector('[role="article"],video,[contenteditable="true"]') || parent.textContent.length>1000)break;
+            const actions=[...parent.querySelectorAll('a[href],button,[role="button"]')].filter(e=>/^(?:View|See) (?:your )?(?:reel|video)$/i.test(norm(e.innerText||e.getAttribute('aria-label'))));
+            if(actions.length===1)return parent;
+        }
+        return null;
+    }
     function inspect(el) {
         if (!el || el.nodeType !== 1) return;
         const text = norm(el.textContent);
@@ -62,6 +71,8 @@ RECEIPT_WATCH_JS = r"""pattern => {
         watch.message = text;
         watch.receiptArea = el.closest('[role="alert"], [role="status"], [role="dialog"], [aria-live]');
         if(watch.receiptArea && (watch.receiptArea===document.body || watch.receiptArea.textContent.length>2000))watch.receiptArea=null;
+        if(heading)watch.receiptHeading=el;
+        if(!watch.receiptArea && heading)watch.receiptArea=headingArea(el);
         if(watch.receiptArea)watch.receiptArea.setAttribute('data-local-current-publication-receipt','true');
     }
     function scan(root) {
@@ -76,6 +87,10 @@ RECEIPT_WATCH_JS = r"""pattern => {
         for (const change of changes) {
             if (change.type === 'characterData') scan(change.target.parentElement);
             for (const node of change.addedNodes) scan(node);
+        }
+        if(watch.armed && watch.message && !watch.receiptArea){
+          watch.receiptArea=headingArea(watch.receiptHeading);
+          if(watch.receiptArea)watch.receiptArea.setAttribute('data-local-current-publication-receipt','true');
         }
         if(watch.armed && watch.message && watch.receiptArea && watch.receiptArea.isConnected){
           for(const link of watch.receiptArea.querySelectorAll('a[href]')){
@@ -1508,11 +1523,12 @@ def run_entry(entry, state, state_path, publish, filename=None, review_before_po
                 save_json(state_path,state)
                 print("发布成功，已归档：", video.name)
                 if comment_text and defer_comments:
-                    from safe_video_comments import publication_link_hint
+                    from safe_video_comments import resolve_published_link
                     try:
-                        hint=publication_link_hint(page,link_collector)
-                        if hint:
-                            record.update(permalink=hint,comment_link_job_key=key,comment_link_method='fresh_publication_hint')
+                        # Capture the exact fresh receipt before closing this browser.
+                        # This opens at most its unique View reel control; no comment yet.
+                        hint,method=resolve_published_link(page,context,link_collector,timeout_ms=10000)
+                        record.update(permalink=hint,comment_link_job_key=key,comment_link_method=method)
                     except Exception as hint_error:
                         record['comment_link_error']=str(hint_error) or type(hint_error).__name__
                     record['comment_status']='deferred'

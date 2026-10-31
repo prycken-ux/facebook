@@ -133,6 +133,17 @@ class ConfirmedDailyTests(unittest.TestCase):
         self.assertEqual(rows[0]['status'],'sent')
         self.assertEqual(upload.read_json(self.state_path,{})[job['key']]['comment_status'],'sent')
 
+    def test_future_mode_uses_only_bound_link_and_requires_refresh_verification(self):
+        job=self.jobs[0];self.state[job['key']].update(status='published',permalink='https://www.facebook.com/reel/9001',comment_link_job_key=job['key'])
+        upload.save_json(self.state_path,self.state);browser=MagicMock();browser.pages=[MagicMock()]
+        with patch('playwright.sync_api.sync_playwright'),patch.object(upload,'launch_context',return_value=browser),patch.object(upload,'ensure_identity',return_value={}),patch.object(daily,'close_selected_window'),patch.object(daily,'find_published',side_effect=AssertionError('old lookup forbidden')),patch.object(comments,'after_publication',return_value={'status':'verifying','permalink':'https://www.facebook.com/reel/9001'}) as send,patch.object(comments,'verify_after_reload',return_value={'status':'sent','permalink':'https://www.facebook.com/reel/9001'}) as verify:
+            rows=daily.backfill(self.manifest,None,only_keys={job['key']},future_only=True)
+        self.assertEqual(rows[0]['status'],'sent');self.assertTrue(send.call_args.kwargs['require_reload_verification']);verify.assert_called_once()
+        del self.state[job['key']]['comment_link_job_key'];upload.save_json(self.state_path,self.state)
+        with patch('playwright.sync_api.sync_playwright'),patch.object(upload,'launch_context',return_value=browser),patch.object(upload,'ensure_identity',return_value={}),patch.object(daily,'close_selected_window'),patch.object(daily,'find_published',side_effect=AssertionError('old lookup forbidden')) as lookup,patch.object(comments,'after_publication') as send:
+            rows=daily.backfill(self.manifest,None,only_keys={job['key']},future_only=True)
+        self.assertEqual(rows[0]['status'],'manual_required');lookup.assert_not_called();send.assert_not_called()
+
     def test_user_link_requires_exact_job_target_and_full_fingerprint(self):
         path=self.root/'links.csv';job=self.jobs[0]
         path.write_text('account,target,key,permalink\n'+','.join([job['account'],job['target'],job['key'],'https://www.facebook.com/reel/9001'])+'\n')

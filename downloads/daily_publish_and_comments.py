@@ -131,7 +131,7 @@ def write_backfill_report(manifest,rows,output_dir):
     print('视频评论结果：',out/(stem+'.zip'),flush=True)
 
 
-def backfill(manifest,output_dir,links_path=None,only_keys=None,rows=None,already_locked=False):
+def backfill(manifest,output_dir,links_path=None,only_keys=None,rows=None,already_locked=False,future_only=False):
     from playwright.sync_api import sync_playwright
     jobs=manifest['payload']['jobs'];links=manual_links(links_path,jobs)
     state_path=upload.ROOT/'logs/publish_state.json';rows=[] if rows is None else rows
@@ -153,12 +153,12 @@ def backfill(manifest,output_dir,links_path=None,only_keys=None,rows=None,alread
                 if record.get('status')!='published':
                     result.update(status='video_not_confirmed',error='视频未确认成功，保留记录，不发送评论')
                     continue
-                if record.get('comment_status') in {'sent','already_present','sending','needs_review'}:
+                if record.get('comment_status') in {'sent','already_present','sending','verifying','needs_review'}:
                     result.update(status=record['comment_status'],permalink=record.get('permalink',''),error=record.get('comment_error',''))
                     continue
                 comment_key=comments.hashlib.sha256((job['key']+'\0'+comments.text_hash(COMMENT)).encode()).hexdigest()
                 existing=upload.read_json(upload.ROOT/'logs/video_comments.json',{}).get(comment_key,{})
-                if existing.get('status') in {'sent','already_present','sending','needs_review'}:
+                if existing.get('status') in {'sent','already_present','sending','verifying','needs_review'}:
                     result.update(status=existing['status'],permalink=existing.get('permalink',''),error=existing.get('error',''))
                     continue
                 if any(r.get('account')==job['account'] and r.get('status') in {'preparing','posting'} for r in state.values()):
@@ -178,8 +178,10 @@ def backfill(manifest,output_dir,links_path=None,only_keys=None,rows=None,alread
                         if link:verified=(link,'user_supplied_exact_job_link')
                         elif record.get('comment_link_job_key')==job['key'] and comments.direct_link(record.get('permalink','')):
                             verified=(comments.direct_link(record['permalink']),'previously_verified_exact_job_link')
+                        elif future_only:raise ValueError('未保存本次视频的确切链接，跳过评论并继续；不猜选旧视频')
                         else:verified=find_published(page,context,entry,job['caption_text'],since,end)
-                        value=comments.after_publication(page,context,entry,proof,job['key'],record,COMMENT,None,verified_link=verified)
+                        value=comments.after_publication(page,context,entry,proof,job['key'],record,COMMENT,None,verified_link=verified,require_reload_verification=future_only)
+                        if future_only:value=comments.verify_after_reload(page,entry,proof,job['key'],COMMENT,value)
                         record.update(comment_status=value['status'],comment_error=value.get('error',''))
                         upload.save_json(state_path,state)
                         result.update(status=value['status'],permalink=value.get('permalink',''),error=value.get('error',''))
@@ -206,7 +208,7 @@ def backfill(manifest,output_dir,links_path=None,only_keys=None,rows=None,alread
 
 
 def execute(output_dir=None,links_path=None,comments_only=False):
-    if upload.VERSION not in {'2.41','2.42'}:raise ValueError('需安装配套上传核心 2.41 或 2.42')
+    if upload.VERSION not in {'2.41','2.42','2.43'}:raise ValueError('需安装配套上传核心 2.41～2.43')
     now=datetime.now(timezone.utc)
     if now.astimezone(batch.BJ).date().isoformat()!=TODAY:raise ValueError('不是本次授权的北京时间日期，不自动改日发布')
     with locked():
