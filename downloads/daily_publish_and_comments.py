@@ -208,7 +208,7 @@ def backfill(manifest,output_dir,links_path=None,only_keys=None,rows=None,alread
 
 
 def execute(output_dir=None,links_path=None,comments_only=False):
-    if upload.VERSION not in {'2.41','2.42','2.43'}:raise ValueError('需安装配套上传核心 2.41～2.43')
+    if upload.VERSION not in {'2.41','2.42','2.43','2.44'}:raise ValueError('需安装配套上传核心 2.41～2.44')
     now=datetime.now(timezone.utc)
     if now.astimezone(batch.BJ).date().isoformat()!=TODAY:raise ValueError('不是本次授权的北京时间日期，不自动改日发布')
     with locked():

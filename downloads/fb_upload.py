@@ -16,7 +16,7 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 ROOT = Path(__file__).resolve().parent
 CONFIG = ROOT / "upload_config.json"
-VERSION = "2.43"
+VERSION = "2.44"
 SUCCESS_PATTERN = (
     r"^(?:Your reel (?:is(?: now)?|has been|was) (?:successfully )?"
     r"(?:published|shared|posted)(?: successfully)?|"
@@ -121,7 +121,7 @@ UPLOAD_ACTIVITY_JS = r"""button => {
         if (!element.getClientRects().length || style.visibility==='hidden' || style.display==='none') continue;
         const text=(element.innerText || element.getAttribute('aria-valuetext') || '').replace(/\s+/g,' ').trim();
         const match=rx.exec(text);
-        if(match && (match[2]===undefined || Number(match[2])<=100)) return {active:true,label:text};
+        if(match && (match[2]===undefined || Number(match[2])<100)) return {active:true,label:text};
     }
     return {active:false};
 }"""
@@ -864,7 +864,7 @@ def select_reel_video(page, reel_button, video, timeout_ms=60000, entry_timeout_
         page.remove_listener("filechooser", choose_native)
 
 
-MODERN_CAPTION_JS = r"""() => {
+MODERN_CAPTION_JS = r"""({name} = {}) => {
     const marker = 'data-local-upload-caption';
     for (const el of document.querySelectorAll('[' + marker + ']')) el.removeAttribute(marker);
     const visible = el => el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden';
@@ -874,7 +874,9 @@ MODERN_CAPTION_JS = r"""() => {
     for (const seed of document.querySelectorAll('div, span, [aria-placeholder], [data-placeholder]')) {
         if (!visible(seed)) continue;
         const label = seed.getAttribute('aria-placeholder') || seed.getAttribute('data-placeholder') || seed.textContent;
-        if (norm(label) !== 'Describe your reel...') continue;
+        const ordinary=norm(label)==='Describe your reel...';
+        const named=location.pathname.replace(/\/$/,'')==='/reels/create' && name && norm(label)===("What's on your mind, "+name+"?");
+        if (!ordinary && !named) continue;
         let area = seed;
         for (let depth = 0; area && area !== document.body && depth < 6; depth++, area = area.parentElement) {
             const candidates = [...area.querySelectorAll(editable)].filter(visible);
@@ -910,7 +912,7 @@ def modern_caption_field(page, timeout_ms=90000):
         field = page.get_by_role("textbox", name="Describe your reel...", exact=True)
         if field.count() == 1 and field.is_visible():
             return field
-        count = page.evaluate(MODERN_CAPTION_JS)
+        count = page.evaluate(MODERN_CAPTION_JS,dict(name=getattr(page,'_fb_expected_caption_name',None)))
         if count == 1:
             return page.locator('[data-local-upload-caption="true"]')
         if count > 1:
@@ -1084,6 +1086,66 @@ def advance_modern_reel(page,text,timeout_ms=90000,retry_after_ms=3000):
         page.wait_for_timeout(100)
 
 
+
+def recover_empty_modern_editor(page,video,timeout_ms=30000,recovery_after_ms=1000):
+    """One exact reattachment only when Facebook visibly discarded the first file."""
+    deadline=time.monotonic()+timeout_ms/1000;started=time.monotonic();recovered=False
+    while True:
+        checkpoint(page);require_no_advanced_protection(page)
+        if urlparse(page.url).path.rstrip('/')!='/reels/create':raise RuntimeError('编辑器网址已变化，未再次选择视频')
+        empty=page.get_by_text('Upload a video in order to see a preview here',exact=True)
+        is_empty=empty.count()==1 and empty.is_visible()
+        if not is_empty:
+            field=page.get_by_role('textbox',name='Describe your reel...',exact=True)
+            count=page.evaluate(MODERN_CAPTION_JS,dict(name=getattr(page,'_fb_expected_caption_name',None)))
+            if count>1:raise RuntimeError('新版描述位置关联多个可编辑区域，无法唯一填写，未点击发布。')
+            if (field.count()==1 and field.is_visible()) or count==1:return recovered
+        if time.monotonic()>=deadline:raise RuntimeError('视频尚未进入 Reel 编辑器，未填写文案或点击发布；下个目标继续')
+        if is_empty and not recovered and (time.monotonic()-started)*1000>=recovery_after_ms:
+            heading=page.get_by_text('Create reel',exact=True)
+            if heading.count()!=1 or not heading.is_visible():raise RuntimeError('空编辑器缺少唯一 Create reel 标题，未重新选文件')
+            if page.locator('[role="dialog"]:visible,[role="alertdialog"]:visible,dialog:visible').count():raise RuntimeError('空编辑器出现未知弹窗，未重新选文件')
+            inputs=page.locator('input[type="file"]')
+            candidates=[]
+            for i in range(inputs.count()):
+                item=inputs.nth(i)
+                info=item.evaluate("e=>({accept:e.accept,files:[...e.files].map(f=>({name:f.name,size:f.size}))})")
+                if info['files']:raise RuntimeError('编辑器已有已选文件，未重复选择或替换视频')
+                if 'video/' in info['accept'] or '.mp4' in info['accept']:candidates.append(item)
+            if len(candidates)>1:raise RuntimeError('空编辑器存在多个视频上传框，未猜选')
+            recovered=True  # Never activate another picker if this attempt is uncertain.
+            if len(candidates)==1:
+                candidates[0].set_input_files(str(video.resolve()),timeout=min(10000,max(1,int((deadline-time.monotonic())*1000))))
+            else:
+                add=page.get_by_role('button',name=re.compile(r'^Add video(?: or drag and drop)?$',re.I))
+                if add.count()!=1 or not add.is_visible():add=page.get_by_text('Add video',exact=True)
+                if add.count()!=1 or not add.is_visible():raise RuntimeError('空编辑器没有唯一 Add video 入口，未重新选文件')
+                with page.expect_file_chooser(timeout=min(5000,max(1,int((deadline-time.monotonic())*1000)))) as choice:
+                    add.click(timeout=min(5000,max(1,int((deadline-time.monotonic())*1000))))
+                choice.value.set_files(str(video.resolve()),timeout=min(10000,max(1,int((deadline-time.monotonic())*1000))))
+            print('原选文件事件后编辑器仍为空；仅向此编辑器重新选择同一视频一次：',video.name,flush=True)
+        page.wait_for_timeout(100)
+
+
+def wait_prepost_upload(page,button,timeout_ms=180000,stable_ms=500):
+    """Do not submit while Facebook explicitly reports an unfinished upload."""
+    deadline=time.monotonic()+min(timeout_ms,180000)/1000;ready_since=None;next_log=0
+    while True:
+        checkpoint(page);require_no_advanced_protection(page)
+        label=visible_upload_activity(page,button)
+        if label and re.fullmatch(r'Posting(?:\.{3}|…)?',label,re.I):
+            raise RuntimeError('编辑器已显示 Posting，未再次提交发布；需核实原任务')
+        ready=(not label and button.count()==1 and button.is_visible() and button.is_enabled())
+        now=time.monotonic()
+        if ready:
+            ready_since=now if ready_since is None else ready_since
+            if (now-ready_since)*1000>=stable_ms:return
+        else:ready_since=None
+        if now>=deadline:raise RuntimeError('发布前上传仍未完成或按钮不可用，尚未点击 Post；跳过继续下一个')
+        if label and now>=next_log:
+            print('发布前等待当前视频上传：',label,'；最多 3 分钟，不提前点击 Post。',flush=True);next_log=now+15
+        page.wait_for_timeout(min(100,max(1,int((deadline-now)*1000))))
+
 def prepare_modern_reel(page, entry, text):
     from playwright.sync_api import expect
 
@@ -1118,7 +1180,7 @@ def prepare_modern_reel(page, entry, text):
         re.compile(r"^Post audience(?:\s+Post audience)?\s+Public$"), timeout=30000
     )
     button = page.get_by_role("button", name="Post", exact=True)
-    expect(button).to_be_enabled(timeout=180000)
+    wait_prepost_upload(page,button)
     print("新版 Reel 检查通过：TXT 文案已填写，Public 和所需 AI 标签已核对。", flush=True)
     return button
 
@@ -1259,6 +1321,7 @@ def prepare_reel(page, entry, video, text, pause_before_reel=False):
     require_no_advanced_protection(page)
     page._fb_upload_stage = 'verify_identity'
     identity_proof = ensure_identity(page, entry)
+    page._fb_expected_caption_name=entry.get('name')
     page._fb_upload_stage = 'open_reel_menu'
     require_english_interface(page)
     for attempt in range(2):
@@ -1297,6 +1360,8 @@ def prepare_reel(page, entry, video, text, pause_before_reel=False):
     page._fb_upload_stage = 'wait_reel_editor'
     layout = wait_reel_layout(page)
     if layout == "modern":
+        page._fb_upload_stage = 'verify_selected_media'
+        recover_empty_modern_editor(page,video)
         page._fb_upload_stage = 'modern_caption_audience_ai'
         button = prepare_modern_reel(page, entry, text)
         return button, dict(identity_proof, editor_layout="modern")
@@ -1315,7 +1380,7 @@ def prepare_reel(page, entry, video, text, pause_before_reel=False):
     set_ai_label(page, entry)
     page._fb_upload_stage = 'ready_to_post'
     button = page.get_by_role("button", name="Post", exact=True)
-    expect(button).to_be_enabled(timeout=180000)
+    wait_prepost_upload(page,button)
     return button, identity_proof
 
 

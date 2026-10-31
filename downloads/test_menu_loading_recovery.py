@@ -75,7 +75,7 @@ class MenuLoadingTests(unittest.TestCase):
              patch.object(upload,'require_english_interface'),patch.object(upload,'recheck_publish_identity') as recheck, \
              patch.object(upload,'target_key',return_value='id:1001'),patch.object(upload,'open_facebook_menu') as menu, \
              patch.object(upload,'select_reel_video',side_effect=[upload.ReelEntryNotReady('menu loading'),'native_file_chooser']) as select, \
-             patch.object(upload,'wait_reel_layout',return_value='modern'),patch.object(upload,'prepare_modern_reel',return_value='post'):
+             patch.object(upload,'wait_reel_layout',return_value='modern'),patch.object(upload,'recover_empty_modern_editor'),patch.object(upload,'prepare_modern_reel',return_value='post'):
             upload.prepare_reel(self.page,entry,self.video,'original caption')
         self.assertEqual(navigate.call_count,2);self.assertEqual(identity.call_count,2)
         self.assertEqual(menu.call_count,2);self.assertEqual(select.call_count,2);recheck.assert_called_once()

@@ -108,7 +108,7 @@ class ComposerSelectionTests(ReelEntryRecoveryTests):
         with patch.object(upload,'navigate_profile'),patch.object(upload,'ensure_identity',return_value={}), \
              patch.object(upload,'require_english_interface'),patch.object(upload,'open_facebook_menu') as menu, \
              patch.object(upload,'select_reel_video') as select,patch.object(upload,'wait_reel_layout',return_value='modern'), \
-             patch.object(upload,'prepare_modern_reel',return_value='post-control'):
+             patch.object(upload,'recover_empty_modern_editor'),patch.object(upload,'prepare_modern_reel',return_value='post-control'):
             button,proof=upload.prepare_reel(self.page,entry,self.video,'exact caption')
         menu.assert_not_called()
         self.assertEqual(select.call_args.args[1].get_attribute('id'),'reel')

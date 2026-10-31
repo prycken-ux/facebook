@@ -67,6 +67,10 @@ class ModernEditorTests(unittest.TestCase):
         self.caption = "Fixture multiline caption\n#Example"
         self.expect_patch = patch("playwright.sync_api.expect", side_effect=fast_expect)
         self.expect_patch.start()
+        original_wait=upload.wait_prepost_upload
+        self.media_wait_patch=patch.object(upload,'wait_prepost_upload',side_effect=lambda page,button:original_wait(page,button,timeout_ms=400,stable_ms=20))
+        self.media_wait_patch.start()
+        self.addCleanup(self.media_wait_patch.stop)
         self.silence = contextlib.redirect_stdout(io.StringIO())
         self.silence.__enter__()
 
@@ -155,6 +159,11 @@ class ModernEditorTests(unittest.TestCase):
         self.prepare()
         self.assertFalse(self.page.locator('#ai').is_checked())
         self.assertIsNone(self.page.evaluate('window.aiChanges'))
+        self.assertIsNone(self.page.evaluate('window.postClicks'))
+
+    def test_observed_named_whats_on_your_mind_variant_is_scoped_to_expected_actor(self):
+        self.editor=EDITOR.replace('Describe your reel...',"What's on your mind, Example Page?")
+        self.prepare();self.assertEqual(self.page.evaluate('window.savedCaption'),self.caption)
         self.assertIsNone(self.page.evaluate('window.postClicks'))
 
     def test_named_textarea_is_supported(self):

@@ -13,7 +13,7 @@ from add_fb_accounts import locked
 
 def execute(date,real_footage,output_dir=None):
     if not real_footage:raise ValueError('须确认本批全部实拍，再使用 --real-footage')
-    if upload.VERSION!='2.43':raise ValueError('需安装上传核心 2.43')
+    if upload.VERSION not in {'2.43','2.44'}:raise ValueError('需安装上传核心 2.43 或 2.44')
     now=datetime.now(timezone.utc)
     if now.astimezone(batch.BJ).date().isoformat()!=date:raise ValueError('仅运行明确指定的北京时间当天，不补跑旧批次')
     with locked():
