@@ -6,10 +6,10 @@ root = Path(sys.argv[1])
 sys.path.insert(0, str(root))
 from add_fb_accounts import locked
 
-expected = 'e0d610d3bf44624a2ff3f40595f02056afce498a3f40e86a6f5efdef06e8cff7'
+expected = '21f0f3e6cc48ecdc225cebde8d3b9f2436915408366bbf911b8b47baf6e31292'
 urls = [
-    'https://raw.githubusercontent.com/prycken-ux/facebook/c2c6faa26771a79d7a3c9b9a492883f615355ab6/downloads/future-video-comments-v1.zip',
-    'https://github.com/prycken-ux/facebook/raw/c2c6faa26771a79d7a3c9b9a492883f615355ab6/downloads/future-video-comments-v1.zip'
+    'https://raw.githubusercontent.com/prycken-ux/facebook/4c57ddd015262d6e1ee32eb31ddb348820a5a1a8/downloads/future-video-comments-v2.zip',
+    'https://github.com/prycken-ux/facebook/raw/4c57ddd015262d6e1ee32eb31ddb348820a5a1a8/downloads/future-video-comments-v2.zip'
 ]
 
 def write_atomic(path, content):
@@ -73,5 +73,5 @@ with locked():
             else:
                 write_atomic(root / name, originals[name])
         raise
-    print('Installed future-video comments workflow 2.43 with reload verification. Backup:', backup, flush=True)
+    print('Installed future-video comments workflow 2.43 / comments 1.3 with reload verification. Backup:', backup, flush=True)
     print('INSTALL ONLY: no videos or comments sent. Old publication/comment records, captions and browser profiles are unchanged. Use publish_new_with_comments.py for the next explicitly authorized new batch.', flush=True)
