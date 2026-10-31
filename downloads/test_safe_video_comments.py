@@ -123,6 +123,48 @@ class VideoCommentTests(unittest.TestCase):
         self.assertEqual(self.send()['status'],'sent')
 
 
+    def test_same_video_link_and_text_under_another_job_key_is_not_sent_again(self):
+        self.assertEqual(self.send()['status'],'sent')
+        self.key='b'*64
+        self.assertEqual(self.send()['status'],'sent')
+        self.assertEqual(self.page.evaluate('window.sent'),1)
+
+    def test_unknown_send_under_another_job_key_blocks_duplicate_on_same_video(self):
+        comment_key=comments.hashlib.sha256(('b'*64+'\0'+comments.text_hash(self.text)).encode()).hexdigest()
+        upload.save_json(self.root/'logs/video_comments.json',{comment_key:dict(account='fb01',target='page01',permalink=self.page.url,text_sha256=comments.text_hash(self.text),status='sending')})
+        self.assertEqual(self.send()['status'],'manual_required');self.assertIsNone(self.page.evaluate('window.sent'))
+
+    def test_reel_toolbar_comment_opens_panel_without_submitting_comment(self):
+        self.page.locator('#compose').evaluate("e=>e.hidden=true")
+        self.page.evaluate("""()=>{
+          const toolbar=document.createElement('div');toolbar.id='toolbar';
+          for(const label of ['Like','Comment','Share']){
+            const button=document.createElement('button');button.textContent=label;
+            if(label==='Comment')button.onclick=()=>document.querySelector('#compose').hidden=false;
+            toolbar.append(button);
+          }document.querySelector('main').prepend(toolbar);
+        }""")
+        self.assertEqual(self.send()['status'],'sent');self.assertEqual(self.page.evaluate('window.sent'),1)
+
+    def test_scoped_post_button_can_send_but_unrelated_main_post_never_can(self):
+        self.page.locator('#compose button').evaluate("e=>{e.setAttribute('aria-label','Post');e.textContent='Post'}")
+        self.assertEqual(self.send()['status'],'sent');self.assertEqual(self.page.evaluate('window.sent'),1)
+
+
+    def test_unrelated_main_post_button_never_submits_comment(self):
+        self.page.locator('#compose button').evaluate('e=>e.remove()')
+        self.page.evaluate("""()=>{const b=document.createElement('button');b.textContent='Post';
+          b.onclick=()=>window.wrongPostClicked=true;document.querySelector('main').append(b)}""")
+        self.assertEqual(self.send()['status'],'manual_required');self.assertIsNone(self.page.evaluate('window.wrongPostClicked'))
+
+
+    def test_reload_verification_mode_does_not_mark_optimistic_dom_as_final_success(self):
+        result=comments.after_publication(self.page,self.context,self.entry,{},self.key,self.record,self.text,None,require_reload_verification=True)
+        self.assertEqual(result['status'],'verifying')
+        with self.assertRaises(RuntimeError):self.send()
+        self.assertEqual(self.page.evaluate('window.sent'),1)
+
+
 class PublicVideoLinkTests(unittest.TestCase):
     def test_only_new_published_owned_video_with_exact_caption_can_supply_link(self):
         now=time.time();video=dict(__typename='Video',id='9001',owner={'id':'1001'},description={'text':'Exact caption'},creation_time=now,is_published=True)

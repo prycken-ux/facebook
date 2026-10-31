@@ -1,0 +1,13 @@
+本次用户明确授权：以 fb06/page01 身份，给 https://www.facebook.com/reel/1009711495487891 发布原规定评论。
+本次只处理此链接，不扫描其他主页、不上传视频、不创建或改写 MP4 的发布成功记录。
+使用原 profiles/fb06 登录资料，核对配置公共主页编号及实际 Page 评论身份。
+评论原文：
+Get your own copy:
+https://www.amazon.com/s?maas=maas_adg_B87EF70D0CB3092D4D7277407B28F038_afap_abs&ref_=aa_maas&tag=maas&me=AEFRCMPTGXRXD&marketplaceID=ATVPDKIKX0DER
+只定位唯一顶层评论框；Reply 输入框或未知弹窗停止处理。发送按钮仅在评论框范围内寻找；Enter 仅在该评论框明确提示按 Enter 发布时使用。
+发送前记录意图。首次页面显示自己的完整评论后先标为 verifying，再重新加载此视频；刷新后仍看到本人规定评论，才输出 SUCCESS 并保存 sent。
+以“账号、目标、视频链接、文案”防重复；发送中、核验中、结果不明时禁止再次提交。有原视频指纹和链接两种任务键时也按链接识别重复。
+如果刷新核验未通过，状态 needs_review；没有唯一输入框、发送按钮或正确身份则 manual_required，不伪报成功。
+桌面输出 fb06单条评论结果-时间.zip（result.json、当前页面截图/ARIA、当前错误），不包含 Cookie/凭据或原视频。
+执行完会尝试用原 fb06 Chrome 打开此视频，供用户查看。
+本地 Chromium 样例测试通过；实际 Facebook 结果以运行输出及刷新后本人评论是否存在为准。

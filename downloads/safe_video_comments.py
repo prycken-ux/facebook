@@ -8,6 +8,8 @@ from urllib.parse import urlparse,parse_qs
 
 import fb_upload as upload
 
+COMMENT_WORKFLOW_VERSION = "1.1-url-dedup"
+
 
 def text_hash(text):
     return hashlib.sha256(text.encode('utf-8')).hexdigest()
@@ -219,8 +221,24 @@ def ready_comment_field(page,timeout_ms=30000):
         except CommentComposerMissing:pass
         if not expanded:
             # Bare "Comment" can be a draft's send button, so never use it to expand.
-            controls=page.get_by_role('button',name=re.compile(r'^(?:Comments|Leave a comment|See comments)$',re.I))
+            controls=page.get_by_role('button',name=re.compile(r'^(?:Comments|Leave a comment|See comments|(?:View all )?[0-9]+ comments?)$',re.I))
             buttons=[controls.nth(i) for i in range(controls.count()) if controls.nth(i).is_visible()]
+            if not buttons and direct_link(page.url):
+                # A Reel toolbar's Comment opens the panel; a comment form's
+                # Comment sends text. Only the former is allowed here.
+                bare=page.get_by_role('button',name='Comment',exact=True)
+                for index in range(bare.count()):
+                    button=bare.nth(index)
+                    if button.is_visible() and button.evaluate(r"""e=>{
+                      if(e.closest('form,[role=form]'))return false;
+                      for(let p=e.parentElement,depth=0;p&&depth<4;p=p.parentElement,depth++){
+                        if(p.matches('body,main,[role=main]'))break;
+                        if(p.querySelector('textarea,input,[role=textbox],[contenteditable=true]'))return false;
+                        const labels=[...p.querySelectorAll('button,[role=button]')].filter(b=>b.getClientRects().length)
+                          .map(b=>b.getAttribute('aria-label')||b.innerText||'');
+                        if(labels.length<=8 && labels.some(s=>/\bLike\b/i.test(s)) && labels.some(s=>/Share/i.test(s)))return true;
+                      }return false;
+                    }"""):buttons.append(button)
             if len(buttons)>1:raise RuntimeError('展开评论入口不唯一，未猜选')
             if buttons:
                 button=buttons[0]
@@ -235,10 +253,10 @@ def ready_comment_field(page,timeout_ms=30000):
 
 def send_control(field):
     area=field.locator('..')
-    for _ in range(4):
+    for _ in range(6):
         if area.evaluate("e=>e.matches('body,main,[role=main]')"):break
         if area.locator('video').count() or area.get_by_role('textbox').count()!=1 or area.get_by_role('button').count()>8:break
-        controls=area.get_by_role('button',name=re.compile(r'^(?:Comment|Send comment|Post comment|Post a comment|Send)$',re.I))
+        controls=area.get_by_role('button',name=re.compile(r'^(?:Comment|Send comment|Post comment|Post a comment|Send|Post)$',re.I))
         visible=[controls.nth(i) for i in range(controls.count()) if controls.nth(i).is_visible()]
         if len(visible)==1:
             from playwright.sync_api import expect
@@ -273,7 +291,7 @@ def capture_failure(page,key,error):
     except Exception:pass
 
 
-def after_publication(page,context,entry,proof,key,record,text,collector,verified_link=None):
+def after_publication(page,context,entry,proof,key,record,text,collector,verified_link=None,require_reload_verification=False):
     if record.get('status')!='published':raise ValueError('视频未确认成功，不评论')
     if not text.strip() or len(text)>5000:raise ValueError('评论文案为空或过长')
     ledger_path=upload.ROOT/'logs/video_comments.json'
@@ -282,7 +300,7 @@ def after_publication(page,context,entry,proof,key,record,text,collector,verifie
     existing=ledger.get(comment_key)
     if existing:
         if existing.get('status') in {'sent','already_present'}:return existing
-        if existing.get('status') in {'sending','needs_review'}:
+        if existing.get('status') in {'sending','verifying','needs_review'}:
             raise RuntimeError('此条评论已有发送意图或结果待核实，不自动重发')
     attempted=False
     item=dict(account=entry['account'],target=entry['target'],video_job=key,text=text,
@@ -306,6 +324,19 @@ def after_publication(page,context,entry,proof,key,record,text,collector,verifie
         record['permalink']=permalink
         record['comment_link_job_key']=key
         record['comment_link_method']=method
+        # The same video may be bound once by local MP4 fingerprint and once by
+        # a user-supplied link. Do not send twice across those two ledger keys.
+        for prior_key,prior in list(ledger.items()):
+            if (prior_key==comment_key or not isinstance(prior,dict)
+                    or (prior.get('account'),prior.get('target'))!=(entry['account'],entry['target'])
+                    or prior.get('text_sha256')!=item['text_sha256']
+                    or direct_link(prior.get('permalink',''))!=permalink):continue
+            if prior.get('status') in {'sending','verifying','needs_review'}:
+                raise RuntimeError('同一账号在此视频上的相同评论已有发送意图，需先核实，未重复发送')
+            if prior.get('status') in {'sent','already_present'}:
+                alias=dict(prior,video_job=key,deduplicated_from=prior_key)
+                ledger[comment_key]=alias;upload.save_json(ledger_path,ledger)
+                return alias
         if direct_link(page.url)!=permalink:
             page.goto(upload.english_url(permalink),wait_until='domcontentloaded',timeout=90000)
         upload.checkpoint(page);upload.require_no_advanced_protection(page)
@@ -336,7 +367,7 @@ def after_publication(page,context,entry,proof,key,record,text,collector,verifie
             if scan_comments(page,entry,text):
                 actual=field.input_value() if field.evaluate("e=>e.matches('input,textarea')") else field.inner_text()
                 if not actual.strip():
-                    item.update(status='sent',confirmed_at=datetime.now(timezone.utc).isoformat())
+                    item.update(status='verifying' if require_reload_verification else 'sent',confirmed_at=datetime.now(timezone.utc).isoformat())
                     ledger[comment_key]=item;upload.save_json(ledger_path,ledger);return item
             page.wait_for_timeout(500)
         raise RuntimeError('已尝试发送，但未确认本人评论出现并清空输入框；结果需手动核实，勿重复发')
