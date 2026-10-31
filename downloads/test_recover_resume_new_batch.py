@@ -85,6 +85,13 @@ class CurrentResumeTests(unittest.TestCase):
         with patch.object(fresh,'execute',side_effect=AssertionError('no rescan')),patch.object(batch,'run',side_effect=lambda *a,**k:events.append('resume-uploads')) as run,patch.object(daily,'backfill',side_effect=lambda *a,**k:events.append('current-comments')) as comment,patch.object(batch,'results',return_value=[]):
             self.assertEqual(recover.resume(self.root,'2026-10-31'),0)
         self.assertEqual(events,['resume-uploads','current-comments']);self.assertTrue(run.call_args.kwargs['retry_before_post']);self.assertTrue(comment.call_args.kwargs['future_only']);self.assertEqual(comment.call_args.args[0],self.value)
+    def test_unknown_post_intent_keeps_its_account_browser_open_and_blocks_other_page_uploads(self):
+        view=recover.prepare_resume(self.root,self.path,self.value)
+        with patch.object(batch,'close_selected_window') as close,patch.object(upload,'run_entry') as publish:
+            self.assertEqual(batch.run(view,self.root,defer_comments=True,retry_before_post=True),3)
+        close.assert_not_called();publish.assert_not_called()
+        self.assertEqual(upload.read_json(self.state_path,{})[self.jobs[1]['key']]['status'],'posting')
+
     def test_no_current_batch_starts_fresh_only_after_verified_lock_recovery(self):
         self.path.unlink()
         with patch.object(fresh,'execute',return_value=0) as start:
