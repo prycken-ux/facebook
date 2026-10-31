@@ -193,7 +193,7 @@ class ScheduledMaterialTests(unittest.TestCase):
 
     def test_before_post_retry_never_overrides_success_evidence_or_a_consumed_retry(self):
         path,manifest=self.freeze();job=manifest['payload']['jobs'][0]
-        for evidence in [{'post_intent_at':'2026-10-29T17:01:00+08:00'},{'permalink':'https://www.facebook.com/reel/9001'},{'today_first_retry_used':True}]:
+        for evidence in [{'confirmation_method':'user_confirmed_existing_post'},{'confirmed_at':'2026-10-31T05:00:00+00:00'},{'post_intent_at':'2026-10-29T17:01:00+08:00'},{'permalink':'https://www.facebook.com/reel/9001'},{'today_first_retry_used':True}]:
             with self.subTest(evidence=evidence):
                 state={j['key']:dict(account=j['account'],target=j['target'],url=j['url'],video=j['filename'],status='published') for j in manifest['payload']['jobs']}
                 state[job['key']].update(status='failed_before_post',**evidence);old=dict(state[job['key']]);upload.save_json(self.state_path,state)

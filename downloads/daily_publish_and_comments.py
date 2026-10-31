@@ -143,11 +143,18 @@ def backfill(manifest,output_dir,links_path=None,only_keys=None,rows=None,alread
             result=dict(account=job['account'],target=job['target'],filename=job['filename'],key=job['key'],status='manual_required',permalink='',error='')
             try:
                 state=upload.read_json(state_path,{});record=state[job['key']]
+                if ((record.get('account'),record.get('target'))!=(job['account'],job['target'])
+                        or upload.target_key(record.get('url',''))!=upload.target_key(job['url'])
+                        or str(record.get('video','')).replace('\\','/').split('/')[-1]!=job['filename']):
+                    raise ValueError('评论任务记录与原视频不一致，未猜选目标')
                 end_text=record.get('confirmed_batch_lookup_cutoff') or record.get('published_at') or record.get('archived_at')
                 end=datetime.fromisoformat(end_text).timestamp()+60 if end_text else time.time()
-                since=max(start,datetime.fromisoformat(record['created']).timestamp()-5) if manifest['payload']['date']==TODAY else start
+                since=max(start,datetime.fromisoformat(record['created']).timestamp()-5)
                 if record.get('status')!='published':
                     result.update(status='video_not_confirmed',error='视频未确认成功，保留记录，不发送评论')
+                    continue
+                if record.get('comment_status') in {'sent','already_present','sending','needs_review'}:
+                    result.update(status=record['comment_status'],permalink=record.get('permalink',''),error=record.get('comment_error',''))
                     continue
                 comment_key=comments.hashlib.sha256((job['key']+'\0'+comments.text_hash(COMMENT)).encode()).hexdigest()
                 existing=upload.read_json(upload.ROOT/'logs/video_comments.json',{}).get(comment_key,{})
@@ -199,7 +206,7 @@ def backfill(manifest,output_dir,links_path=None,only_keys=None,rows=None,alread
 
 
 def execute(output_dir=None,links_path=None,comments_only=False):
-    if upload.VERSION!='2.41':raise ValueError('需安装配套上传核心 2.41')
+    if upload.VERSION not in {'2.41','2.42'}:raise ValueError('需安装配套上传核心 2.41 或 2.42')
     now=datetime.now(timezone.utc)
     if now.astimezone(batch.BJ).date().isoformat()!=TODAY:raise ValueError('不是本次授权的北京时间日期，不自动改日发布')
     with locked():

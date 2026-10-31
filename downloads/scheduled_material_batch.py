@@ -49,7 +49,7 @@ def start_time(date,time_text,now):
 
 
 def freeze(date,time_text,include_pages,comment,now):
-    if upload.VERSION not in {'2.38','2.39','2.40','2.41'}:raise ValueError('需安装配套上传核心 2.38～2.41')
+    if upload.VERSION not in {'2.38','2.39','2.40','2.41','2.42'}:raise ValueError('需安装配套上传核心 2.38～2.42')
     if not comment.strip() or len(comment)>5000:raise ValueError('评论文案为空或过长')
     effective=start_time(date,time_text,now)
     config=upload.read_json(upload.CONFIG,{})
@@ -201,7 +201,8 @@ def results(path,manifest,attempts,output_dir,final=False):
         writer.writeheader();writer.writerows(rows)
     destination=Path(output_dir) if output_dir else upload.ROOT/'logs'
     if not destination.is_dir():destination=upload.ROOT/'logs'
-    output=destination/('今日定时发布与评论-'+manifest['payload']['date']+'-'+manifest['sha256'][:8]+'.zip')
+    label='八个失败目标重发-' if manifest['payload'].get('run_kind')=='retry-oct30-eight' else '今日定时发布与评论-'
+    output=destination/(label+manifest['payload']['date']+'-'+manifest['sha256'][:8]+'.zip')
     with zipfile.ZipFile(output,'w',zipfile.ZIP_DEFLATED) as archive:
         archive.write(report_path,'results.json');archive.write(csv_path,'results.csv')
         for job in manifest['payload']['jobs']:
@@ -237,7 +238,7 @@ def run(path,output_dir=None,before_job=None,defer_comments=False,retry_before_p
     now=datetime.now(timezone.utc)
     if now.astimezone(BJ).date().isoformat()!=payload['date']:raise ValueError('已不是本批授权日期，不补跑过期计划')
     if now<datetime.fromisoformat(payload['start']):raise ValueError('尚未到指定开始时间，不提前发布')
-    if upload.VERSION not in {'2.38','2.39','2.40','2.41'}:raise ValueError('上传核心版本不匹配')
+    if upload.VERSION not in {'2.38','2.39','2.40','2.41','2.42'}:raise ValueError('上传核心版本不匹配')
     attempts=[]
     with locked(),path.with_suffix('.log').open('a',encoding='utf-8') as log:
         with contextlib.redirect_stdout(Tee(sys.stdout,log)),contextlib.redirect_stderr(Tee(sys.stderr,log)):
@@ -248,7 +249,7 @@ def run(path,output_dir=None,before_job=None,defer_comments=False,retry_before_p
                         state_path=upload.ROOT/'logs/publish_state.json';state=upload.read_json(state_path,{})
                         old=state.get(job['key'],{})
                         can_retry=(retry_before_post and old.get('status')=='failed_before_post'
-                            and not any(old.get(k) for k in ('success_message','permalink','post_intent_at','today_first_retry_used')))
+                            and not any(old.get(k) for k in ('success_message','permalink','confirmation_method','confirmed_at','post_intent_at','today_first_retry_used')))
                         if job['key'] in state and not can_retry:
                             print('原素材已有记录，不重发：',job['account'],job['filename'],state[job['key']].get('status'),flush=True)
                             attempt['action']='existing_record';continue

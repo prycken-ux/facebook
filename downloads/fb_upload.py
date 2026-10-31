@@ -16,7 +16,7 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 ROOT = Path(__file__).resolve().parent
 CONFIG = ROOT / "upload_config.json"
-VERSION = "2.41"
+VERSION = "2.42"
 SUCCESS_PATTERN = (
     r"^(?:Your reel (?:is(?: now)?|has been|was) (?:successfully )?"
     r"(?:published|shared|posted)(?: successfully)?|"
@@ -367,7 +367,7 @@ def named_job(entry, state, filename, retry_before_post=False):
         if not (retry_before_post and row.get('status')=='failed_before_post'
                 and (row.get('account'),row.get('target'))==(entry['account'],entry['target'])
                 and target_key(row.get('url',''))==target_key(entry['url'])
-                and not any(row.get(k) for k in ('success_message','permalink','post_intent_at','today_first_retry_used'))):
+                and not any(row.get(k) for k in ('success_message','permalink','confirmation_method','confirmed_at','post_intent_at','today_first_retry_used'))):
             raise ValueError("指定视频已有任务记录（" + str(row.get("status")) + "），请先核对；不会重发。")
     if filename.lower() in {name.lower() for name in entry.get("excluded_files", [])}:
         raise ValueError("指定视频在排除名单中：" + filename)
@@ -970,10 +970,75 @@ def set_ai_label(page, entry, modern=False):
     print("AI 标签已核对：", "开启" if desired else "关闭", flush=True)
 
 
+
+def clear_caption_popup_before_next(page,field,text):
+    """Commit text with a normal click on the noninteractive Create reel title."""
+    checkpoint(page);require_no_advanced_protection(page)
+    verify_caption(field,text)
+    field.blur(timeout=5000)
+    titles=page.get_by_text('Create reel',exact=True)
+    safe=[]
+    for i in range(titles.count()):
+        title=titles.nth(i)
+        if title.is_visible() and title.evaluate("""e=>{
+          if(e.closest('button,a,input,[role=button],[role=link],[contenteditable=true]'))return false;
+          const dialogs=[...document.querySelectorAll('[role=dialog],[role=alertdialog],dialog')].filter(d=>d.getClientRects().length);
+          return dialogs.every(d=>d.contains(e));
+        }"""):safe.append(title)
+    if len(safe)==1:
+        safe[0].click(timeout=3000)
+        verify_caption(field,text)
+    elif page.locator('[role=dialog]:visible,[role=alertdialog]:visible,dialog:visible').count():
+        raise RuntimeError('描述框旁出现未知弹窗，未点击 Next 或发布')
+
+
+def next_blocked_by_hashtags(button):
+    return button.evaluate(r"""button=>{
+      const r=button.getBoundingClientRect();
+      const x=Math.min(innerWidth-1,Math.max(0,r.x+r.width/2));
+      const y=Math.min(innerHeight-1,Math.max(0,r.y+r.height/2));
+      const top=document.elementFromPoint(x,y);
+      if(!top||button.contains(top)||top.contains(button))return false;
+      if(top.closest('[contenteditable=true],textarea,input'))return false;
+      for(let p=top,depth=0;p&&depth<6;p=p.parentElement,depth++){
+        if(p.matches('body,html,main,[role=main]')||p.contains(button))break;
+        const text=(p.innerText||'').trim();
+        if(text.length>3000)continue;
+        if(/password|captcha|verify|verification|security|confirm identity/i.test(text))return false;
+        const tags=new Set(text.match(/#[^\s#]+/g)||[]);
+        if(tags.size>=2 && /(?:posts|post)\b/i.test(text))return true;
+      }return false;
+    }""",timeout=3000) is True
+
+
+def activate_modern_next(page,field,text,timeout_ms=30000):
+    """Never force a pointer through an overlay, and never activate Post here."""
+    from playwright.sync_api import TimeoutError as BrowserTimeout,expect
+    clear_caption_popup_before_next(page,field,text)
+    button=page.get_by_role('button',name='Next',exact=True)
+    if button.count()!=1:raise RuntimeError('Next 按钮不唯一，未猜选或发布')
+    try:
+        button.click(trial=True,timeout=min(5000,timeout_ms))
+    except BrowserTimeout:
+        audience=page.get_by_role('button',name=re.compile(r'^Post audience\b'))
+        if any(audience.nth(i).is_visible() for i in range(audience.count())):return
+        if not field.is_visible() or not next_blocked_by_hashtags(button):raise
+        dialogs=page.locator('[role=dialog]:visible,[role=alertdialog]:visible,dialog:visible')
+        for i in range(dialogs.count()):
+            if not button.evaluate('(button,dialog)=>dialog.contains(button)',dialogs.nth(i).element_handle()):
+                raise RuntimeError('Next 被未知弹窗遮挡，未激活')
+        if not button.is_visible() or not button.is_enabled():raise
+        button.focus(timeout=3000);expect(button).to_be_focused()
+        verify_caption(field,text)
+        print('标签建议仍遮挡 Next；核对原文案后，用键盘激活同一个 Next，不选择标签。',flush=True)
+        button.press('Enter',timeout=min(5000,timeout_ms))
+        return
+    button.click(timeout=timeout_ms)
+
 def advance_modern_reel(page,text,timeout_ms=90000,retry_after_ms=3000):
     """Require the Settings UI; one retry is allowed only in proven Edit UI."""
     next_button=page.get_by_role('button',name='Next',exact=True)
-    next_button.click(timeout=min(timeout_ms,30000))
+    activate_modern_next(page,modern_caption_field(page),text,timeout_ms=min(timeout_ms,30000))
     started=time.monotonic()
     deadline=started+timeout_ms/1000
     retried=False
@@ -1000,7 +1065,7 @@ def advance_modern_reel(page,text,timeout_ms=90000,retry_after_ms=3000):
             verify_caption(modern_caption_field(page,timeout_ms=min(3000,max(1,int((deadline-time.monotonic())*1000)))),text)
             retried=True
             print('仍在 Edit 且 Next 可用，核对文案后仅重试一次 Next。',flush=True)
-            next_button.click(timeout=min(10000,max(1,int((deadline-time.monotonic())*1000))))
+            activate_modern_next(page,modern_caption_field(page),text,timeout_ms=min(10000,max(1,int((deadline-time.monotonic())*1000))))
         page.wait_for_timeout(100)
 
 
