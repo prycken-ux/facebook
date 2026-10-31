@@ -8,7 +8,7 @@ from urllib.parse import urlparse,parse_qs
 
 import fb_upload as upload
 
-COMMENT_WORKFLOW_VERSION = "1.2-future-reload"
+COMMENT_WORKFLOW_VERSION = "1.3-facebook-attribution"
 
 
 def text_hash(text):
@@ -170,7 +170,14 @@ COMMENT_SCAN_JS=r'''({name,text,urls,owner}) => {
    return u.pathname==='/profile.php'?'id:'+u.searchParams.get('id'):'path:'+u.pathname.replace(/\/$/,'').toLowerCase()}catch{return null}};
  const outgoing=value=>{try{let u=new URL(value,location.href);for(let i=0;i<2 && ['l.facebook.com','lm.facebook.com'].includes(u.hostname);i++)u=new URL(u.searchParams.get('u'));
    if(u.protocol!=='https:'||u.username||u.password)return null;
-   u.hash='';u.searchParams.delete('fbclid');u.searchParams.sort();return u.href}catch{return null}};
+   u.hash='';
+   // Facebook adds these attribution fields when rendering outgoing links.
+   // Preserve merchant, marketplace, affiliate and every unknown parameter.
+   u.searchParams.delete('fbclid');u.searchParams.delete('fb_content_id');
+   for(const key of ['content_source','channel_type']){
+     if(u.searchParams.getAll(key).length===1 && u.searchParams.get(key)==='fb')u.searchParams.delete(key);
+   }
+   u.searchParams.sort();return u.href}catch{return null}};
  const expected=urls.map(outgoing);const matches=[];
  for(const node of document.querySelectorAll('[role="article"]')){
    if(!node.getClientRects().length)continue;

@@ -25,6 +25,18 @@ class FutureCommentsTests(unittest.TestCase):
     def test_redirect_reordered_query_and_fbclid_are_equivalent(self):
         self.render(url='https://l.facebook.com/l.php?u=https%3A%2F%2Fwww.amazon.com%2Fs%3Fme%3DSHOP%26tag%3Dmaas%26fbclid%3Dextra')
         self.assertTrue(comments.scan_comments(self.page,self.entry,self.text))
+    def test_observed_facebook_attribution_does_not_hide_successful_own_comment(self):
+        from urllib.parse import quote
+        self.text='Get your own copy:\nhttps://www.amazon.com/s?maas=campaign&ref_=aa_maas&tag=maas&me=SHOP&marketplaceID=ATVPDKIKX0DER'
+        actual=self.text.split('\n')[1]+'&content_source=fb&fb_content_id=synthetic_content&channel_type=fb&fbclid=synthetic_click'
+        self.render(href='/profile.php?id=1001&comment_id=synthetic&__tn__=R',url='https://l.facebook.com/l.php?u='+quote(actual,safe='')+'&h=synthetic&__tn__=R')
+        self.assertTrue(comments.scan_comments(self.page,self.entry,self.text))
+        for before,after in [('me=SHOP','me=OTHER'),('tag=maas','tag=OTHER'),('marketplaceID=ATVPDKIKX0DER','marketplaceID=OTHER'),('maas=campaign','maas=OTHER'),('ref_=aa_maas','ref_=OTHER')]:
+            self.render(url='https://l.facebook.com/l.php?u='+quote(actual.replace(before,after),safe=''))
+            self.assertFalse(comments.scan_comments(self.page,self.entry,self.text))
+        for tail in ['&unexpected=changed','&content_source=external','&channel_type=external']:
+            self.render(url='https://l.facebook.com/l.php?u='+quote(actual+tail,safe=''))
+            self.assertFalse(comments.scan_comments(self.page,self.entry,self.text))
     def test_different_author_product_or_missing_affiliate_parameter_is_not_proof(self):
         for change in [dict(href='/profile.php?id=999'),dict(url='https://www.amazon.com/dp/123?tag=maas&me=SHOP'),dict(url='https://www.amazon.com/s?me=SHOP')]:
             self.render(**change);self.assertFalse(comments.scan_comments(self.page,self.entry,self.text))

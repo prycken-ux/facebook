@@ -26,7 +26,7 @@ def send_one(root,output_dir=None,open_result=True,verify_timeout_ms=30000):
     from diagnose_personal_identity import close_selected_window
     from playwright.sync_api import sync_playwright
     if upload.ROOT.resolve()!=Path(root).resolve():raise ValueError('上传程序目录不一致')
-    if upload.VERSION not in {'2.42','2.43'} or getattr(comments,'COMMENT_WORKFLOW_VERSION','') not in {'1.1-url-dedup','1.2-future-reload'}:
+    if upload.VERSION not in {'2.42','2.43'} or getattr(comments,'COMMENT_WORKFLOW_VERSION','') not in {'1.1-url-dedup','1.2-future-reload','1.3-facebook-attribution'}:
         raise ValueError('需先安装配套的单条评论更新')
     key=hashlib.sha256(('direct-url-comment\0'+PAIR[0]+'\0'+PAIR[1]+'\0'+LINK).encode()).hexdigest()
     comment_key=hashlib.sha256((key+'\0'+comments.text_hash(TEXT)).encode()).hexdigest()
