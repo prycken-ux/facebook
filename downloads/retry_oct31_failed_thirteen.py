@@ -93,7 +93,7 @@ def abandoned_preparations(account,selected_key,state):
     result=[]
     for key,row in state.items():
         if key==selected_key or row.get('account')!=account or row.get('status') not in {'preparing','posting'}:continue
-        if (row.get('status')!='preparing' or row.get('uploader_version') not in {'2.41','2.42','2.43','2.44','2.45'}
+        if (row.get('status')!='preparing' or row.get('uploader_version') not in {'2.41','2.42','2.43','2.44','2.45','2.46'}
                 or any(row.get(k) for k in ('post_intent_at','permalink','success_message','confirmation_method','confirmed_at','published_at'))):
             raise ValueError('该账号另有未核实的提交/旧任务，保留其浏览器与记录，先跳过')
         result.append(key)
@@ -163,14 +163,11 @@ def write_report(jobs,attempts,output_dir,final=False):
                     if file.is_file():z.write(file,file.name)
     if final:
         print('\n'.join(lines),flush=True);print('本次文本汇总：',out/summary.name,flush=True)
-        if sys.platform=='win32':
-            try:os.startfile(str(out/summary.name))
-            except OSError:pass
     return rows
 
 
 def execute(output_dir=None):
-    if upload.VERSION!='2.45' or comments.COMMENT_WORKFLOW_VERSION!='1.3-facebook-attribution':raise ValueError('需先安装上传核心 2.45 及评论模块 1.3')
+    if upload.VERSION not in {'2.45','2.46'} or comments.COMMENT_WORKFLOW_VERSION!='1.3-facebook-attribution':raise ValueError('需先安装上传核心 2.45 或 2.46 及评论模块 1.3')
     if datetime.now(timezone.utc).astimezone(batch.BJ).date().isoformat()!=DATE:raise ValueError('此补发授权仅限北京时间2026年11月2日')
     state_path=upload.ROOT/'logs/publish_state.json';attempts={};success=[]
     with locked(),daily.keep_awake():

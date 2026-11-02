@@ -54,6 +54,18 @@ class ScheduledMaterialTests(unittest.TestCase):
         self.assertEqual(upload.CONFIG.read_bytes(),self.config_before)
         self.assertEqual(self.freeze()[0],path)
 
+    def test_text_mode_freeze_and_reports_do_not_generate_csv_or_open_notepad(self):
+        path,manifest=schedule.freeze('2026-10-29','17:00',True,self.comment,self.now,report_format='text')
+        self.assertEqual(manifest['report_format'],'text');self.assertFalse(path.with_suffix('.csv').exists())
+        self.pipeline(path,defer_comments=True)
+        self.assertFalse(list(self.root.rglob('*.csv')))
+        self.assertTrue(path.with_name(path.stem+'-results.txt').is_file())
+        summary=path.with_name(path.stem+'-results.txt').read_text(encoding='utf-8-sig')
+        self.assertIn('\n发布成功：',summary);self.assertNotIn('\\n',summary)
+        import zipfile
+        archives=list((self.root/'logs').glob('今日定时发布与评论-*.zip'))
+        with zipfile.ZipFile(archives[0]) as z:self.assertIn('summary.txt',z.namelist());self.assertFalse(any(n.endswith('.csv') for n in z.namelist()))
+
     def test_any_target_existing_nonempty_caption_is_preserved_not_only_fb23(self):
         video=self.videos[('fb01','page01')];caption=video.with_suffix('.txt');caption.write_bytes(self.custom)
         _,manifest=self.freeze()

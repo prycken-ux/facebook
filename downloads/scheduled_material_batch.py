@@ -48,9 +48,10 @@ def start_time(date,time_text,now):
     return max(wanted,now.astimezone(BJ)+timedelta(seconds=75)) if wanted<=now else wanted
 
 
-def freeze(date,time_text,include_pages,comment,now):
-    if upload.VERSION not in {'2.38','2.39','2.40','2.41','2.42','2.43','2.44','2.45'}:raise ValueError('需安装配套上传核心 2.38～2.45')
+def freeze(date,time_text,include_pages,comment,now,report_format="csv"):
+    if upload.VERSION not in {'2.38','2.39','2.40','2.41','2.42','2.43','2.44','2.45','2.46'}:raise ValueError('需安装配套上传核心 2.38～2.46')
     if not comment.strip() or len(comment)>5000:raise ValueError('评论文案为空或过长')
+    if report_format not in {'csv','text'}:raise ValueError('未知结果输出格式')
     effective=start_time(date,time_text,now)
     config=upload.read_json(upload.CONFIG,{})
     state=upload.read_json(upload.ROOT/'logs/publish_state.json',{})
@@ -112,15 +113,16 @@ def freeze(date,time_text,include_pages,comment,now):
         comment_text=comment,jobs=jobs)
     checksum=digest(payload)
     path=upload.ROOT/'logs'/('frozen-material-'+date+'-'+checksum[:16]+'.json')
-    manifest=dict(payload=payload,sha256=checksum,created_at=now.isoformat(),issues=issues)
+    manifest=dict(payload=payload,sha256=checksum,created_at=now.isoformat(),issues=issues,report_format=report_format)
     if path.exists():
         existing=upload.read_json(path,{})
         if existing.get('payload')!=payload or existing.get('sha256')!=checksum:raise ValueError('同名冻结计划不一致，未覆盖')
         manifest=existing
     else:upload.save_json(path,manifest)
-    with path.with_suffix('.csv').open('w',encoding='utf-8-sig',newline='') as handle:
-        writer=csv.DictWriter(handle,fieldnames=['account','target','filename','key','url','caption_text'],extrasaction='ignore')
-        writer.writeheader();writer.writerows(jobs)
+    if report_format=='csv':
+        with path.with_suffix('.csv').open('w',encoding='utf-8-sig',newline='') as handle:
+            writer=csv.DictWriter(handle,fieldnames=['account','target','filename','key','url','caption_text'],extrasaction='ignore')
+            writer.writeheader();writer.writerows(jobs)
     return path,manifest
 
 
@@ -191,25 +193,57 @@ def results(path,manifest,attempts,output_dir,final=False):
         attempt=next((a for a in reversed(attempts) if a['key']==job['key']),{})
         rows.append(dict(account=job['account'],target=job['target'],filename=job['filename'],key=job['key'],
             video_status=record.get('status','not_started'),comment_status=record.get('comment_status','not_started'),
-            reason=attempt.get('error') or record.get('comment_error') or record.get('error',''),permalink=record.get('permalink','')))
+            reason=record.get('comment_error','') if record.get('status')=='published' else attempt.get('error') or record.get('error',''),permalink=record.get('permalink','')))
     report=dict(schema='scheduled-material-results-v1',manifest=path.name,created_at=datetime.now(timezone.utc).isoformat(),rows=rows,
         setup_issues=manifest.get('issues',[]),attempts=attempts)
     report_path=path.with_name(path.stem+'-results.json');upload.save_json(report_path,report)
-    csv_path=report_path.with_suffix('.csv')
-    with csv_path.open('w',encoding='utf-8-sig',newline='') as handle:
-        writer=csv.DictWriter(handle,fieldnames=['account','target','filename','video_status','comment_status','reason','permalink','key'])
-        writer.writeheader();writer.writerows(rows)
+    text_mode=manifest.get('report_format')=='text'
+    summary_path=report_path.with_suffix('.txt')
+    if text_mode:
+        labels={'published':'发布成功','failed_before_post':'发布前失败','needs_review':'待核实','posting':'已提交待核实','preparing':'准备中待核实','not_started':'尚未开始'}
+        lines=['本批视频发布结果（'+manifest['payload']['date']+'，'+str(len(rows))+'条）','']
+        for status in labels:
+            group=[r for r in rows if r['video_status']==status]
+            if not group:continue
+            lines.append(labels[status]+'：'+str(len(group))+'条')
+            for row in group:
+                line=row['account']+'/'+row['target']+' '+row['filename']
+                if row['video_status']!='published' and row['reason']:line+='；'+str(row['reason']).split('\n',1)[0]
+                lines.append(line)
+            lines.append('')
+        comment_names={'sent':'评论已确认成功','already_present':'已有规定评论','manual_required':'评论需人工处理','not_started':'评论未开始','deferred':'等待评论','needs_review':'评论发送待核实','sending':'评论提交中待核实','verifying':'评论刷新核实中'}
+        lines.append('评论结果：')
+        for row in rows:
+            if row['video_status']=='published':lines.append(row['account']+'/'+row['target']+' '+comment_names.get(row['comment_status'],row['comment_status'])+('；'+row['reason'] if row['reason'] else ''))
+        for issue in manifest.get('issues',[]):lines.append('准备时跳过：'+str(issue))
+        summary_path.write_text('\n'.join(lines),encoding='utf-8-sig')
+    else:
+        csv_path=report_path.with_suffix('.csv')
+        with csv_path.open('w',encoding='utf-8-sig',newline='') as handle:
+            writer=csv.DictWriter(handle,fieldnames=['account','target','filename','video_status','comment_status','reason','permalink','key'])
+            writer.writeheader();writer.writerows(rows)
     destination=Path(output_dir) if output_dir else upload.ROOT/'logs'
     if not destination.is_dir():destination=upload.ROOT/'logs'
     label='八个失败目标重发-' if manifest['payload'].get('run_kind')=='retry-oct30-eight' else '今日定时发布与评论-'
     output=destination/(label+manifest['payload']['date']+'-'+manifest['sha256'][:8]+'.zip')
     with zipfile.ZipFile(output,'w',zipfile.ZIP_DEFLATED) as archive:
-        archive.write(report_path,'results.json');archive.write(csv_path,'results.csv')
+        archive.write(report_path,'results.json')
+        if text_mode:archive.write(summary_path,'summary.txt')
+        else:archive.write(csv_path,'results.csv')
         for job in manifest['payload']['jobs']:
             for prefix in ['review-','comment-','batch-']:
                 for suffix in ['.png','-error.txt','.aria.txt']:
                     artifact=upload.ROOT/'logs'/(prefix+job['key'][:12]+suffix)
                     if artifact.is_file():archive.write(artifact,artifact.name)
+    if text_mode:
+        if final:
+            print(summary_path.read_text(encoding='utf-8-sig'),flush=True)
+            print('本批诊断记录：',output,flush=True)
+        else:
+            counts=Counter(r['video_status'] for r in rows)
+            print('本批进度：成功',counts['published'],'；发布前失败',counts['failed_before_post'],
+                  '；待核实',sum(counts[s] for s in ['needs_review','posting','preparing']),'；未开始',counts['not_started'],flush=True)
+        return rows
     print('本批状态：',dict(Counter(r['video_status'] for r in rows)),flush=True)
     print('评论状态：',dict(Counter(r['comment_status'] for r in rows)),flush=True)
     for row in rows:
@@ -238,7 +272,7 @@ def run(path,output_dir=None,before_job=None,defer_comments=False,retry_before_p
     now=datetime.now(timezone.utc)
     if now.astimezone(BJ).date().isoformat()!=payload['date']:raise ValueError('已不是本批授权日期，不补跑过期计划')
     if now<datetime.fromisoformat(payload['start']):raise ValueError('尚未到指定开始时间，不提前发布')
-    if upload.VERSION not in {'2.38','2.39','2.40','2.41','2.42','2.43','2.44','2.45'}:raise ValueError('上传核心版本不匹配')
+    if upload.VERSION not in {'2.38','2.39','2.40','2.41','2.42','2.43','2.44','2.45','2.46'}:raise ValueError('上传核心版本不匹配')
     attempts=[]
     with locked(),path.with_suffix('.log').open('a',encoding='utf-8') as log:
         with contextlib.redirect_stdout(Tee(sys.stdout,log)),contextlib.redirect_stderr(Tee(sys.stderr,log)):
