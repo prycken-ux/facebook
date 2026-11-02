@@ -131,7 +131,7 @@ def write_backfill_report(manifest,rows,output_dir):
     print('视频评论结果：',out/(stem+'.zip'),flush=True)
 
 
-def backfill(manifest,output_dir,links_path=None,only_keys=None,rows=None,already_locked=False,future_only=False):
+def backfill(manifest,output_dir,links_path=None,only_keys=None,rows=None,already_locked=False,future_only=False,reporter=None):
     from playwright.sync_api import sync_playwright
     jobs=manifest['payload']['jobs'];links=manual_links(links_path,jobs)
     state_path=upload.ROOT/'logs/publish_state.json';rows=[] if rows is None else rows
@@ -202,13 +202,13 @@ def backfill(manifest,output_dir,links_path=None,only_keys=None,rows=None,alread
                     current[job['key']].update(comment_status='manual_required',comment_error=result['error'])
                     upload.save_json(state_path,current)
             finally:
-                rows.append(result);write_backfill_report(manifest,rows,output_dir)
+                rows.append(result);(reporter or write_backfill_report)(manifest,rows,output_dir)
                 print('本批视频评论：',job['account'],job['target'],result['status'],str(result['error']).split('\n',1)[0],flush=True)
     return rows
 
 
 def execute(output_dir=None,links_path=None,comments_only=False):
-    if upload.VERSION not in {'2.41','2.42','2.43','2.44'}:raise ValueError('需安装配套上传核心 2.41～2.44')
+    if upload.VERSION not in {'2.41','2.42','2.43','2.44','2.45'}:raise ValueError('需安装配套上传核心 2.41～2.45')
     now=datetime.now(timezone.utc)
     if now.astimezone(batch.BJ).date().isoformat()!=TODAY:raise ValueError('不是本次授权的北京时间日期，不自动改日发布')
     with locked():

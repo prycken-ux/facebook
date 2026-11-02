@@ -16,7 +16,7 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 ROOT = Path(__file__).resolve().parent
 CONFIG = ROOT / "upload_config.json"
-VERSION = "2.44"
+VERSION = "2.45"
 SUCCESS_PATTERN = (
     r"^(?:Your reel (?:is(?: now)?|has been|was) (?:successfully )?"
     r"(?:published|shared|posted)(?: successfully)?|"
@@ -423,6 +423,14 @@ def navigate_profile(page, url):
             message = str(error)
             # Security/login redirects must be handled by the account owner.
             checkpoint(page)
+            # /me sometimes aborts its GET after completing the ownership redirect.
+            # The caller still verifies the redirected profile and session marker.
+            if 'net::ERR_ABORTED' in message and urlparse(destination).path.rstrip('/')=='/me':
+                current=urlparse(page.url)
+                if current.hostname in {'facebook.com','www.facebook.com'} and current.path.rstrip('/')!='/me':
+                    try:target_key(page.url)
+                    except ValueError:pass
+                    else:return None
             transient = isinstance(error, BrowserTimeout) or any(code in message for code in
                 ('net::ERR_TIMED_OUT', 'net::ERR_CONNECTION_RESET', 'net::ERR_CONNECTION_CLOSED'))
             if attempt or not transient or page.is_closed():
@@ -1313,6 +1321,27 @@ def profile_composer_reel(page):
     return eligible[0] if len(eligible)==1 else None
 
 
+
+def commit_classic_caption(page,field,text):
+    """Commit the exact caption in the known settings dialog; never click a suggestion."""
+    verify_caption(field,text)
+    dialogs=page.locator('[role="dialog"]:visible,[role="alertdialog"]:visible,dialog:visible')
+    settings=page.get_by_role('dialog',name='Reel settings',exact=True)
+    if dialogs.count()!=1 or settings.count()!=1 or not settings.is_visible():
+        raise RuntimeError('提交文案时不是唯一的 Reel settings 窗口，未点击发布')
+    if not field.evaluate("e=>Boolean(e.closest('[role=dialog][aria-label=\"Reel settings\"]'))"):
+        # Some dialogs derive their accessible name from a heading rather than aria-label.
+        scoped=settings.get_by_role('textbox',name='Describe your reel...',exact=True)
+        if scoped.count()!=1 or not scoped.is_visible():raise RuntimeError('文案框不属于当前 Reel settings，未点击发布')
+    title=settings.get_by_role('heading',name='Reel settings',exact=True)
+    if title.count()==1 and title.is_visible():
+        title.click(timeout=5000)
+    else:
+        # Tab blurs this precise editor; it does not activate Post or a menu item.
+        field.press('Tab',timeout=5000)
+    verify_caption(field,text)
+    checkpoint(page);require_no_advanced_protection(page)
+
 def prepare_reel(page, entry, video, text, pause_before_reel=False):
     from playwright.sync_api import expect
 
@@ -1378,6 +1407,8 @@ def prepare_reel(page, entry, video, text, pause_before_reel=False):
     fill_caption(field, text)
     page._fb_upload_stage = 'verify_ai_label'
     set_ai_label(page, entry)
+    page._fb_upload_stage = 'commit_classic_caption'
+    commit_classic_caption(page,field,text)
     page._fb_upload_stage = 'ready_to_post'
     button = page.get_by_role("button", name="Post", exact=True)
     wait_prepost_upload(page,button)
