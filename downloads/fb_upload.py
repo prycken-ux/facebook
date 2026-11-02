@@ -16,7 +16,7 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 ROOT = Path(__file__).resolve().parent
 CONFIG = ROOT / "upload_config.json"
-VERSION = "2.46"
+VERSION = "2.47"
 SUCCESS_PATTERN = (
     r"^(?:Your reel (?:is(?: now)?|has been|was) (?:successfully )?"
     r"(?:published|shared|posted)(?: successfully)?|"
@@ -1546,6 +1546,9 @@ def run_entry(entry, state, state_path, publish, filename=None, review_before_po
                       "ai_label_requested": bool(entry.get("ai_label", False))}
             record['uploader_version'] = VERSION
             record['published_caption_text'] = text
+            automatic=entry.get('_automatic_retry')
+            if isinstance(automatic,dict) and automatic.get('retry_number')==1 and re.fullmatch(r'[a-f0-9]{64}',str(automatic.get('source_sha256',''))):
+                record['automatic_retry']={k:automatic[k] for k in ['source_manifest','source_sha256','retry_number']}
             if previous_record is not None:
                 record['previous_before_post_attempt']=previous_record
                 record['today_first_retry_used']=True
@@ -1613,22 +1616,26 @@ def run_entry(entry, state, state_path, publish, filename=None, review_before_po
                 record["status"] = "published"
                 record["published_at"] = datetime.now().astimezone().isoformat()
                 save_json(state_path, state)
+                if comment_text and defer_comments:
+                    from safe_video_comments import resolve_published_link
+                    try:
+                        hint,method=resolve_published_link(page,context,link_collector,timeout_ms=10000)
+                        record.update(permalink=hint,comment_link_job_key=key,comment_link_method=method)
+                    except Exception as hint_error:
+                        record['comment_link_error']=str(hint_error) or type(hint_error).__name__
+                        try:
+                            capture=page.evaluate("() => ({receipt:Boolean(window.__fbUploadWatch?.message),area:Boolean(window.__fbUploadWatch?.receiptArea),receiptLinks:window.__fbUploadWatch?.receiptLinks?.length||0})")
+                            if isinstance(capture,dict) and isinstance(capture.get('receipt'),bool) and isinstance(capture.get('area'),bool) and type(capture.get('receiptLinks')) is int:
+                                record['comment_link_capture']=capture
+                        except Exception:pass
+                    record['comment_status']='deferred'
+                    save_json(state_path,state)
                 archived=archive(video, caption)
                 record.update(archived_video=str(archived/video.name),archived_caption=str(archived/caption.name),
                               archived_at=datetime.now().astimezone().isoformat())
                 save_json(state_path,state)
                 print("发布成功，已归档：", video.name)
                 if comment_text and defer_comments:
-                    from safe_video_comments import resolve_published_link
-                    try:
-                        # Capture the exact fresh receipt before closing this browser.
-                        # This opens at most its unique View reel control; no comment yet.
-                        hint,method=resolve_published_link(page,context,link_collector,timeout_ms=10000)
-                        record.update(permalink=hint,comment_link_job_key=key,comment_link_method=method)
-                    except Exception as hint_error:
-                        record['comment_link_error']=str(hint_error) or type(hint_error).__name__
-                    record['comment_status']='deferred'
-                    save_json(state_path,state)
                     print('今天视频已成功并归档；评论统一留到全部视频处理后。',flush=True)
                 elif comment_text:
                     try:

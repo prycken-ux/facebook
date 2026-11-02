@@ -11,12 +11,12 @@ import daily_publish_and_comments as daily
 from add_fb_accounts import locked
 import automatic_batch_retry as automatic_retry
 
-PUBLISH_WORKFLOW_VERSION="2.0-auto-retry-once"
+PUBLISH_WORKFLOW_VERSION="2.1-comment-recovery"
 
 
 def execute(date,real_footage,output_dir=None):
     if not real_footage:raise ValueError('须确认本批全部实拍，再使用 --real-footage')
-    if upload.VERSION!='2.46':raise ValueError('自动补发流程需安装上传核心 2.46')
+    if upload.VERSION!='2.47':raise ValueError('自动补发流程需安装上传核心 2.47')
     now=datetime.now(timezone.utc)
     if now.astimezone(batch.BJ).date().isoformat()!=date:raise ValueError('仅运行明确指定的北京时间当天，不补跑旧批次')
     with locked():

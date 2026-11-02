@@ -58,6 +58,7 @@ class AutomaticRetryTests(unittest.TestCase):
         self.assertEqual(current[self.jobs[0]['key']]['previous_before_post_attempt']['status'],'failed_before_post')
         for job in [self.jobs[0],self.jobs[4]]:
             row=current[job['key']];self.assertEqual(row['status'],'published');self.assertTrue(row['post_intent_at']);self.assertTrue(Path(row['archived_video']).is_file())
+            self.assertEqual(row['automatic_retry'],dict(source_manifest=self.path.name,source_sha256=self.value['sha256'],retry_number=1))
         text=self.path.with_name(self.path.stem+'-results.txt').read_text(encoding='utf-8-sig')
         self.assertIn('\n发布成功：',text);self.assertNotIn('\\n',text)
     def test_incomplete_first_pass_does_not_begin_retry_queue(self):

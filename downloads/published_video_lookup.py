@@ -114,19 +114,37 @@ class Lookup:
     def close(self):self.context.remove_listener('response',self.receive)
 
 
-def find_published(page,context,entry,caption,start,end,timeout_ms=25000):
+def find_published(page,context,entry,caption,start,end,timeout_ms=45000,diagnostic_path=None):
+    from published_post_ui import TimelineProofs
     lookup=Lookup(context,entry,caption,start,end)
-    deadline=time.monotonic()+timeout_ms/1000
+    timeline=TimelineProofs(entry,lookup.owner,caption,start,end)
+    deadline=time.monotonic()+timeout_ms/1000;seen=set();scrolls=0;last_change=time.monotonic();error=''
     try:
-        page.goto(upload.english_url(entry['url']),wait_until='domcontentloaded',timeout=min(15000,timeout_ms))
+        page.goto(upload.english_url(entry['url']),wait_until='domcontentloaded',timeout=max(1,min(15000,timeout_ms)))
         upload.checkpoint(page);upload.require_no_advanced_protection(page)
-        scrolled=False
         while time.monotonic()<deadline:
+            upload.checkpoint(page);upload.require_no_advanced_protection(page)
             for raw in page.locator('script[type="application/json"]').all_text_contents():lookup.add(raw)
-            if len(lookup.links)>1:raise RuntimeError('同作者、文案及日期匹配多个视频，未猜选最新评论目标')
-            if not scrolled:
-                page.mouse.wheel(0,650);scrolled=True
-            page.wait_for_timeout(min(1000,max(1,int((deadline-time.monotonic())*1000))))
-        if len(lookup.links)!=1:raise RuntimeError('未找到唯一匹配作者、文案和发布时间的视频，请补该原视频链接')
-        return next(iter(lookup.links)),'verified_owner_caption_time'
-    finally:lookup.close()
+            links=set(lookup.links)|timeline.poll(page,deadline)
+            if len(links)>1:raise RuntimeError('作者、文案和时间匹配多个视频，未猜选评论目标')
+            if links!=seen:seen=links;last_change=time.monotonic()
+            # Give other matching posts and deferred GraphQL results time to appear.
+            if seen and (lookup.links or not timeline.unresolved) and scrolls>=2 and not timeline.stats['loading'] and time.monotonic()-last_change>=2:
+                return next(iter(seen)),'verified_owner_caption_time'
+            if scrolls<3 and time.monotonic()-last_change>=0.7:
+                page.mouse.wheel(0,600);scrolls+=1
+            page.wait_for_timeout(max(1,min(250,int((deadline-time.monotonic())*1000))))
+        links=set(lookup.links)|timeline.links
+        if len(links)>1:raise RuntimeError('作者、文案和时间匹配多个视频，未猜选评论目标')
+        if len(links)==1 and (lookup.links or not timeline.unresolved):return next(iter(links)),'verified_owner_caption_time'
+        if timeline.stats['loading'] and not timeline.stats['exact_captions']:
+            raise RuntimeError('动态区持续 Loading，未找到可核验的已加载帖子；未发送评论')
+        raise RuntimeError('未找到唯一匹配作者、完整文案、发布时间和视频编号的帖子；未发送评论')
+    except Exception as exc:
+        error=str(exc) or type(exc).__name__;raise
+    finally:
+        lookup.close()
+        if diagnostic_path:
+            upload.save_json(diagnostic_path,dict(owner=lookup.owner,profile=entry['url'],start=start,end=end,
+                graphql_candidates=len(lookup.links),ui_candidates=len(timeline.links),ui=timeline.stats,error=error,
+                video_urls=sorted(set(lookup.links)|timeline.links)))

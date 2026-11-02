@@ -125,7 +125,7 @@ def write_backfill_report(manifest,rows,output_dir):
     with zipfile.ZipFile(out/(stem+'.zip'),'w',zipfile.ZIP_DEFLATED) as archive:
         archive.write(path,'results.json');archive.write(csv_path,'results.csv')
         for row in rows:
-            for suffix in ['-error.txt','-close-error.txt','.png','.aria.txt']:
+            for suffix in ['-error.txt','-close-error.txt','.png','.aria.txt','-lookup.json']:
                 file=upload.ROOT/'logs'/('comment-'+row['key'][:12]+suffix)
                 if file.is_file():archive.write(file,file.name)
     print('视频评论结果：',out/(stem+'.zip'),flush=True)
@@ -178,8 +178,11 @@ def backfill(manifest,output_dir,links_path=None,only_keys=None,rows=None,alread
                         if link:verified=(link,'user_supplied_exact_job_link')
                         elif record.get('comment_link_job_key')==job['key'] and comments.direct_link(record.get('permalink','')):
                             verified=(comments.direct_link(record['permalink']),'previously_verified_exact_job_link')
-                        elif future_only:raise ValueError('未保存本次视频的确切链接，跳过评论并继续；不猜选旧视频')
-                        else:verified=find_published(page,context,entry,job['caption_text'],since,end)
+                        else:
+                            verified=find_published(page,context,entry,job['caption_text'],since,end,timeout_ms=45000,
+                                diagnostic_path=upload.ROOT/'logs'/('comment-'+job['key'][:12]+'-lookup.json'))
+                            record.update(permalink=verified[0],comment_link_job_key=job['key'],comment_link_method=verified[1])
+                            upload.save_json(state_path,state)
                         value=comments.after_publication(page,context,entry,proof,job['key'],record,COMMENT,None,verified_link=verified,require_reload_verification=future_only)
                         if future_only:value=comments.verify_after_reload(page,entry,proof,job['key'],COMMENT,value)
                         record.update(comment_status=value['status'],comment_error=value.get('error',''))
@@ -208,7 +211,7 @@ def backfill(manifest,output_dir,links_path=None,only_keys=None,rows=None,alread
 
 
 def execute(output_dir=None,links_path=None,comments_only=False):
-    if upload.VERSION not in {'2.41','2.42','2.43','2.44','2.45','2.46'}:raise ValueError('需安装配套上传核心 2.41～2.46')
+    if upload.VERSION not in {'2.41','2.42','2.43','2.44','2.45','2.46','2.47'}:raise ValueError('需安装配套上传核心 2.41～2.47')
     now=datetime.now(timezone.utc)
     if now.astimezone(batch.BJ).date().isoformat()!=TODAY:raise ValueError('不是本次授权的北京时间日期，不自动改日发布')
     with locked():

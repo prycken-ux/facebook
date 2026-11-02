@@ -49,7 +49,7 @@ def start_time(date,time_text,now):
 
 
 def freeze(date,time_text,include_pages,comment,now,report_format="csv"):
-    if upload.VERSION not in {'2.38','2.39','2.40','2.41','2.42','2.43','2.44','2.45','2.46'}:raise ValueError('需安装配套上传核心 2.38～2.46')
+    if upload.VERSION not in {'2.38','2.39','2.40','2.41','2.42','2.43','2.44','2.45','2.46','2.47'}:raise ValueError('需安装配套上传核心 2.38～2.47')
     if not comment.strip() or len(comment)>5000:raise ValueError('评论文案为空或过长')
     if report_format not in {'csv','text'}:raise ValueError('未知结果输出格式')
     effective=start_time(date,time_text,now)
@@ -201,6 +201,7 @@ def results(path,manifest,attempts,output_dir,final=False):
     summary_path=report_path.with_suffix('.txt')
     if text_mode:
         labels={'published':'发布成功','failed_before_post':'发布前失败','needs_review':'待核实','posting':'已提交待核实','preparing':'准备中待核实','not_started':'尚未开始'}
+        retry_keys={a['key'] for a in attempts if a.get('automatic_retry_number')==1}
         lines=['本批视频发布结果（'+manifest['payload']['date']+'，'+str(len(rows))+'条）','']
         for status in labels:
             group=[r for r in rows if r['video_status']==status]
@@ -208,6 +209,7 @@ def results(path,manifest,attempts,output_dir,final=False):
             lines.append(labels[status]+'：'+str(len(group))+'条')
             for row in group:
                 line=row['account']+'/'+row['target']+' '+row['filename']
+                if row['key'] in retry_keys:line+='（自动补发机会已使用1次）'
                 if row['video_status']!='published' and row['reason']:line+='；'+str(row['reason']).split('\n',1)[0]
                 lines.append(line)
             lines.append('')
@@ -232,7 +234,7 @@ def results(path,manifest,attempts,output_dir,final=False):
         else:archive.write(csv_path,'results.csv')
         for job in manifest['payload']['jobs']:
             for prefix in ['review-','comment-','batch-']:
-                for suffix in ['.png','-error.txt','.aria.txt']:
+                for suffix in ['.png','-error.txt','.aria.txt','-lookup.json']:
                     artifact=upload.ROOT/'logs'/(prefix+job['key'][:12]+suffix)
                     if artifact.is_file():archive.write(artifact,artifact.name)
     if text_mode:
@@ -272,7 +274,7 @@ def run(path,output_dir=None,before_job=None,defer_comments=False,retry_before_p
     now=datetime.now(timezone.utc)
     if now.astimezone(BJ).date().isoformat()!=payload['date']:raise ValueError('已不是本批授权日期，不补跑过期计划')
     if now<datetime.fromisoformat(payload['start']):raise ValueError('尚未到指定开始时间，不提前发布')
-    if upload.VERSION not in {'2.38','2.39','2.40','2.41','2.42','2.43','2.44','2.45','2.46'}:raise ValueError('上传核心版本不匹配')
+    if upload.VERSION not in {'2.38','2.39','2.40','2.41','2.42','2.43','2.44','2.45','2.46','2.47'}:raise ValueError('上传核心版本不匹配')
     attempts=[]
     with locked(),path.with_suffix('.log').open('a',encoding='utf-8') as log:
         with contextlib.redirect_stdout(Tee(sys.stdout,log)),contextlib.redirect_stderr(Tee(sys.stderr,log)):
@@ -296,6 +298,8 @@ def run(path,output_dir=None,before_job=None,defer_comments=False,retry_before_p
                         close_selected_window(entry['account'])
                         entry=dict(entry,enabled=True,auto_switch_personal=True,_authorized_comment_text=payload['comment_text'])
                         print('\n开始本批原视频：',job['account'],job['target'],job['filename'],flush=True)
+                        if payload.get('run_kind')=='automatic-safe-retry-v1':
+                            entry['_automatic_retry']=dict(source_manifest=payload['source_manifest'],source_sha256=payload['source_sha256'],retry_number=1)
                         upload.run_entry(entry,state,state_path,True,filename=job['filename'],ai_label_override=False,
                             expected_job_key=job['key'],preserve_old_review_for_exact_job=True,
                             defer_comments=defer_comments,retry_before_post=can_retry)

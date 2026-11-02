@@ -51,7 +51,7 @@ def decide(job,value,state,attempt,claims):
         if ((record.get('account'),record.get('target'))!=(job['account'],job['target'])
                 or upload.target_key(record.get('url',''))!=upload.target_key(job['url'])
                 or str(record.get('video','')).replace('\\','/').split('/')[-1]!=job['filename']
-                or record.get('uploader_version') not in {'2.46'} or record.get('ai_label_requested') is not False):return False,'原任务身份或发布日志版本不满足自动补发要求'
+                or record.get('uploader_version') not in {'2.46','2.47'} or record.get('ai_label_requested') is not False):return False,'原任务身份或发布日志版本不满足自动补发要求'
         try:
             if datetime.fromisoformat(record['created']).timestamp()<since:return False,'任务早于本批次'
         except (KeyError,TypeError,ValueError):return False,'任务缺少本批次时间证据'
@@ -119,6 +119,11 @@ def run(path,output_dir=None):
         batch.run(queue_path,output_dir,before_job=lambda job:reserve(job,path,value,first_attempts[job['key']]),defer_comments=True,retry_before_post=True)
     finally:
         second=upload.read_json(queue_path.with_name(queue_path.stem+'-results.json'),{}).get('attempts',[])
+        _,latest_claims=claims_document()
+        for attempt in second:
+            claim=latest_claims['jobs'].get(attempt['key'],{})
+            if claim.get('source_sha256')==value['sha256']:
+                attempt.update(attempt_phase='automatic_retry',automatic_retry_number=1)
         # Keep one original batch report; new retry attempts appear after their first attempt.
         batch.results(path,value,attempts+second,output_dir,final=False)
     return selected

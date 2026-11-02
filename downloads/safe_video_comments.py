@@ -4,11 +4,11 @@ import json
 import re
 import time
 from datetime import datetime,timezone
-from urllib.parse import urlparse,parse_qs
+from urllib.parse import urlparse,parse_qs,urljoin
 
 import fb_upload as upload
 
-COMMENT_WORKFLOW_VERSION = "1.3-facebook-attribution"
+COMMENT_WORKFLOW_VERSION = "1.4-exact-post-lookup"
 
 
 def text_hash(text):
@@ -89,7 +89,10 @@ class PublicationLinks:
                 for line in raw.splitlines():
                     try:payloads.append(json.loads(line))
                     except ValueError:pass
-            for payload in payloads:self.links.update(public_nodes(payload,self.owner,self.caption,self.since))
+            for payload in payloads:
+                self.links.update(public_nodes(payload,self.owner,self.caption,self.since))
+                from published_video_lookup import story_videos
+                self.links.update(story_videos(payload,self.owner,self.caption,self.since-5,time.time()+60))
         except Exception:
             pass  # Never export raw GraphQL, headers, cookies or request bodies.
 
@@ -99,7 +102,6 @@ class PublishedLinkNotReady(RuntimeError):pass
 
 def _published_link_once(page,context,collector):
     current=direct_link(page.url)
-    if current:return current,'fresh_post_navigation'
     links=set()
     receipts=page.evaluate('() => window.__fbUploadWatch && window.__fbUploadWatch.receiptLinks || []')
     if isinstance(receipts,list):
@@ -107,6 +109,9 @@ def _published_link_once(page,context,collector):
             value=direct_link(link)
             if value:links.add(value)
     proven=set(collector.links) if collector else set()
+    candidates=links|proven|({current} if current else set())
+    if len(candidates)>1:raise RuntimeError('当前页面与本次成功证据的视频编号冲突，未发送评论')
+    if current:return current,'fresh_post_navigation'
     if links and proven and len(links|proven)!=1:
         raise RuntimeError('成功提示的视频链接与本次发布数据不一致，评论需手动核实')
     if len(links)==1:return next(iter(links)),'fresh_success_view_reel_link'
@@ -344,6 +349,25 @@ def capture_failure(page,key,error):
     except Exception:pass
 
 
+
+def require_video_author(page,entry,timeout_ms=15000):
+    owners={upload.target_key(entry['url'])}
+    if entry.get('type')=='personal':
+        owners.update('id:'+c['value'] for c in page.context.cookies(['https://www.facebook.com/']) if c.get('name')=='c_user' and str(c.get('value','')).isdecimal())
+    pattern=re.compile(r'^'+re.escape(entry['name'])+r'(?:, see owner profile)?$',re.I)
+    deadline=time.monotonic()+timeout_ms/1000
+    while True:
+        upload.checkpoint(page);upload.require_no_advanced_protection(page)
+        anchors=page.get_by_role('link',name=pattern)
+        for i in range(anchors.count()):
+            anchor=anchors.nth(i)
+            if not anchor.is_visible():continue
+            try:
+                if upload.target_key(urljoin('https://www.facebook.com/',anchor.get_attribute('href') or '')) in owners:return
+            except ValueError:pass
+        if time.monotonic()>=deadline:raise RuntimeError('视频页尚未出现目标作者的有效主页链接，未发送评论')
+        page.wait_for_timeout(100)
+
 def after_publication(page,context,entry,proof,key,record,text,collector,verified_link=None,require_reload_verification=False):
     if record.get('status')!='published':raise ValueError('视频未确认成功，不评论')
     if not text.strip() or len(text)>5000:raise ValueError('评论文案为空或过长')
@@ -396,9 +420,7 @@ def after_publication(page,context,entry,proof,key,record,text,collector,verifie
         upload.recheck_publish_identity(page,entry,proof)
         if entry.get('type')=='page' and not upload.page_actor_matches(page,entry):
             raise RuntimeError('无法确认当前评论身份为该公共主页，视频保持成功，评论需手动处理')
-        author=page.get_by_role('link',name=entry['name'],exact=True)
-        from playwright.sync_api import expect
-        expect(author.first).to_be_visible(timeout=30000)
+        require_video_author(page,entry)
         if scan_comments(page,entry,text):
             item['status']='already_present';ledger[comment_key]=item;upload.save_json(ledger_path,ledger);return item
         field=ready_comment_field(page)
