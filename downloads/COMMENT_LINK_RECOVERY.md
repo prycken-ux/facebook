@@ -48,3 +48,11 @@ exact bytecode caches and rolls back on errors. It preserves all media, captions
 publication/comment journals, retry claims, account config and browser profiles.
 Installation alone sends nothing. A separate fresh Python process runs the
 comments-only repair on the original Windows computer.
+
+Single-line entry: `run_oct31_comment_recovery.py` replaces the large pasted
+PowerShell block. It verifies both immutable helper downloads before cleanup or
+installation, uses only the proven-abandoned-PID recovery library, checks the
+installed versions in a fresh process and starts only the comments repair.
+Four entry tests cover operation order, download failure, failed fresh-process
+verification and rejection of bytes with an incorrect digest. The Python entry
+is called directly from PowerShell, without a leading script-block operator.
