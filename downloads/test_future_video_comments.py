@@ -76,10 +76,10 @@ class FutureCommentsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);path=root/'logs/frozen.json';now=datetime(2026,11,1,4,tzinfo=timezone.utc)
             value={'payload':{'start':now.isoformat(),'jobs':[]}};events=[]
-            with patch.object(upload,'ROOT',root),patch.object(future,'datetime',wraps=datetime) as clock,patch.object(future,'locked',return_value=contextlib.nullcontext()),patch.object(future.batch,'freeze',return_value=(path,value)),patch.object(future.batch,'run',side_effect=lambda *a,**k:events.append('uploads')),patch.object(future.daily,'backfill',side_effect=lambda *a,**k:events.append('comments')) as send,patch.object(future.automatic_retry,'run',side_effect=lambda *a,**k:events.append('retry-once')),patch.object(future.batch,'results',return_value=[]):
+            with patch.object(upload,'ROOT',root),patch.object(future,'datetime',wraps=datetime) as clock,patch.object(future,'locked',return_value=contextlib.nullcontext()),patch.object(future.batch,'freeze',return_value=(path,value)) as freeze,patch.object(future.batch,'run',side_effect=lambda *a,**k:events.append('uploads')),patch.object(future.daily,'backfill',side_effect=lambda *a,**k:events.append('comments')) as send,patch.object(future.automatic_retry,'run',side_effect=lambda *a,**k:events.append('retry-once')),patch.object(future.batch,'results',return_value=[]):
                 clock.now.return_value=now
                 self.assertEqual(future.execute('2026-11-01',True),0)
-            self.assertEqual(events,['uploads','retry-once','comments']);self.assertTrue(send.call_args.kwargs['future_only'])
+            self.assertEqual(events,['uploads','retry-once','comments']);self.assertTrue(send.call_args.kwargs['future_only']);self.assertTrue(freeze.call_args.kwargs['exclude_previous_plans'])
     def test_future_runner_refuses_old_date_or_unconfirmed_footage(self):
         with self.assertRaises(ValueError):future.execute('1900-01-01',True)
         with self.assertRaises(ValueError):future.execute('2026-11-01',False)

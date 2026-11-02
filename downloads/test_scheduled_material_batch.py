@@ -88,6 +88,29 @@ class ScheduledMaterialTests(unittest.TestCase):
         self.assertNotIn(key,[j['key'] for j in manifest['payload']['jobs']])
         self.assertEqual(upload.read_json(self.state_path,{}),state)
 
+    def test_new_batch_skips_old_frozen_unstarted_files_even_without_state_records(self):
+        old_path,old_manifest=self.freeze()
+        old_job=old_manifest['payload']['jobs'][0]
+        entry=next(e for e in self.entries if (e['account'],e['target'])==(old_job['account'],old_job['target']))
+        new=upload.inbox_for(entry)/'new.mp4';new.write_bytes(b'freshly supplied video')
+        tomorrow=datetime(2026,10,30,8,0,tzinfo=timezone.utc)
+        path,value=schedule.freeze('2026-10-30','17:00',True,self.comment,tomorrow,report_format='text',exclude_previous_plans=True)
+        self.assertEqual([j['filename'] for j in value['payload']['jobs']],['new.mp4'])
+        self.assertTrue(any(old_path.name in i['reason'] for i in value['issues']))
+        self.assertEqual(upload.read_json(self.state_path,{}),{})
+        self.assertEqual(upload.CONFIG.read_bytes(),self.config_before)
+
+    def test_replaced_bytes_with_same_name_are_new_but_corrupt_old_plan_is_not_ignored(self):
+        old_path,old_manifest=self.freeze()
+        entry=self.entries[0];video=self.videos[(entry['account'],entry['target'])]
+        video.write_bytes(b'new different content with reused filename')
+        tomorrow=datetime(2026,10,30,8,0,tzinfo=timezone.utc)
+        path,value=schedule.freeze('2026-10-30','17:00',True,self.comment,tomorrow,report_format='text',exclude_previous_plans=True)
+        self.assertEqual([j['key'] for j in value['payload']['jobs']],[upload.job_key(entry,video)])
+        old_manifest['payload']['jobs'][0]['caption_text']='tampered'
+        upload.save_json(old_path,old_manifest)
+        with self.assertRaises(ValueError):schedule.previous_plan_keys('2026-10-30')
+
     def test_one_time_task_has_beijing_offset_no_calendar_and_no_force_termination(self):
         path,manifest=self.freeze();root=ET.fromstring(schedule.task_xml(path,manifest));ns={'t':schedule.NS}
         self.assertEqual(len(root.findall('t:Triggers/t:TimeTrigger',ns)),1)

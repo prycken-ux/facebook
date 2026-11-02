@@ -11,7 +11,7 @@ import daily_publish_and_comments as daily
 from add_fb_accounts import locked
 import automatic_batch_retry as automatic_retry
 
-PUBLISH_WORKFLOW_VERSION="2.1-comment-recovery"
+PUBLISH_WORKFLOW_VERSION="2.2-retry-tabs"
 
 
 def execute(date,real_footage,output_dir=None):
@@ -20,7 +20,7 @@ def execute(date,real_footage,output_dir=None):
     now=datetime.now(timezone.utc)
     if now.astimezone(batch.BJ).date().isoformat()!=date:raise ValueError('仅运行明确指定的北京时间当天，不补跑旧批次')
     with locked():
-        path,value=batch.freeze(date,now.astimezone(batch.BJ).strftime('%H:%M'),True,daily.COMMENT,now,report_format='text')
+        path,value=batch.freeze(date,now.astimezone(batch.BJ).strftime('%H:%M'),True,daily.COMMENT,now,report_format='text',exclude_previous_plans=True)
         value['workflow']='future-video-comments-v1'
         value['auto_retry_policy']=automatic_retry.POLICY
         value['report_format']='text'

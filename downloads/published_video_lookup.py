@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 import fb_upload as upload
 import safe_video_comments as comments
 
+LOOKUP_WORKFLOW_VERSION = '1.1-reels-tabs'
 
 def payloads(raw):
     if not isinstance(raw,str) or len(raw)>4_000_000:return []
@@ -137,6 +138,14 @@ def find_published(page,context,entry,caption,start,end,timeout_ms=45000,diagnos
         links=set(lookup.links)|timeline.links
         if len(links)>1:raise RuntimeError('作者、文案和时间匹配多个视频，未猜选评论目标')
         if len(links)==1 and (lookup.links or not timeline.unresolved):return next(iter(links)),'verified_owner_caption_time'
+        # Small-budget callers are local probes; production lookups have enough
+        # time for two bounded, read-only alternate profile tabs.
+        if timeout_ms>=15000:
+            from published_video_surfaces import find_on_tabs
+            link,notes=find_on_tabs(page,context,entry,caption,start,end,
+                surface_seconds=min(15,timeout_ms/2000),known_links=links)
+            timeline.stats['fallback_tabs']=notes
+            if link:return link,'verified_owner_caption_time_reels_tabs'
         if timeline.stats['loading'] and not timeline.stats['exact_captions']:
             raise RuntimeError('动态区持续 Loading，未找到可核验的已加载帖子；未发送评论')
         raise RuntimeError('未找到唯一匹配作者、完整文案、发布时间和视频编号的帖子；未发送评论')

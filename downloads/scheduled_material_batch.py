@@ -48,13 +48,32 @@ def start_time(date,time_text,now):
     return max(wanted,now.astimezone(BJ)+timedelta(seconds=75)) if wanted<=now else wanted
 
 
-def freeze(date,time_text,include_pages,comment,now,report_format="csv"):
+def previous_plan_keys(date):
+    keys={}
+    for path in (upload.ROOT/'logs').glob('frozen-material-????-??-??-*.json'):
+        match=re.fullmatch(r'frozen-material-(\d{4}-\d{2}-\d{2})-([a-f0-9]{16})\.json',path.name)
+        if not match or match[1]>=date:continue
+        value=upload.read_json(path,{})
+        payload=value.get('payload',{})
+        if payload.get('schema')!=SCHEMA:continue
+        checksum=digest(payload)
+        if value.get('sha256')!=checksum or checksum[:16]!=match[2] or payload.get('date')!=match[1]:
+            raise ValueError('旧冻结清单校验异常，未把旧的尚未开始素材当作今天新素材：'+path.name)
+        for job in payload.get('jobs',[]):
+            if not re.fullmatch(r'[a-f0-9]{64}',str(job.get('key',''))):
+                raise ValueError('旧冻结清单任务编号异常：'+path.name)
+            keys[job['key']]=path.name
+    return keys
+
+
+def freeze(date,time_text,include_pages,comment,now,report_format="csv",exclude_previous_plans=False):
     if upload.VERSION not in {'2.38','2.39','2.40','2.41','2.42','2.43','2.44','2.45','2.46','2.47'}:raise ValueError('需安装配套上传核心 2.38～2.47')
     if not comment.strip() or len(comment)>5000:raise ValueError('评论文案为空或过长')
     if report_format not in {'csv','text'}:raise ValueError('未知结果输出格式')
     effective=start_time(date,time_text,now)
     config=upload.read_json(upload.CONFIG,{})
     state=upload.read_json(upload.ROOT/'logs/publish_state.json',{})
+    previous=previous_plan_keys(date) if exclude_previous_plans else {}
     entries=[e for e in config.get('targets',[]) if eligible(e,include_pages)]
     urls=Counter(upload.target_key(e['url']) for e in entries)
     pairs=Counter((e['account'],e['target']) for e in entries)
@@ -82,6 +101,10 @@ def freeze(date,time_text,include_pages,comment,now,report_format="csv"):
                     key=upload.job_key(entry,video)
                     after=video.stat()
                     if (before.st_size,before.st_mtime_ns)!=(after.st_size,after.st_mtime_ns):raise ValueError('视频正在复制，未冻结')
+                    if key in previous:
+                        issues.append(dict(account=pair[0],target=pair[1],filename=video.name,key=key,
+                            reason='素材属于以前的冻结批次，本次不补发：'+previous[key]))
+                        continue
                     if key in state:
                         if state[key].get('status')!='published':
                             issues.append(dict(account=pair[0],target=pair[1],filename=video.name,key=key,
