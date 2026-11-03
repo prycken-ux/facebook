@@ -12,6 +12,7 @@ PAIR=('fb10','page02')
 NAME='Drascreflo Chajundfro'
 OWNER='https://www.facebook.com/profile.php?id=61595204068114'
 KNOWN='https://www.facebook.com/reel/1500593451890233'
+PROBE_VERSION='2.0-read-independent-of-tab-selection'
 
 
 def safe_url(value):
@@ -25,20 +26,27 @@ def probe_page(page,seconds=20):
     if len(visible)!=1:raise ValueError('没有唯一的页面Reels标签，未改点全站Reels入口')
     tab=visible[0];href=tab.get_attribute('href')
     tab.click(timeout=10000)
-    end=time.monotonic()+seconds;links=set();selected=False;scrolls=0
+    end=time.monotonic()+seconds;links=set();main_links=set();selected=False;scrolls=0
     while time.monotonic()<end:
         upload.checkpoint(page);upload.require_no_advanced_protection(page)
         current=page.get_by_role('tab',name='Reels',exact=True)
         selected=any(current.nth(i).is_visible() and current.nth(i).get_attribute('aria-selected')=='true' for i in range(current.count()))
-        if selected:
-            for item in page.locator('main a[href],[role="main"] a[href]').all():
+        # This is observation only: a missing aria-selected marker must not
+        # prevent reading links from the actual navigated page.
+        for selector,destination in [('main a[href],[role="main"] a[href]',main_links),('a[href]',links)]:
+            for item in page.locator(selector).all():
                 if item.is_visible():
                     link=comments.direct_link(urljoin('https://www.facebook.com/',item.get_attribute('href') or ''))
-                    if link:links.add(link)
+                    if link:destination.add(link)
         if scrolls<4:page.mouse.wheel(0,600);scrolls+=1
         page.wait_for_timeout(max(1,min(400,int((end-time.monotonic())*1000))))
-    return dict(tab_href=safe_url(href) if href and href.startswith('https://') else None,
-        actual_url=safe_url(page.url),selected=selected,links=sorted(links),known_video_found=KNOWN in links)
+    route=urlparse(page.url);query=parse_qs(route.query)
+    matches=(route.hostname in {'facebook.com','www.facebook.com'} and query.get('id')==['61595204068114']
+             and query.get('sk',[''])[0] in {'reels_tab','reels'})
+    return dict(probe_version=PROBE_VERSION,tab_href=safe_url(href) if href and href.startswith('https://') else None,
+        actual_url=safe_url(page.url),selected=selected,route_matches_reels=matches,links=sorted(links),
+        main_links=sorted(main_links),known_video_found=KNOWN in links,known_video_in_main=KNOWN in main_links,
+        anchor_count=page.locator('a[href]').count(),role_links_without_href=page.locator('[role="link"]:not([href])').count())
 
 
 def execute(seconds=20):
@@ -58,9 +66,11 @@ def execute(seconds=20):
                 result=probe_page(page,seconds)
             finally:context.close()
         upload.save_json(upload.ROOT/'logs/fb10-page02-actual-reels-probe.json',result)
+        print('只读检查版本：',result['probe_version'],flush=True)
         print('fb10/page02 实际入口：',result['actual_url'],flush=True)
-        print('Reels标签已选中：',result['selected'],'；读到视频链接：',len(result['links']),flush=True)
-        print('包含刚才已评论成功的视频：',result['known_video_found'],flush=True)
+        print('实际Reels路线匹配：',result['route_matches_reels'],'；标签选中标记（仅作观察）：',result['selected'],flush=True)
+        print('正文视频链接：',len(result['main_links']),'；全页视频链接：',len(result['links']),'；网页链接节点：',result['anchor_count'],'；无href链接控件：',result['role_links_without_href'],flush=True)
+        print('包含刚才已评论成功的视频：',result['known_video_found'],'；正文内包含：',result['known_video_in_main'],flush=True)
         for link in result['links']:print('视频链接：',link,flush=True)
         print('仅检查链接；没有发评论、补发视频或更改原任务状态。',flush=True)
         return result

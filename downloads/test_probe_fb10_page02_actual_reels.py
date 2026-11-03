@@ -32,6 +32,14 @@ class ActualReelsProbeTests(unittest.TestCase):
         self.page.evaluate("document.querySelector('[role=tablist]').insertAdjacentHTML('beforeend','<button role=tab>Reels</button>')")
         with self.assertRaises(ValueError):probe.probe_page(self.page,seconds=.2)
         self.assertIsNone(self.page.evaluate('window.badClick'))
+    def test_missing_selected_marker_does_not_suppress_link_reading_on_the_real_route(self):
+        self.page.evaluate("""window.openReels=()=>{document.querySelector('#reels').removeAttribute('aria-selected');history.pushState({},'', '/profile.php?id=61595204068114&sk=reels_tab');document.querySelector('#content').innerHTML='<a href="/reel/1500593451890233">Known video</a>'}""")
+        result=probe.probe_page(self.page,seconds=.6)
+        self.assertFalse(result['selected']);self.assertTrue(result['route_matches_reels']);self.assertTrue(result['known_video_found']);self.assertTrue(result['known_video_in_main']);self.assertEqual(result['links'],[probe.KNOWN])
+    def test_read_only_diagnostics_distinguish_main_links_from_other_page_links(self):
+        self.page.locator('nav').evaluate("e=>e.insertAdjacentHTML('beforeend','<a href=\"/reel/1111\">Other visible video</a>')")
+        result=probe.probe_page(self.page,seconds=.6)
+        self.assertEqual(result['main_links'],[probe.KNOWN]);self.assertEqual(set(result['links']),{probe.KNOWN,'https://www.facebook.com/reel/1111'})
     def test_full_read_only_probe_leaves_all_business_journals_and_config_byte_identical(self):
         with tempfile.TemporaryDirectory() as tmp,contextlib.ExitStack() as stack:
             root=Path(tmp);(root/'logs').mkdir();config=root/'upload_config.json'
