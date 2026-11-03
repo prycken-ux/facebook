@@ -61,6 +61,19 @@ class AutomaticRetryTests(unittest.TestCase):
             self.assertEqual(row['automatic_retry'],dict(source_manifest=self.path.name,source_sha256=self.value['sha256'],retry_number=1))
         text=self.path.with_name(self.path.stem+'-results.txt').read_text(encoding='utf-8-sig')
         self.assertIn('\n发布成功：',text);self.assertNotIn('\\n',text)
+
+    def test_immediate_batch_retry_also_comments_before_its_browser_is_closed(self):
+        from unittest.mock import MagicMock
+        self.value['comment_timing']=upload.IMMEDIATE_COMMENT_TIMING;upload.save_json(self.path,self.value)
+        browser=MagicMock();browser.pages=[MagicMock()];button=MagicMock();keys=[];events=[]
+        button.click.side_effect=lambda **kwargs:events.append('video')
+        def comment(page,context,entry,proof,key,record,*args):
+            self.assertEqual(record['status'],'published');self.assertTrue(Path(record['archived_video']).is_file());self.assertEqual(record['comment_timing'],upload.IMMEDIATE_COMMENT_TIMING)
+            keys.append(key);events.append('comment');return dict(status='sent',permalink=record['permalink'])
+        with patch('playwright.sync_api.sync_playwright'),patch.object(upload,'launch_context',return_value=browser),patch.object(upload,'prepare_reel',return_value=(button,{})),patch.object(upload,'recheck_publish_identity'),patch.object(upload,'install_receipt_watch'),patch.object(upload,'wait_for_receipt',return_value='Your reel is published.'),patch('safe_video_comments.resolve_published_link',return_value=('https://www.facebook.com/reel/9011','fresh_success_view_reel_link')),patch('safe_video_comments.immediate_verified_comment',side_effect=comment),patch.object(batch,'close_selected_window'):
+            retry.run(self.path);retry.run(self.path)
+        self.assertEqual(keys,[self.jobs[0]['key'],self.jobs[4]['key']]);self.assertEqual(button.click.call_count,2)
+        self.assertEqual(events,['video','comment','video','comment'])
     def test_incomplete_first_pass_does_not_begin_retry_queue(self):
         upload.save_json(self.report_path,dict(manifest=self.path.name,attempts=self.attempts[:-1]))
         with self.assertRaises(ValueError):retry.run(self.path)

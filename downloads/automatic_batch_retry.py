@@ -6,7 +6,7 @@ import fb_upload as upload
 import scheduled_material_batch as batch
 from add_fb_accounts import locked
 
-AUTO_RETRY_VERSION='1.0-before-post-once'
+AUTO_RETRY_VERSION='1.1-immediate-aware'
 POLICY='recoverable-before-post-once-v1'
 CLAIMS_SCHEMA='automatic-before-post-retry-claims-v1'
 DENY=re.compile(r'captcha|checkpoint|two[_ -]?(?:step|factor)|advanced protection|account.{0,32}(?:disabled|restricted|suspended)|restricted account|log[ -]?in|sign[ -]?in|session expired|2fa|安全验证|验证码|登录|账号限制|操作频繁|身份不一致|不匹配|不唯一|多个|文案.*(?:变化|缺少|为空)|原视频.*(?:变化|缺失)|配置.*(?:变化|重复)|冻结.*校验',re.I)
@@ -112,11 +112,12 @@ def run(path,output_dir=None):
             return []
         payload=copy.deepcopy(value['payload']);payload.update(jobs=selected,run_kind='automatic-safe-retry-v1',source_manifest=path.name,source_sha256=value['sha256'])
         checksum=batch.digest(payload);queue_path=upload.ROOT/'logs'/('automatic-retry-'+payload['date']+'-'+checksum[:16]+'.json')
-        queue=dict(payload=payload,sha256=checksum,created_at=datetime.now(timezone.utc).isoformat(),report_format='text',issues=[])
+        queue=dict(payload=payload,sha256=checksum,created_at=datetime.now(timezone.utc).isoformat(),report_format='text',issues=[],comment_timing=value.get('comment_timing'))
         upload.save_json(queue_path,queue)
     print('首轮视频全部处理完；现在仅自动补发可恢复的发布前失败：',len(selected),'条，每条最多一次。',flush=True)
     try:
-        batch.run(queue_path,output_dir,before_job=lambda job:reserve(job,path,value,first_attempts[job['key']]),defer_comments=True,retry_before_post=True)
+        immediate=value.get('comment_timing')=='immediate-after-publication-v1'
+        batch.run(queue_path,output_dir,before_job=lambda job:reserve(job,path,value,first_attempts[job['key']]),defer_comments=not immediate,retry_before_post=True)
     finally:
         second=upload.read_json(queue_path.with_name(queue_path.stem+'-results.json'),{}).get('attempts',[])
         _,latest_claims=claims_document()

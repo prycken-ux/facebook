@@ -385,7 +385,7 @@ def after_publication(page,context,entry,proof,key,record,text,collector,verifie
     try:
         if verified_link is not None:
             permalink,method=verified_link
-            if method not in {'verified_owner_caption_time','user_supplied_exact_job_link','previously_verified_exact_job_link'} or not direct_link(permalink):
+            if method not in {'verified_owner_caption_time','verified_owner_caption_time_reels_tabs','user_supplied_exact_job_link','previously_verified_exact_job_link'} or not direct_link(permalink):
                 raise ValueError('补评论链接缺少确切任务核验')
             permalink=direct_link(permalink)
         else:
@@ -454,3 +454,15 @@ def after_publication(page,context,entry,proof,key,record,text,collector,verifie
         ledger[comment_key]=item;upload.save_json(ledger_path,ledger)
         capture_failure(page,key,error)
         return item
+
+
+def immediate_verified_comment(page,context,entry,proof,key,record,text,collector):
+    """Use this still-open publication's exact saved link; never send twice."""
+    verified=None
+    method=record.get('comment_link_method','')
+    if (record.get('comment_link_job_key')==key and direct_link(record.get('permalink',''))
+            and (method.startswith('fresh_') or method=='published_video_owner_caption_creation_match')):
+        verified=(direct_link(record['permalink']),'previously_verified_exact_job_link')
+    item=after_publication(page,context,entry,proof,key,record,text,collector,
+        verified_link=verified,require_reload_verification=True)
+    return verify_after_reload(page,entry,proof,key,text,item)

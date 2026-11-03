@@ -320,6 +320,8 @@ def run(path,output_dir=None,before_job=None,defer_comments=False,retry_before_p
                             state=upload.read_json(state_path,{})
                         close_selected_window(entry['account'])
                         entry=dict(entry,enabled=True,auto_switch_personal=True,_authorized_comment_text=payload['comment_text'])
+                        if manifest.get('comment_timing')=='immediate-after-publication-v1' and not defer_comments:
+                            entry['_immediate_verified_comment']=True
                         print('\n开始本批原视频：',job['account'],job['target'],job['filename'],flush=True)
                         if payload.get('run_kind')=='automatic-safe-retry-v1':
                             entry['_automatic_retry']=dict(source_manifest=payload['source_manifest'],source_sha256=payload['source_sha256'],retry_number=1)

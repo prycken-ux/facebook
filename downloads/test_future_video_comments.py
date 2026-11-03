@@ -72,14 +72,14 @@ class FutureCommentsTests(unittest.TestCase):
                     result=comments.verify_after_reload(self.page,self.entry,{},key,self.text,item,timeout_ms=100)
                     self.assertEqual(result['status'],'sent' if persisted else 'needs_review',result)
                 self.context.unroute('https://www.facebook.com/**',route)
-    def test_future_runner_finishes_all_uploads_before_comments_without_old_scan(self):
+    def test_future_runner_uses_immediate_comments_and_one_retry_without_bulk_backfill(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);path=root/'logs/frozen.json';now=datetime(2026,11,1,4,tzinfo=timezone.utc)
             value={'payload':{'start':now.isoformat(),'jobs':[]}};events=[]
-            with patch.object(upload,'ROOT',root),patch.object(future,'datetime',wraps=datetime) as clock,patch.object(future,'locked',return_value=contextlib.nullcontext()),patch.object(future.batch,'freeze',return_value=(path,value)) as freeze,patch.object(future.batch,'run',side_effect=lambda *a,**k:events.append('uploads')),patch.object(future.daily,'backfill',side_effect=lambda *a,**k:events.append('comments')) as send,patch.object(future.automatic_retry,'run',side_effect=lambda *a,**k:events.append('retry-once')),patch.object(future.batch,'results',return_value=[]):
+            with patch.object(upload,'ROOT',root),patch.object(future,'datetime',wraps=datetime) as clock,patch.object(future,'locked',return_value=contextlib.nullcontext()),patch.object(future.batch,'freeze',return_value=(path,value)) as freeze,patch.object(future.batch,'run',side_effect=lambda *a,**k:events.append('uploads')) as run,patch.object(future.daily,'backfill',side_effect=AssertionError('bulk backfill must not run')) as send,patch.object(future.automatic_retry,'run',side_effect=lambda *a,**k:events.append('retry-once')),patch.object(future.batch,'results',return_value=[]):
                 clock.now.return_value=now
                 self.assertEqual(future.execute('2026-11-01',True),0)
-            self.assertEqual(events,['uploads','retry-once','comments']);self.assertTrue(send.call_args.kwargs['future_only']);self.assertTrue(freeze.call_args.kwargs['exclude_previous_plans'])
+            self.assertEqual(events,['uploads','retry-once']);send.assert_not_called();self.assertFalse(run.call_args.kwargs['defer_comments']);self.assertEqual(value['comment_timing'],upload.IMMEDIATE_COMMENT_TIMING);self.assertTrue(freeze.call_args.kwargs['exclude_previous_plans'])
     def test_future_runner_refuses_old_date_or_unconfirmed_footage(self):
         with self.assertRaises(ValueError):future.execute('1900-01-01',True)
         with self.assertRaises(ValueError):future.execute('2026-11-01',False)

@@ -60,7 +60,8 @@ class CommentRecoveryFlowTests(unittest.TestCase):
         self.assertEqual(self.sends,1)
     def test_repair_gate_stops_batch_after_an_unknown_first_comment_without_uploading(self):
         def pretend(value,*a,**k):k['rows'].append(dict(self.job,status='needs_review',error='unknown'))
-        with patch.object(repair,'source_manifest',return_value=self.manifest),patch.object(repair.daily,'backfill',side_effect=pretend) as send:
+        with patch.object(repair,'source_manifest',return_value=self.manifest),patch.object(repair.daily,'backfill',side_effect=pretend) as send,patch.object(repair,'datetime',wraps=datetime) as clock:
+            clock.now.return_value=datetime(2026,11,2,7,0,tzinfo=timezone.utc)
             self.assertEqual(repair.execute(),3)
         self.assertEqual(send.call_count,1);self.assertEqual(upload.read_json(self.state_path,{})['a'*64]['status'],'published')
         self.assertFalse(list(self.root.rglob('*.csv')))

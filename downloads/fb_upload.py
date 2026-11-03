@@ -17,6 +17,8 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 ROOT = Path(__file__).resolve().parent
 CONFIG = ROOT / "upload_config.json"
 VERSION = "2.47"
+IMMEDIATE_COMMENT_VERSION = '1.0-receipt-first-reload'
+IMMEDIATE_COMMENT_TIMING = 'immediate-after-publication-v1'
 SUCCESS_PATTERN = (
     r"^(?:Your reel (?:is(?: now)?|has been|was) (?:successfully )?"
     r"(?:published|shared|posted)(?: successfully)?|"
@@ -1553,6 +1555,8 @@ def run_entry(entry, state, state_path, publish, filename=None, review_before_po
                 record['previous_before_post_attempt']=previous_record
                 record['today_first_retry_used']=True
             comment_text=entry.get('_authorized_comment_text')
+            immediate_comment=entry.get('_immediate_verified_comment') is True and not defer_comments
+            if immediate_comment:record['comment_timing']=IMMEDIATE_COMMENT_TIMING
             link_collector=None
             if comment_text:
                 from safe_video_comments import PublicationLinks
@@ -1616,7 +1620,7 @@ def run_entry(entry, state, state_path, publish, filename=None, review_before_po
                 record["status"] = "published"
                 record["published_at"] = datetime.now().astimezone().isoformat()
                 save_json(state_path, state)
-                if comment_text and defer_comments:
+                if comment_text and (defer_comments or immediate_comment):
                     from safe_video_comments import resolve_published_link
                     try:
                         hint,method=resolve_published_link(page,context,link_collector,timeout_ms=10000)
@@ -1628,7 +1632,7 @@ def run_entry(entry, state, state_path, publish, filename=None, review_before_po
                             if isinstance(capture,dict) and isinstance(capture.get('receipt'),bool) and isinstance(capture.get('area'),bool) and type(capture.get('receiptLinks')) is int:
                                 record['comment_link_capture']=capture
                         except Exception:pass
-                    record['comment_status']='deferred'
+                    record['comment_status']='preparing' if immediate_comment else 'deferred'
                     save_json(state_path,state)
                 archived=archive(video, caption)
                 record.update(archived_video=str(archived/video.name),archived_caption=str(archived/caption.name),
@@ -1639,8 +1643,13 @@ def run_entry(entry, state, state_path, publish, filename=None, review_before_po
                     print('今天视频已成功并归档；评论统一留到全部视频处理后。',flush=True)
                 elif comment_text:
                     try:
-                        from safe_video_comments import after_publication
-                        result=after_publication(page,context,entry,identity_proof,key,record,comment_text,link_collector)
+                        if immediate_comment:
+                            from safe_video_comments import immediate_verified_comment
+                            print('立即给刚发布的视频评论，并刷新核验：',entry['account'],entry['target'],flush=True)
+                            result=immediate_verified_comment(page,context,entry,identity_proof,key,record,comment_text,link_collector)
+                        else:
+                            from safe_video_comments import after_publication
+                            result=after_publication(page,context,entry,identity_proof,key,record,comment_text,link_collector)
                         record['comment_status']=result['status']
                         record['comment_error']=result.get('error','')
                     except Exception as comment_error:

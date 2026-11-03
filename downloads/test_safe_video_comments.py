@@ -82,6 +82,11 @@ class VideoCommentTests(unittest.TestCase):
         with self.assertRaises(ValueError):self.send()
         self.assertIsNone(self.page.evaluate('window.sent'))
 
+    def test_exact_reels_tab_proof_is_accepted_as_a_verified_job_link(self):
+        result=comments.after_publication(self.page,self.context,self.entry,{},self.key,self.record,self.text,None,
+            verified_link=('https://www.facebook.com/reel/9001','verified_owner_caption_time_reels_tabs'))
+        self.assertEqual(result['status'],'sent');self.assertEqual(self.page.evaluate('window.sent'),1)
+
     def test_generic_old_view_reel_link_is_not_used_to_target_another_video(self):
         self.page.goto(self.entry['url']);self.page.evaluate("document.body.insertAdjacentHTML('beforeend','<a href=\"/reel/123\">View reel</a>')")
         with self.assertRaises(RuntimeError):comments.resolve_published_link(self.page,self.context,None)
