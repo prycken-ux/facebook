@@ -90,6 +90,17 @@ class AutomaticRetryTests(unittest.TestCase):
             self.assertFalse(retry.decide(job,self.value,state,attempt,claims)[0])
         state=copy.deepcopy(self.state);state['another']=dict(account=job['account'],status='posting')
         self.assertFalse(retry.decide(job,self.value,state,attempt,claims)[0])
+
+    def test_proxy_failure_and_known_prepost_ui_timeouts_get_one_retry_but_unknown_stages_do_not(self):
+        job=self.jobs[0];attempt=self.attempts[0];claims={'schema':retry.CLAIMS_SCHEMA,'jobs':{}}
+        for stage,error in [('open_target_profile','Page.goto: net::ERR_PROXY_CONNECTION_FAILED'),('fill_caption','Locator.fill: Timeout 240000ms exceeded.'),('commit_classic_caption','Locator.blur: Timeout 30000ms exceeded.'),('wait_reel_editor','Timeout 60000ms exceeded.')]:
+            state=copy.deepcopy(self.state);state[job['key']].update(failure_stage=stage,error=error)
+            self.assertTrue(retry.decide(job,self.value,state,attempt,claims)[0],(stage,error))
+            state[job['key']]['post_intent_at']='intent'
+            self.assertFalse(retry.decide(job,self.value,state,attempt,claims)[0])
+        for stage in ('unknown','post_click','wait_success_receipt','final_identity_check'):
+            state=copy.deepcopy(self.state);state[job['key']].update(failure_stage=stage,error='Timeout 30000ms exceeded.')
+            self.assertFalse(retry.decide(job,self.value,state,attempt,claims)[0])
     def test_changed_video_caption_or_config_are_not_replaced_or_retried(self):
         for mode in ['video','caption','config']:
             job=self.jobs[0];entry=self.entries[0];video=upload.inbox_for(entry)/job['filename'];caption=video.with_suffix('.txt');before_video=video.read_bytes();before_caption=caption.read_bytes()

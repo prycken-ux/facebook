@@ -24,6 +24,7 @@ from diagnose_personal_identity import close_selected_window
 BJ=timezone(timedelta(hours=8))
 NS='http://schemas.microsoft.com/windows/2004/02/mit/task'
 SCHEMA='frozen-scheduled-material-v1'
+RESUME_WORKFLOW_VERSION='1.0-preserve-attempted-jobs'
 ET.register_namespace('',NS)
 
 
@@ -288,7 +289,7 @@ class Tee:
         for stream in self.streams:stream.flush()
 
 
-def run(path,output_dir=None,before_job=None,defer_comments=False,retry_before_post=False):
+def run(path,output_dir=None,before_job=None,defer_comments=False,retry_before_post=False,resume=False):
     path=Path(path)
     path.resolve().relative_to((upload.ROOT/'logs').resolve())
     manifest=upload.read_json(path,{})
@@ -298,11 +299,23 @@ def run(path,output_dir=None,before_job=None,defer_comments=False,retry_before_p
     if now.astimezone(BJ).date().isoformat()!=payload['date']:raise ValueError('已不是本批授权日期，不补跑过期计划')
     if now<datetime.fromisoformat(payload['start']):raise ValueError('尚未到指定开始时间，不提前发布')
     if upload.VERSION not in {'2.38','2.39','2.40','2.41','2.42','2.43','2.44','2.45','2.46','2.47'}:raise ValueError('上传核心版本不匹配')
-    attempts=[]
     with locked(),path.with_suffix('.log').open('a',encoding='utf-8') as log:
+        attempts=[]
+        if resume:
+            report=upload.read_json(path.with_name(path.stem+'-results.json'),None)
+            if report is not None:
+                keys={j['key'] for j in payload['jobs']}
+                if (not isinstance(report,dict) or report.get('manifest')!=path.name or not isinstance(report.get('attempts'),list)
+                        or any(not isinstance(a,dict) or a.get('key') not in keys or not a.get('action') for a in report['attempts'])):
+                    raise ValueError('续跑结果与原批次不一致，未重新发布')
+                attempts=report['attempts']
+        attempted={a['key'] for a in attempts}
         with contextlib.redirect_stdout(Tee(sys.stdout,log)),contextlib.redirect_stderr(Tee(sys.stderr,log)):
             try:
                 for job in payload['jobs']:
+                    if job['key'] in attempted:
+                        print('本批首轮已有尝试，保留结果，补发统一留给一次补发阶段：',job['account'],job['target'],job['filename'],flush=True)
+                        continue
                     attempt=dict(account=job['account'],target=job['target'],key=job['key'],started_at=datetime.now(timezone.utc).isoformat())
                     try:
                         state_path=upload.ROOT/'logs/publish_state.json';state=upload.read_json(state_path,{})

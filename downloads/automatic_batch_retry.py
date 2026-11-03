@@ -7,11 +7,13 @@ import scheduled_material_batch as batch
 from add_fb_accounts import locked
 
 AUTO_RETRY_VERSION='1.1-immediate-aware'
+SAFE_BEFORE_POST_RETRY_VERSION='1.2-network-and-prepost-timeouts'
 POLICY='recoverable-before-post-once-v1'
 CLAIMS_SCHEMA='automatic-before-post-retry-claims-v1'
 DENY=re.compile(r'captcha|checkpoint|two[_ -]?(?:step|factor)|advanced protection|account.{0,32}(?:disabled|restricted|suspended)|restricted account|log[ -]?in|sign[ -]?in|session expired|2fa|安全验证|验证码|登录|账号限制|操作频繁|身份不一致|不匹配|不唯一|多个|文案.*(?:变化|缺少|为空)|原视频.*(?:变化|缺失)|配置.*(?:变化|重复)|冻结.*校验',re.I)
-RECOVER=re.compile(r'net::ERR_(?:TIMED_OUT|CONNECTION_RESET|CONNECTION_CLOSED|NETWORK_CHANGED|INTERNET_DISCONNECTED)|发布前上传仍未完成或按钮不可用|Chrome 资料仍被占用|Target page, context or browser has been closed|菜单.*(?:未加载|未.*可用)|未找到新版 Describe your reel 描述框|视频尚未进入 Reel 编辑器|公共主页列表切换超时',re.I)
+RECOVER=re.compile(r'net::ERR_(?:TIMED_OUT|CONNECTION_RESET|CONNECTION_CLOSED|CONNECTION_REFUSED|PROXY_CONNECTION_FAILED|NETWORK_CHANGED|INTERNET_DISCONNECTED)|发布前上传仍未完成或按钮不可用|Chrome 资料仍被占用|Target page, context or browser has been closed|菜单.*(?:未加载|未.*可用)|未找到新版 Describe your reel 描述框|视频尚未进入 Reel 编辑器|公共主页列表切换超时',re.I)
 POINTER_STAGES={'open_reel_menu','select_exact_video','classic_next_1','classic_next_2','fill_caption','commit_classic_caption','modern_caption_audience_ai','ready_to_post'}
+TIMEOUT_STAGES=POINTER_STAGES|{'open_target_profile','verify_identity','recover_loading_menu_before_file','wait_reel_editor','verify_selected_media','verify_public_audience','verify_ai_label'}
 PROOF_FIELDS=('post_intent_at','permalink','success_message','confirmation_method','confirmed_at','published_at','review_reason','today_first_retry_used','previous_before_post_attempt')
 
 
@@ -60,6 +62,7 @@ def decide(job,value,state,attempt,claims):
     stage=record.get('failure_stage','') if record else ''
     if DENY.search(reason):return False,'需要人工处理身份、安全验证或文件配置，未自动重试'
     recoverable=bool(RECOVER.search(reason))
+    recoverable|=(bool(re.search(r'Timeout\s+\d+\s*ms\s+exceeded',reason,re.I)) and stage in TIMEOUT_STAGES)
     recoverable|=('intercepts pointer events' in reason and stage in POINTER_STAGES)
     recoverable|=('net::ERR_ABORTED' in reason and stage in {'open_target_profile','verify_identity'})
     if not recoverable:return False,'错误不在可恢复范围，保留给人工核实'
