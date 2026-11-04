@@ -25,6 +25,7 @@ BJ=timezone(timedelta(hours=8))
 NS='http://schemas.microsoft.com/windows/2004/02/mit/task'
 SCHEMA='frozen-scheduled-material-v1'
 RESUME_WORKFLOW_VERSION='1.0-preserve-attempted-jobs'
+NEW_PERSONAL_ACCOUNTS_VERSION='1.0-verified-onboarding'
 ET.register_namespace('',NS)
 
 
@@ -37,9 +38,23 @@ def file_hash(path):
 
 
 def eligible(entry,include_pages):
-    return (re.fullmatch(r'fb(?:0[1-9]|1[0-9]|2[0-3])',str(entry.get('account',''))) is not None
-        and entry['account'] not in {'fb16','fb18','fb21'}
-        and (include_pages or not (entry['account']=='fb10' and entry.get('type')=='page')))
+    account=str(entry.get('account',''))
+    if not re.fullmatch(r'fb(?:0[1-9]|[1-9][0-9]+)',account) or account in {'fb16','fb18','fb21'}:return False
+    if int(account[2:])<=23:
+        return include_pages or not (account=='fb10' and entry.get('type')=='page')
+    if entry.get('target')!='personal' or entry.get('type','personal')!='personal':return False
+    # A frozen retry job has no type/workflow fields; bind its owner to the
+    # durable, locally verified personal-account registration instead.
+    manifest=upload.read_json(upload.ROOT/'additional_personal_accounts.json',{})
+    if not isinstance(manifest,dict) or manifest.get('schema')!='additional-personal-logins-v1':return False
+    slot=manifest.get('slots',{}).get(account,{}) if isinstance(manifest.get('slots'),dict) else {}
+    if not isinstance(slot,dict):return False
+    mapping=slot.get('mapping',{})
+    if (slot.get('state')!='registered' or slot.get('publishing_ready') is not True or not slot.get('identity_verified_at')
+            or not isinstance(mapping,dict) or mapping.get('account')!=account or mapping.get('type')!='personal'
+            or mapping.get('target')!='personal' or mapping.get('workflow')!='personal_recording_v1'):return False
+    try:return upload.target_key(entry.get('url',''))==upload.target_key(mapping.get('url',''))
+    except ValueError:return False
 
 
 def start_time(date,time_text,now):
