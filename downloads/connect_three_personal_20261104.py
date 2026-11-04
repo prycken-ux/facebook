@@ -1,5 +1,5 @@
 """Three user-owned personal logins, verified registration and publication wiring."""
-import copy,shutil,sys,uuid
+import copy,hashlib,shutil,sys,uuid
 from datetime import datetime,timezone
 from pathlib import Path
 import add_personal_accounts as accounts
@@ -50,8 +50,14 @@ def verify(entry):
             page=context.new_page();upload.navigate_profile(page,entry['url'])
             upload.require_no_advanced_protection(page)
             proof=upload.ensure_personal_identity(page,entry)
+            people={c['value'] for c in context.cookies(['https://www.facebook.com/']) if c.get('name')=='c_user' and c.get('value')}
+            if len(people)!=1 or not next(iter(people)).isdecimal():raise ValueError('无法确认当前个人号的主页编号')
+            owner=next(iter(people))
+            if hashlib.sha256(('personal:'+owner).encode('ascii')).hexdigest()!=proof.get('session_marker'):
+                raise ValueError('核验期间个人号身份变化')
+            owner_url='https://www.facebook.com/profile.php?id='+owner
         finally:context.close()
-    return dict(target_url=proof['target_url'],name=proof['name'],method=proof['method'],
+    return dict(target_url=owner_url,name=proof['name'],method=proof['method'],
                 checked_at=datetime.now(timezone.utc).isoformat())
 
 
@@ -113,7 +119,7 @@ def connect(account):
                        for r in config['targets']+registry['accounts']):raise ValueError('该本人主页已属于其他编号，请登录另一个个人号')
                 print('正常关闭',account,'的登录窗口，重新打开并核验本人身份。',flush=True)
                 close_selected_window(account);proof=verify(entry)
-            accounts.register(account,name,url);activate(account,proof);return True
+            accounts.register(account,name,proof['target_url']);activate(account,proof);return True
         except Exception as error:
             print('这条尚未接入：',(str(error) or type(error).__name__).split('\n',1)[0],flush=True)
             choice=ask('回车重新打开并重试；S跳过本账号，Q结束：')

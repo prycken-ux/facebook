@@ -11,7 +11,7 @@ The controller creates independent login shortcuts/folders, opens one account at
 a time for the user to log in, and asks for that person's profile name and URL
 in the Windows console. It gracefully closes only that profile's window and
 reopens it to check the current personal actor and target owner with the existing
-identity verifier. It rejects duplicate owners before registration. An invalid
+identity verifier. It resolves the verified personal actor to a canonical numeric profile URL and rejects duplicate owners before registration, including an alternate vanity URL for a known numeric profile. An invalid
 name, URL, session, Page actor or network failure does not register/enable an
 unverified new target. S skips an account and Q preserves progress and exits.
 Passwords and OTPs are entered only into Facebook by the user.

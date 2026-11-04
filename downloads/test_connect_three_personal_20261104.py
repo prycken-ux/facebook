@@ -1,11 +1,14 @@
-import copy,io,unittest
+import copy,hashlib,io,unittest
+from datetime import datetime,timezone
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock,patch
 import connect_three_personal_20261104 as connect
 import add_personal_accounts as app
 import add_fb_accounts as legacy
 import fb_upload as upload
 import scheduled_material_batch as batch
+import automatic_batch_retry as retry
+import daily_publish_and_comments as daily
 import test_add_personal_accounts as fixtures
 
 
@@ -51,6 +54,23 @@ class ThreePersonalTests(unittest.TestCase):
         with patch.object(app,'open_accounts'),patch('builtins.input',side_effect=['Old Person',self.fx.config['targets'][0]['url'],'S']),patch.object(connect,'verify') as verify,patch.object(connect,'close_selected_window') as closed:
             self.assertFalse(connect.connect('fb24'))
         verify.assert_not_called();closed.assert_not_called();self.assertEqual(upload.CONFIG.read_bytes(),config)
+
+    def test_an_alias_of_an_existing_person_is_rejected_after_numeric_owner_resolution(self):
+        config=upload.CONFIG.read_bytes();old=next(r for r in self.fx.config['targets'] if r['type']=='personal')
+        proof=dict(self.proof,target_url=old['url'],method='personal_me_redirect_match')
+        with patch.object(app,'open_accounts'),patch('builtins.input',side_effect=['New Person','https://www.facebook.com/existing-person-alias','S']),patch.object(connect,'close_selected_window'),patch.object(connect,'verify',return_value=proof):
+            self.assertFalse(connect.connect('fb24'))
+        self.assertEqual(upload.CONFIG.read_bytes(),config)
+
+    def test_identity_verification_normalizes_alias_to_numeric_owner_without_exporting_session_metadata(self):
+        context=MagicMock();context.cookies.return_value=[dict(name='c_user',value='90024')]
+        proof=dict(self.proof,target_url='https://www.facebook.com/new-person',session_marker=hashlib.sha256(b'personal:90024').hexdigest())
+        entry=dict(name='New Person',url=proof['target_url'])
+        with patch('playwright.sync_api.sync_playwright'),patch.object(upload,'launch_context',return_value=context),patch.object(upload,'navigate_profile'),patch.object(upload,'require_no_advanced_protection'),patch.object(upload,'ensure_personal_identity',return_value=proof):
+            result=connect.verify(entry)
+            self.assertEqual(result['target_url'],self.proof['target_url']);self.assertNotIn('session_marker',result)
+            context.cookies.return_value=[dict(name='c_user',value='90025')]
+            with self.assertRaises(ValueError):connect.verify(entry)
     def test_activation_proof_conflict_and_failed_config_save_leave_registration_disabled(self):
         app.register('fb24','New Person',self.proof['target_url'])
         before=upload.CONFIG.read_bytes()
@@ -75,3 +95,14 @@ class ThreePersonalTests(unittest.TestCase):
         row=upload.read_json(upload.CONFIG,{})['targets'][-1]
         self.assertFalse(batch.eligible(row,True))
         self.assertFalse(batch.eligible(dict(account='fb99',target='personal',url=self.proof['target_url']),True))
+
+    def test_verified_new_personal_video_is_frozen_and_supported_by_safe_retry_loader(self):
+        app.register('fb24','New Person',self.proof['target_url']);connect.activate('fb24',self.proof)
+        row=upload.read_json(upload.CONFIG,{})['targets'][-1]
+        video=upload.inbox_for(row)/'first.mp4';video.write_bytes(b'new user video');video.with_suffix('.txt').write_text('Custom new caption')
+        now=datetime.now(timezone.utc);date=now.astimezone(batch.BJ).date().isoformat()
+        path,value=batch.freeze(date,'23:59',True,daily.COMMENT,now,report_format='text',exclude_previous_plans=True)
+        self.assertEqual([(j['account'],j['target']) for j in value['payload']['jobs']],[('fb24','personal')])
+        self.assertEqual(value['payload']['jobs'][0]['caption_text'],'Custom new caption')
+        value.update(workflow='future-video-comments-v1',auto_retry_policy=retry.POLICY);upload.save_json(path,value)
+        self.assertEqual(retry.load_source(path)[0],path)
