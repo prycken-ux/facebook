@@ -26,9 +26,42 @@ class DirectEvidenceTests(unittest.TestCase):
     def test_absolute_epoch_or_zoned_time_only(self):
         self.assertEqual(guided.stamp('1970-01-01T00:16:40+00:00'),1000)
         self.assertEqual(guided.stamp('1970-01-01T00:16:40'),0);self.assertEqual(guided.stamp('2h'),0)
+    def test_split_fragments_join_only_on_the_exact_typed_video_id(self):
+        p=self.proof(dict(__typename='Video',id='9001',owner={'id':'1001'}))
+        p.add(dict(id='9001',description='Exact caption'));p.add(dict(id='9001',creation_time=1000))
+        self.assertTrue(p.matched);self.assertFalse(p.blocked)
+        p=self.proof(dict(__typename='Video',id='9001',owner={'id':'1001'}))
+        p.add(dict(id='9002',description='Exact caption',creation_time=1000));self.assertFalse(p.matched)
+        p=self.proof(dict(id='9001',owner={'id':'1001'},description='Exact caption',creation_time=1000))
+        self.assertFalse(p.matched)
+        p.add(dict(__typename='Video',id='9001',owner={'id':'other'}));self.assertTrue(p.blocked)
+    def test_jsonld_requires_exact_video_owner_full_caption_and_absolute_time(self):
+        node={'@type':'VideoObject','url':self.link,'author':{'url':'https://www.facebook.com/profile.php?id=1001'},'description':'Exact caption','uploadDate':'1970-01-01T00:16:40+00:00'}
+        p=guided.Evidence('1001','Exact caption',900,1100,self.link);p.add_ld(node)
+        self.assertTrue(p.matched);self.assertFalse(p.blocked)
+        for change in [{'url':'https://www.facebook.com/reel/9002'},{'author':{'url':'https://www.facebook.com/profile.php?id=2002'}},{'description':'Exact'},{'uploadDate':'1970-01-01T00:16:40'}]:
+            p=guided.Evidence('1001','Exact caption',900,1100,self.link);p.add_ld(dict(node,**change));self.assertFalse(p.matched and not p.blocked)
+        p=guided.Evidence('1001','Exact caption',900,1100,self.link)
+        p.add_ld(dict(node,author=[node['author'],{'url':'https://www.facebook.com/profile.php?id=2002'}]));self.assertTrue(p.blocked)
 
 
 class GuidedSelectionTests(unittest.TestCase):
+    def test_eighteen_candidates_have_no_artificial_cap_and_no_prompt(self):
+        jobs=[dict(account='fb01',target='page01',filename='source.mp4')];entry=dict(account='fb01',target='page01');page=MagicMock();context=MagicMock();context.pages=[page]
+        links=['https://www.facebook.com/reel/'+str(i) for i in range(9001,9019)]
+        with patch.object(guided,'collect_links',return_value=links),patch.object(guided,'inspect_video',side_effect=[(False,{})]*17+[(True,{})]) as inspect,patch.object(guided,'require_target_author'),patch('builtins.input',side_effect=AssertionError('no prompts')),contextlib.redirect_stdout(io.StringIO()):
+            result=guided.make_finder(jobs,True)(page,context,entry,'caption',900,1100)
+        self.assertEqual(inspect.call_count,18);self.assertEqual(result[0],links[-1])
+    def test_missing_or_ambiguous_evidence_continues_without_user_input(self):
+        jobs=[dict(account='fb01',target='page01',filename='source.mp4')];entry=dict(account='fb01',target='page01');page=MagicMock();context=MagicMock();context.pages=[page]
+        for valid in (True,False):
+            with patch.object(guided,'collect_links',return_value=['https://www.facebook.com/reel/9001','https://www.facebook.com/reel/9002']),patch.object(guided,'inspect_video',return_value=(valid,{})),patch('builtins.input',side_effect=AssertionError('no prompts')),contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaises(guided.AutomaticLookupPending):guided.make_finder(jobs,True)(page,context,entry,'caption',900,1100)
+    def test_deadline_after_one_positive_never_selects_a_partial_scan(self):
+        jobs=[dict(account='fb01',target='page01',filename='source.mp4')];entry=dict(account='fb01',target='page01');page=MagicMock();context=MagicMock();context.pages=[page]
+        with patch.object(guided,'collect_links',return_value=['https://www.facebook.com/reel/9001','https://www.facebook.com/reel/9002']),patch.object(guided.time,'monotonic',side_effect=[0,0,3]),patch.object(guided,'inspect_video',return_value=(True,{})) as inspect,patch('builtins.input',side_effect=AssertionError('no prompts')),contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(guided.AutomaticLookupPending):guided.make_finder(jobs,True,total_timeout_ms=2000)(page,context,entry,'caption',900,1100)
+        self.assertEqual(inspect.call_count,1)
     def test_unique_verified_candidate_is_chosen_after_all_candidates_not_first_or_newest(self):
         jobs=[dict(account='fb01',target='page01',filename='old-source.mp4')];entry=dict(account='fb01',target='page01');page=MagicMock();context=MagicMock();context.pages=[page]
         links=['https://www.facebook.com/reel/9001','https://www.facebook.com/reel/9002']
@@ -39,7 +72,7 @@ class GuidedSelectionTests(unittest.TestCase):
         jobs=[dict(account='fb01',target='page01',filename='old-source.mp4')];entry=dict(account='fb01',target='page01');page=MagicMock();context=MagicMock();context.pages=[page]
         manual=('https://www.facebook.com/reel/9002','user_supplied_exact_job_link')
         with patch.object(guided,'collect_links',return_value=['https://www.facebook.com/reel/9001','https://www.facebook.com/reel/9002']),patch.object(guided,'inspect_video',return_value=(True,{})),patch.object(guided,'manual_choice',return_value=manual) as choose,contextlib.redirect_stdout(io.StringIO()):
-            self.assertEqual(guided.make_finder(jobs,True)(page,context,entry,'caption',900,1100),manual)
+            self.assertEqual(guided.make_finder(jobs,True,interactive=True)(page,context,entry,'caption',900,1100),manual)
         choose.assert_called_once()
     def test_enter_uses_only_this_selection_page_not_restored_old_video_tabs(self):
         page=MagicMock();page.url='https://www.facebook.com/reel/9001';page.is_closed.return_value=False
@@ -67,19 +100,28 @@ class DirectVideoBrowserTests(unittest.TestCase):
     def tearDownClass(cls):cls.browser.close();cls.pw.stop()
     def setUp(self):
         self.context=self.browser.new_context();self.page=self.context.new_page();self.entry=dict(name='Example Page',url='https://www.facebook.com/profile.php?id=1001',account='fb01',target='page01',type='page')
-        self.node=dict(__typename='Video',id='9001',owner={'id':'1001'},description='Exact caption',creation_time=1000);self.video=True;self.editor=False;self.author_in_comment=False
+        self.node=dict(__typename='Video',id='9001',owner={'id':'1001'},description='Exact caption',creation_time=1000);self.video=True;self.editor=False;self.author_in_comment=False;self.kind='application/json'
         def route(r):
             body='<a href="'+self.entry['url']+'">Example Page</a>'
             if self.author_in_comment:body='<article role=article aria-label="Comment by Example Page">'+body+'</article>'
             if self.video:body+='<video controls></video>'
             if self.editor:body+='<form role=form aria-label=Reels>Unpublished editor</form>'
-            body+='<script type="application/json">'+json.dumps(self.node)+'</script>'
+            body+='<script type="'+self.kind+'">'+json.dumps(self.node)+'</script>'
             r.fulfill(content_type='text/html',body=body)
         self.context.route('https://www.facebook.com/**',route)
     def tearDown(self):self.context.close()
     def inspect(self):return guided.inspect_video(self.page,self.context,self.entry,'Exact caption',900,1100,'https://www.facebook.com/reel/9001',seconds=1.4)
     def test_visible_exact_video_and_owner_complete_missing_publish_flag_proof(self):
         valid,proof=self.inspect();self.assertTrue(valid);self.assertTrue(proof['visible_video']);self.assertFalse(proof['explicit_published'])
+    def test_jsonld_only_page_and_personal_vanity_owner_are_supported(self):
+        self.kind='application/ld+json';self.node={'@type':'VideoObject','url':'https://www.facebook.com/reel/9001','author':{'url':self.entry['url']},'description':'Exact caption','uploadDate':'1970-01-01T00:16:40Z'}
+        self.assertTrue(self.inspect()[0])
+        self.entry.update(type='personal',url='https://www.facebook.com/example.person')
+        self.node['author']={'url':self.entry['url']}
+        self.context.add_cookies([dict(name='c_user',value='1001',domain='.facebook.com',path='/')])
+        self.assertTrue(self.inspect()[0])
+        self.context.add_cookies([dict(name='i_user',value='2002',domain='.facebook.com',path='/')])
+        self.assertFalse(self.inspect()[0])
     def test_missing_player_without_explicit_publication_or_visible_editor_are_not_accepted(self):
         self.video=False;valid,_=self.inspect();self.assertFalse(valid)
         self.video=True;self.editor=True;valid,proof=self.inspect();self.assertFalse(valid);self.assertTrue(proof['editor'])

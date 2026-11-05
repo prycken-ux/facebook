@@ -1,4 +1,4 @@
-"""Exact comment-target lookup through actual Reels tabs with guided selection fallback."""
+"""Exact comment-target lookup; unresolved targets continue without prompting."""
 import re,time
 from datetime import datetime
 from urllib.parse import parse_qs,urljoin,urlparse
@@ -6,6 +6,11 @@ import fb_upload as upload
 import safe_video_comments as comments
 import published_video_lookup as lookup
 import daily_publish_and_comments as daily
+
+LOOKUP_VERSION='1.1-fragments-jsonld-noninteractive'
+
+
+class AutomaticLookupPending(RuntimeError):pass
 
 SCAN=r'''()=>{const visible=e=>e.getClientRects().length&&getComputedStyle(e).visibility!=='hidden';
  const read=s=>[...document.querySelectorAll(s)].filter(visible).map(e=>e.href);
@@ -25,10 +30,11 @@ def text(value):return value.get('text','') if isinstance(value,dict) else value
 
 
 class Evidence:
-    def __init__(self,owner,caption,start,end,link):
+    def __init__(self,owner,caption,start,end,link,owner_aliases=()):
         self.owner=owner;self.caption=comments.normalized(caption);self.start=start;self.end=end;self.link=link
         self.vid=urlparse(link).path.rstrip('/').split('/')[-1]
         self.matched=False;self.blocked=False;self.published=False;self.owner_seen=False;self.caption_seen=False;self.time_seen=False;self.nodes=0
+        self.typed_seen=False;self.ld_nodes=0;self.owner_keys={'id:'+owner}|set(owner_aliases)
     def add(self,payload):
         if self.caption and self.link in lookup.story_videos(payload,self.owner,self.caption,self.start,self.end):
             self.matched=True;self.owner_seen=True;self.caption_seen=True;self.time_seen=True
@@ -38,7 +44,8 @@ class Evidence:
             elif isinstance(node,dict):
                 bad=node.get('is_published') is False or bool(node.get('is_pending')) or bool(node.get('is_draft'))
                 inherited=blocked or (node.get('__typename')=='Story' and bad)
-                if node.get('__typename') in {'Video','Reel'} and str(node.get('id',''))==self.vid:
+                if node.get('__typename') in {None,'Video','Reel'} and str(node.get('id',''))==self.vid:
+                    self.typed_seen|=node.get('__typename') in {'Video','Reel'}
                     self.nodes+=1;story=node.get('creation_story',{})
                     if not isinstance(story,dict):story={}
                     story_bad=story.get('is_published') is False or bool(story.get('is_pending')) or bool(story.get('is_draft'))
@@ -55,11 +62,38 @@ class Evidence:
                         if canonical and canonical!=self.link:self.blocked=True
                     self.owner_seen|=owned;self.caption_seen|=caption;self.time_seen|=timed
                     self.published|=node.get('is_published') is True
-                    self.matched|=owned and caption and timed
                 for child in node.values():
                     if isinstance(child,(dict,list)):walk(child,inherited)
         walk(payload)
-    def diagnostic(self):return dict(video=self.link,nodes=self.nodes,owner=self.owner_seen,caption=self.caption_seen,time=self.time_seen,matched=self.matched,blocked=self.blocked,explicit_published=self.published)
+        self.matched|=self.typed_seen and self.owner_seen and self.caption_seen and self.time_seen
+    def add_ld(self,payload):
+        def walk(node):
+            if isinstance(node,list):
+                for child in node:walk(child)
+            elif isinstance(node,dict):
+                types=node.get('@type',[]);types=[types] if isinstance(types,str) else types
+                links={comments.direct_link(node.get(k,'')) for k in ('url','@id','embedUrl')};links.discard(None)
+                if isinstance(types,list) and 'VideoObject' in types and self.link in links:
+                    self.ld_nodes+=1
+                    if links!={self.link}:self.blocked=True
+                    authors=node.get('author',[]);authors=authors if isinstance(authors,list) else [authors]
+                    keys=set()
+                    for author in authors:
+                        values=[author.get('url'),author.get('@id')] if isinstance(author,dict) else [author]
+                        for value in values:
+                            try:
+                                if value:keys.add(upload.target_key(value))
+                            except (ValueError,TypeError):pass
+                    owned=bool(keys&self.owner_keys)
+                    if keys and (not owned or keys-self.owner_keys):self.blocked=True
+                    caption=bool(self.caption) and comments.normalized(text(node.get('description')))==self.caption
+                    timed=any(self.start<=stamp(node.get(k))<self.end for k in ('uploadDate','datePublished'))
+                    self.owner_seen|=owned;self.caption_seen|=caption;self.time_seen|=timed
+                    self.matched|=owned and caption and timed
+                for child in node.values():
+                    if isinstance(child,(dict,list)):walk(child)
+        walk(payload)
+    def diagnostic(self):return dict(video=self.link,nodes=self.nodes,json_ld_nodes=self.ld_nodes,owner=self.owner_seen,caption=self.caption_seen,time=self.time_seen,matched=self.matched,blocked=self.blocked,explicit_published=self.published)
 
 
 def require_target_author(page,entry):
@@ -79,8 +113,15 @@ def require_target_author(page,entry):
 
 def inspect_video(page,context,entry,caption,start,end,link,seconds=7):
     owner=upload.target_key(entry['url'])
-    if not owner.startswith('id:'):return False,dict(video=link,error='自动核对需要原配置的数字主页编号')
-    evidence=Evidence(owner[3:],caption,start,end,link)
+    aliases={owner}
+    if not owner.startswith('id:') and entry.get('type')=='personal':
+        try:
+            upload.personal_actor_fingerprint(page,entry)
+            owners={c['value'] for c in context.cookies(['https://www.facebook.com/']) if c.get('name')=='c_user' and str(c.get('value','')).isdecimal()}
+            if len(owners)==1:owner='id:'+next(iter(owners))
+        except Exception:return False,dict(video=link,error='无法核验本人个人号身份')
+    if not owner.startswith('id:'):return False,dict(video=link,error='缺少已核验的视频作者编号')
+    evidence=Evidence(owner[3:],caption,start,end,link,aliases)
     def receive(response):
         try:
             parsed=urlparse(response.url)
@@ -90,12 +131,17 @@ def inspect_video(page,context,entry,caption,start,end,link,seconds=7):
     context.on('response',receive)
     try:
         page.goto(upload.english_url(link),wait_until='domcontentloaded',timeout=20000)
-        deadline=time.monotonic()+seconds;since=None
+        deadline=time.monotonic()+seconds;since=None;seen=set()
         while time.monotonic()<deadline:
             upload.checkpoint(page);upload.require_no_advanced_protection(page)
             if comments.direct_link(page.url)!=link:raise ValueError('视频页跳转到其他视频')
-            for raw in page.locator('script[type="application/json"]').all_text_contents():
-                for payload in lookup.payloads(raw):evidence.add(payload)
+            for kind in ('application/json','application/ld+json'):
+                for raw in page.locator('script[type="'+kind+'"]').all_text_contents():
+                    if (kind,raw) in seen:continue
+                    seen.add((kind,raw))
+                    for payload in lookup.payloads(raw):
+                        if kind=='application/ld+json':evidence.add_ld(payload)
+                        else:evidence.add(payload)
             if evidence.blocked:break
             if evidence.matched:
                 if since is None:since=time.monotonic()
@@ -171,31 +217,34 @@ def manual_choice(page,context,entry,job,baseline):
         except Exception as error:print('未发送评论：',str(error).split('\n',1)[0],flush=True)
 
 
-def make_finder(jobs,automatic):
+def make_finder(jobs,automatic,interactive=False,total_timeout_ms=240000):
     by_pair={(j['account'],j['target']):j for j in jobs}
     def find(page,context,entry,caption,start,end,timeout_ms=45000,diagnostic_path=None):
-        job=by_pair[(entry['account'],entry['target'])];baseline=set(context.pages);proofs=[];matches=[];candidates=[]
+        job=by_pair[(entry['account'],entry['target'])];baseline=set(context.pages);proofs=[];matches=[];candidates=[];error=''
+        deadline=time.monotonic()+total_timeout_ms/1000
         if automatic:
             try:
                 candidates=collect_links(page)
                 print('从实际Reels入口取得候选视频：',len(candidates),'条；按作者、原文案和时间核对。',flush=True)
-                if len(candidates)>12:raise ValueError('候选超过12条，改由你选定，未猜选最新视频')
                 for i,link in enumerate(candidates,1):
+                    if time.monotonic()>=deadline:raise ValueError('自动核对时间已到，候选尚未全部核验；保留待定位')
                     child=context.new_page()
                     try:valid,proof=inspect_video(child,context,entry,caption,start,end,link)
                     finally:child.close()
-                    proofs.append(proof);print('只读核对候选',i,'/',len(candidates),'：',valid,flush=True)
+                    proofs.append(proof);print('只读核对候选',i,'/',len(candidates),'：','匹配' if valid else '数据或条件未满足完整匹配',flush=True)
                     if valid:matches.append(link)
                 if len(matches)==1:
                     page.goto(upload.english_url(matches[0]),wait_until='domcontentloaded',timeout=30000)
                     require_target_author(page,entry)
                     return matches[0],'verified_owner_caption_time'
-                print('未取得唯一的完整自动匹配证据，改为你选定视频。',flush=True)
-            except Exception as error:print('自动定位未完成：',str(error).split('\n',1)[0],flush=True)
+                error='未取得唯一匹配：候选'+str(len(candidates))+'条，完整匹配'+str(len(matches))+'条；作者/文案/时间缺少或不符：'+str(sum(not p.get('owner') for p in proofs))+'/'+str(sum(not p.get('caption') for p in proofs))+'/'+str(sum(not p.get('time') for p in proofs))
+                print(error,flush=True)
+            except Exception as failure:error=str(failure).split('\n',1)[0];print('自动定位未完成：',error,flush=True)
             finally:
-                if diagnostic_path:upload.save_json(diagnostic_path,dict(candidates=candidates,matches=matches,proofs=proofs))
+                if diagnostic_path:upload.save_json(diagnostic_path,dict(candidates=candidates,matches=matches,proofs=proofs,error=error))
         else:
             try:open_actual_reels(page)
             except Exception:pass
+        if not interactive:raise AutomaticLookupPending('自动定位暂未完成：'+(error or '缺少唯一匹配证据')+'；未发送评论，已记录待自动核验')
         return manual_choice(page,context,entry,job,baseline)
     return find

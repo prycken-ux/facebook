@@ -252,7 +252,7 @@ def results(path,manifest,attempts,output_dir,final=False):
                 if row['video_status']!='published' and row['reason']:line+='；'+str(row['reason']).split('\n',1)[0]
                 lines.append(line)
             lines.append('')
-        comment_names={'sent':'评论已确认成功','already_present':'已有规定评论','manual_required':'评论需人工处理','not_started':'评论未开始','deferred':'等待评论','needs_review':'评论发送待核实','sending':'评论提交中待核实','verifying':'评论刷新核实中'}
+        comment_names={'sent':'评论已确认成功','already_present':'已有规定评论','manual_required':'评论需人工处理','lookup_pending':'评论待自动定位','not_started':'评论未开始','deferred':'等待评论','needs_review':'评论发送待核实','sending':'评论提交中待核实','verifying':'评论刷新核实中'}
         lines.append('评论结果：')
         for row in rows:
             if row['video_status']=='published':lines.append(row['account']+'/'+row['target']+' '+comment_names.get(row['comment_status'],row['comment_status'])+('；'+row['reason'] if row['reason'] else ''))
