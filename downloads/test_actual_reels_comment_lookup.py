@@ -122,6 +122,19 @@ class DirectVideoBrowserTests(unittest.TestCase):
         self.assertTrue(self.inspect()[0])
         self.context.add_cookies([dict(name='i_user',value='2002',domain='.facebook.com',path='/')])
         self.assertFalse(self.inspect()[0])
+    def test_missing_reels_tab_uses_only_the_verified_owner_route_for_readonly_links(self):
+        from urllib.parse import urlparse,parse_qs
+        self.context.unroute('https://www.facebook.com/**')
+        clicked=[]
+        def route(r):
+            r.fulfill(content_type='text/html',body='<main><a href="https://www.facebook.com/reel/9001">Video</a><button onclick="window.clicked=true">Post</button></main>')
+        self.context.route('https://www.facebook.com/**',route)
+        self.page.goto(self.entry['url'])
+        with contextlib.redirect_stdout(io.StringIO()):links=guided.collect_links(self.page,seconds=.1,entry=self.entry)
+        self.assertEqual(links,['https://www.facebook.com/reel/9001'])
+        query=parse_qs(urlparse(self.page.url).query)
+        self.assertEqual(query['id'],['1001']);self.assertEqual(query['sk'],['reels_tab'])
+        self.assertFalse(self.page.evaluate('Boolean(window.clicked)'))
     def test_missing_player_without_explicit_publication_or_visible_editor_are_not_accepted(self):
         self.video=False;valid,_=self.inspect();self.assertFalse(valid)
         self.video=True;self.editor=True;valid,proof=self.inspect();self.assertFalse(valid);self.assertTrue(proof['editor'])

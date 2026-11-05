@@ -8,6 +8,7 @@ from add_fb_accounts import locked
 
 AUTO_RETRY_VERSION='1.1-immediate-aware'
 SAFE_BEFORE_POST_RETRY_VERSION='1.2-network-and-prepost-timeouts'
+VISIBILITY_RETRY_VERSION='1.0-stage-bound-visibility'
 POLICY='recoverable-before-post-once-v1'
 CLAIMS_SCHEMA='automatic-before-post-retry-claims-v1'
 DENY=re.compile(r'captcha|checkpoint|two[_ -]?(?:step|factor)|advanced protection|account.{0,32}(?:disabled|restricted|suspended)|restricted account|log[ -]?in|sign[ -]?in|session expired|2fa|安全验证|验证码|登录|账号限制|操作频繁|身份不一致|不匹配|不唯一|多个|文案.*(?:变化|缺少|为空)|原视频.*(?:变化|缺失)|配置.*(?:变化|重复)|冻结.*校验',re.I)
@@ -64,6 +65,8 @@ def decide(job,value,state,attempt,claims):
     recoverable=bool(RECOVER.search(reason))
     recoverable|=(bool(re.search(r'Timeout\s+\d+\s*ms\s+exceeded',reason,re.I)) and stage in TIMEOUT_STAGES)
     recoverable|=('intercepts pointer events' in reason and stage in POINTER_STAGES)
+    recoverable|=(bool(re.search(r'Locator expected to be visible|element is not attached to the DOM',reason,re.I))
+                  and stage in (POINTER_STAGES|{'wait_reel_editor','verify_selected_media','verify_public_audience','verify_ai_label'}))
     recoverable|=('net::ERR_ABORTED' in reason and stage in {'open_target_profile','verify_identity'})
     if not recoverable:return False,'错误不在可恢复范围，保留给人工核实'
     return True,'首轮发布前的可恢复错误：'+reason.split('\n',1)[0][:260]

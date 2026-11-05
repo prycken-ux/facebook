@@ -1,13 +1,14 @@
 """Exact comment-target lookup; unresolved targets continue without prompting."""
 import re,time
 from datetime import datetime
-from urllib.parse import parse_qs,urljoin,urlparse
+from urllib.parse import parse_qs,urljoin,urlparse,urlencode
 import fb_upload as upload
 import safe_video_comments as comments
 import published_video_lookup as lookup
 import daily_publish_and_comments as daily
 
 LOOKUP_VERSION='1.1-fragments-jsonld-noninteractive'
+REELS_ENTRY_VERSION='1.0-owner-route-fallback'
 
 
 class AutomaticLookupPending(RuntimeError):pass
@@ -164,8 +165,16 @@ def open_actual_reels(page):
     visible[0].click(timeout=10000)
 
 
-def collect_links(page,seconds=8):
-    open_actual_reels(page);end=time.monotonic()+seconds;links=set();scrolls=0
+def collect_links(page,seconds=8,entry=None):
+    try:open_actual_reels(page)
+    except ValueError:
+        if entry is None:raise
+        upload.target_key(entry['url'])
+        parsed=urlparse(entry['url']);params=parse_qs(parsed.query);params['sk']=['reels_tab']
+        route=parsed._replace(query=urlencode(params,doseq=True),fragment='').geturl()
+        print('没有唯一可见的Reels标签；改从该主页的Reels地址只读查找。',flush=True)
+        page.goto(upload.english_url(route),wait_until='domcontentloaded',timeout=30000)
+    end=time.monotonic()+seconds;links=set();scrolls=0
     while time.monotonic()<end:
         upload.checkpoint(page);upload.require_no_advanced_protection(page)
         scan=page.evaluate(SCAN)
@@ -224,7 +233,7 @@ def make_finder(jobs,automatic,interactive=False,total_timeout_ms=240000):
         deadline=time.monotonic()+total_timeout_ms/1000
         if automatic:
             try:
-                candidates=collect_links(page)
+                candidates=collect_links(page,entry=entry)
                 print('从实际Reels入口取得候选视频：',len(candidates),'条；按作者、原文案和时间核对。',flush=True)
                 for i,link in enumerate(candidates,1):
                     if time.monotonic()>=deadline:raise ValueError('自动核对时间已到，候选尚未全部核验；保留待定位')

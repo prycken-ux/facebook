@@ -109,6 +109,19 @@ class AutomaticRetryTests(unittest.TestCase):
             if mode=='config':upload.save_json(upload.CONFIG,{'targets':[dict(e,name='Changed') if e==entry else e for e in self.entries]})
             with self.assertRaises(ValueError):retry.checked_job(job)
             video.write_bytes(before_video);caption.write_bytes(before_caption);upload.CONFIG.write_bytes(self.config_before)
+    def test_visibility_failure_gets_one_retry_only_in_known_before_post_ui_stage(self):
+        job=self.jobs[0];attempt=self.attempts[0];claims={'schema':retry.CLAIMS_SCHEMA,'jobs':{}}
+        for stage in ('select_exact_video','wait_reel_editor','fill_caption'):
+            state=copy.deepcopy(self.state);state[job['key']].update(failure_stage=stage,error='Locator expected to be visible')
+            self.assertTrue(retry.decide(job,self.value,state,attempt,claims)[0])
+            state[job['key']]['post_intent_at']='already submitted';self.assertFalse(retry.decide(job,self.value,state,attempt,claims)[0])
+        for stage in ('unknown','verify_identity','post_click','wait_success_receipt'):
+            state=copy.deepcopy(self.state);state[job['key']].update(failure_stage=stage,error='Locator expected to be visible')
+            self.assertFalse(retry.decide(job,self.value,state,attempt,claims)[0])
+        state=copy.deepcopy(self.state);state[job['key']].update(failure_stage='select_exact_video',error='captcha: Locator expected to be visible')
+        self.assertFalse(retry.decide(job,self.value,state,attempt,claims)[0])
+        state[job['key']]['error']='Locator expected to be visible';claims['jobs'][job['key']]={'used':True}
+        self.assertFalse(retry.decide(job,self.value,state,attempt,claims)[0])
     def test_old_disabled_or_corrupt_batches_and_corrupt_claims_do_not_grant_retries(self):
         for modification in ['policy','checksum','yesterday']:
             value=copy.deepcopy(self.value)
