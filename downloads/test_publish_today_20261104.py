@@ -1,7 +1,7 @@
 import contextlib,copy,io,tempfile,unittest
 from datetime import datetime,timezone
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch,MagicMock
 import publish_today_20261104 as today
 import fb_upload as upload
 import add_fb_accounts as legacy
@@ -22,8 +22,9 @@ class TodayNormalBatchTests(unittest.TestCase):
             self.assertEqual(date,'2026-11-04');self.assertTrue(real)
             path,value=today.priority.prepare(date)
             self.assertEqual(value['browser_launch_mode'],today.MODE)
-            with patch.object(today.normal,'launch_normal',return_value='native-context'):
-                self.assertEqual(upload.launch_context(None,dict(account='fb01',target='page01',url='https://www.facebook.com/profile.php?id=1001')),'native-context')
+            wrapper=MagicMock()
+            with patch.object(today.normal,'launch_normal',return_value=wrapper),patch.object(today.normal.local_files,'authorize'):
+                self.assertIs(upload.launch_context(None,dict(account='fb01',target='page01',url='https://www.facebook.com/profile.php?id=1001')),wrapper)
                 with self.assertRaises(ValueError):upload.launch_context(None,dict(account='fb03',target='personal',url='https://www.facebook.com/profile.php?id=1003'))
             return 3
         with patch.object(today.priority,'prepare',return_value=(self.path,copy.deepcopy(self.value))) as freeze,patch.object(today.priority,'execute',side_effect=execute):

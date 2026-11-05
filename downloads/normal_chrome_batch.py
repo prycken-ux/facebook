@@ -5,8 +5,10 @@ import fb_upload as upload
 from add_fb_accounts import find_chrome
 from chrome_profile_guard import require_profile_free
 from diagnose_personal_identity import close_selected_window
+import local_file_input as local_files
 
 NORMAL_CHROME_VERSION='1.0-batch-scoped-local-cdp'
+LOCAL_FILE_INPUT_COMPATIBILITY=local_files.VERSION
 
 
 def endpoint(path):
@@ -28,7 +30,9 @@ class NormalContext:
             except Exception:pass  # The expected connection-close event may race the reply.
             try:self._browser.close()
             except Exception:pass
-        finally:close_selected_window(self._account)  # Graceful exact-profile close; never kill.
+        finally:
+            local_files.release(self._context)
+            close_selected_window(self._account)  # Graceful exact-profile close; never kill.
 
 
 def launch_normal(playwright,entry):
@@ -41,9 +45,10 @@ def launch_normal(playwright,entry):
     port_file=profile/'DevToolsActivePort'
     if port_file.is_symlink():raise ValueError('本机连接文件异常')
     port_file.unlink(missing_ok=True)
+    selfcheck=entry.get('_local_file_selfcheck') is True
     args=[str(find_chrome()),'--user-data-dir='+str(profile),'--profile-directory=Default',
           '--no-first-run','--no-default-browser-check','--remote-debugging-address=127.0.0.1',
-          '--remote-debugging-port=0','--new-window',upload.english_url(entry['url'])]
+          '--remote-debugging-port=0','--new-window','about:blank' if selfcheck else upload.english_url(entry['url'])]
     print('使用原资料启动普通Chrome：',account,entry['target'],'；保留原扩展和代理。',flush=True)
     process=subprocess.Popen(args,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
     wrapper=None
@@ -62,6 +67,9 @@ def launch_normal(playwright,entry):
             browser.close();raise RuntimeError(account+'本机浏览器上下文不唯一，尚未上传')
         context=browser.contexts[0];wrapper=NormalContext(browser,context,account)
         context.add_cookies([dict(name='locale',value='en_US',domain='.facebook.com',path='/',secure=True)])
+        if selfcheck:
+            print('本机原视频选取自检：只打开本地测试页，不访问或提交Facebook。',flush=True)
+            return wrapper
         page=context.pages[-1] if context.pages else context.new_page()
         for attempt in range(3):
             try:
@@ -89,5 +97,8 @@ def launcher_for_jobs(jobs):
         pair=entry.get('account'),entry.get('target')
         if pair not in owners or upload.target_key(entry.get('url',''))!=owners[pair]:
             raise ValueError('普通Chrome启动目标不属于今天原清单')
-        return launch_normal(playwright,entry)
+        context=launch_normal(playwright,entry)
+        try:local_files.authorize(context._context,entry,jobs)
+        except BaseException:context.close();raise
+        return context
     return launch

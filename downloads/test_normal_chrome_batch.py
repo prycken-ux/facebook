@@ -46,8 +46,10 @@ class NormalChromeTests(unittest.TestCase):
         self.assertNotIn('local-test-token',str(result.exception));self.close.assert_called_once_with('fb02')
     def test_launcher_rejects_pairs_and_owners_outside_the_frozen_batch(self):
         launch=normal.launcher_for_jobs([dict(self.entry),dict(account='fb10',target='page02',url='https://www.facebook.com/profile.php?id=1010')])
-        with patch.object(normal,'launch_normal',return_value='context') as native:
-            self.assertEqual(launch(None,self.entry),'context')
+        wrapper=MagicMock()
+        with patch.object(normal,'launch_normal',return_value=wrapper) as native,patch.object(normal.local_files,'authorize') as authorize:
+            self.assertIs(launch(None,self.entry),wrapper)
+            authorize.assert_called_once()
             with self.assertRaises(ValueError):launch(None,dict(self.entry,account='fb03'))
             with self.assertRaises(ValueError):launch(None,dict(self.entry,url='https://www.facebook.com/profile.php?id=9999'))
             self.assertEqual(native.call_count,1)
