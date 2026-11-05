@@ -117,7 +117,8 @@ def execute():
     with locked(),daily.keep_awake():
         path,value,jobs=source();ledger_path,ledger=claims(value);state=upload.read_json(state_path,{})
         eligible=[]
-        for job in jobs:
+        for index,job in enumerate(jobs,1):
+            if index==1 or index%5==0:print('正在核对11月4日原视频：',index,'/',len(jobs),'；核对内容指纹和原文案。',flush=True)
             try:
                 if validate(job,state,ledger)[1]=='ready':eligible.append(job)
             except Exception as error:print('暂不重发：',job['account'],job['target'],job['filename'],'；',str(error).split('\n',1)[0],flush=True)
