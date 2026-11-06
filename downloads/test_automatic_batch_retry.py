@@ -122,6 +122,15 @@ class AutomaticRetryTests(unittest.TestCase):
         self.assertFalse(retry.decide(job,self.value,state,attempt,claims)[0])
         state[job['key']]['error']='Locator expected to be visible';claims['jobs'][job['key']]={'used':True}
         self.assertFalse(retry.decide(job,self.value,state,attempt,claims)[0])
+    def test_missing_native_chooser_and_upload_input_only_retry_before_file_post_stages(self):
+        job=self.jobs[0];attempt=self.attempts[0];claims={'schema':retry.CLAIMS_SCHEMA,'jobs':{}}
+        for stage in ('open_reel_menu','select_exact_video','unknown','post_click','wait_success_receipt'):
+            state=copy.deepcopy(self.state);state[job['key']].update(failure_stage=stage,error='未捕获到选文件窗口，也未找到 Reels 上传框；未点击发布。')
+            self.assertEqual(retry.decide(job,self.value,state,attempt,claims)[0],stage in {'open_reel_menu','select_exact_video'})
+            state[job['key']]['post_intent_at']='submitted'
+            self.assertFalse(retry.decide(job,self.value,state,attempt,claims)[0])
+        state=copy.deepcopy(self.state);state[job['key']].update(failure_stage='select_exact_video',error='未捕获到选文件窗口，也未找到 Reels 上传框；未点击发布。');claims['jobs'][job['key']]={'used':True}
+        self.assertFalse(retry.decide(job,self.value,state,attempt,claims)[0])
     def test_old_disabled_or_corrupt_batches_and_corrupt_claims_do_not_grant_retries(self):
         for modification in ['policy','checksum','yesterday']:
             value=copy.deepcopy(self.value)

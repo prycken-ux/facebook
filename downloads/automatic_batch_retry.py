@@ -9,6 +9,7 @@ from add_fb_accounts import locked
 AUTO_RETRY_VERSION='1.1-immediate-aware'
 SAFE_BEFORE_POST_RETRY_VERSION='1.2-network-and-prepost-timeouts'
 VISIBILITY_RETRY_VERSION='1.0-stage-bound-visibility'
+FILE_CHOOSER_RETRY_VERSION='1.0-stage-bound-missing-chooser'
 POLICY='recoverable-before-post-once-v1'
 CLAIMS_SCHEMA='automatic-before-post-retry-claims-v1'
 DENY=re.compile(r'captcha|checkpoint|two[_ -]?(?:step|factor)|advanced protection|account.{0,32}(?:disabled|restricted|suspended)|restricted account|log[ -]?in|sign[ -]?in|session expired|2fa|安全验证|验证码|登录|账号限制|操作频繁|身份不一致|不匹配|不唯一|多个|文案.*(?:变化|缺少|为空)|原视频.*(?:变化|缺失)|配置.*(?:变化|重复)|冻结.*校验',re.I)
@@ -26,10 +27,10 @@ def load_source(path):
             or not re.fullmatch(r'frozen-material-\d{4}-\d{2}-\d{2}-'+checksum[:16]+r'\.json',path.name)
             or payload.get('date')!=datetime.now(timezone.utc).astimezone(batch.BJ).date().isoformat()
             or payload.get('ai_label') is not False or payload.get('include_fb10_pages') is not True
-            or set(payload.get('excluded_accounts',[]))!={'fb16','fb18','fb21'}):
+            or set(payload.get('excluded_accounts',[]))!=batch.excluded_accounts(payload.get('date'))):
         raise ValueError('自动补发只接受本次当天明确启用的全新批次原清单')
     jobs=payload.get('jobs',[])
-    if not jobs or len({j['key'] for j in jobs})!=len(jobs) or any(not batch.eligible(j,True) for j in jobs):raise ValueError('自动补发原清单的账号或素材范围异常')
+    if not jobs or len({j['key'] for j in jobs})!=len(jobs) or any(not batch.eligible(j,True,date=payload['date']) for j in jobs):raise ValueError('自动补发原清单的账号或素材范围异常')
     return path,value
 
 
@@ -67,13 +68,14 @@ def decide(job,value,state,attempt,claims):
     recoverable|=('intercepts pointer events' in reason and stage in POINTER_STAGES)
     recoverable|=(bool(re.search(r'Locator expected to be visible|element is not attached to the DOM',reason,re.I))
                   and stage in (POINTER_STAGES|{'wait_reel_editor','verify_selected_media','verify_public_audience','verify_ai_label'}))
+    recoverable|=(bool(re.search(r'未捕获到选文件窗口.*未找到\s*Reels\s*上传框',reason)) and stage in {'open_reel_menu','select_exact_video'})
     recoverable|=('net::ERR_ABORTED' in reason and stage in {'open_target_profile','verify_identity'})
     if not recoverable:return False,'错误不在可恢复范围，保留给人工核实'
     return True,'首轮发布前的可恢复错误：'+reason.split('\n',1)[0][:260]
 
 
 def checked_job(job):
-    entry=batch.validate_job(job)
+    entry=batch.validate_job(job,date=datetime.now(timezone.utc).astimezone(batch.BJ).date().isoformat())
     selection=upload.named_job(entry,{},job['filename'])
     if not selection or selection[0]!=job['key'] or selection[3]!=job['caption_text']:raise ValueError('自动补发时原视频指纹或文案发生变化')
     return entry

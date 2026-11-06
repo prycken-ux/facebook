@@ -19,6 +19,7 @@ from xml.etree import ElementTree as ET
 import fb_upload as upload
 from add_fb_accounts import locked
 from apply_common_caption import atomic_caption
+import publication_preferences as preferences
 from diagnose_personal_identity import close_selected_window
 
 BJ=timezone(timedelta(hours=8))
@@ -26,6 +27,7 @@ NS='http://schemas.microsoft.com/windows/2004/02/mit/task'
 SCHEMA='frozen-scheduled-material-v1'
 RESUME_WORKFLOW_VERSION='1.0-preserve-attempted-jobs'
 NEW_PERSONAL_ACCOUNTS_VERSION='1.0-verified-onboarding'
+PUBLICATION_PREFERENCES_VERSION=preferences.VERSION
 ET.register_namespace('',NS)
 
 
@@ -37,9 +39,14 @@ def file_hash(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def eligible(entry,include_pages):
+def excluded_accounts(date=None):
+    policy=preferences.load(date) if date else None
+    return {'fb16','fb18','fb21'}|set(policy['payload']['excluded_accounts'] if policy else [])
+
+
+def eligible(entry,include_pages,date=None):
     account=str(entry.get('account',''))
-    if not re.fullmatch(r'fb(?:0[1-9]|[1-9][0-9]+)',account) or account in {'fb16','fb18','fb21'}:return False
+    if not re.fullmatch(r'fb(?:0[1-9]|[1-9][0-9]+)',account) or account in excluded_accounts(date):return False
     if int(account[2:])<=23:
         return include_pages or not (account=='fb10' and entry.get('type')=='page')
     if entry.get('target')!='personal' or entry.get('type','personal')!='personal':return False
@@ -90,7 +97,8 @@ def freeze(date,time_text,include_pages,comment,now,report_format="csv",exclude_
     config=upload.read_json(upload.CONFIG,{})
     state=upload.read_json(upload.ROOT/'logs/publish_state.json',{})
     previous=previous_plan_keys(date) if exclude_previous_plans else {}
-    entries=[e for e in config.get('targets',[]) if eligible(e,include_pages)]
+    policy=preferences.load(date)
+    entries=[e for e in config.get('targets',[]) if eligible(e,include_pages,date=date)]
     urls=Counter(upload.target_key(e['url']) for e in entries)
     pairs=Counter((e['account'],e['target']) for e in entries)
     common_path=upload.ROOT/'common_caption_today.txt'
@@ -131,7 +139,13 @@ def freeze(date,time_text,include_pages,comment,now,report_format="csv",exclude_
                         continue
                     caption=video.with_suffix('.txt')
                     caption.resolve().relative_to(folder.resolve())
-                    text=caption.read_text(encoding='utf-8-sig').strip() if caption.is_file() else ''
+                    text=caption.read_text(encoding='utf-8-sig',errors='replace' if policy else 'strict').strip() if caption.is_file() else ''
+                    exact=policy['payload']['caption'] if policy else None
+                    if exact is not None and text!=exact:
+                        backup.mkdir(parents=True,exist_ok=True)
+                        if caption.exists():
+                            saved=backup/caption.relative_to(upload.ROOT);saved.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(caption,saved)
+                        atomic_caption(caption,exact);text=exact
                     if not text:
                         if not common:raise ValueError('无现有文案，已保存的统一文案也为空')
                         backup.mkdir(parents=True,exist_ok=True)
@@ -148,8 +162,9 @@ def freeze(date,time_text,include_pages,comment,now,report_format="csv",exclude_
             issues.append(dict(account=pair[0],target=pair[1],reason=str(error)))
     if not jobs:raise ValueError('没有可冻结的全新视频，未创建空计划；已有记录的素材不会重发')
     payload=dict(schema=SCHEMA,date=date,requested_start=date+'T'+time_text+':00+08:00',start=effective.isoformat(),
-        ai_label=False,include_fb10_pages=include_pages,excluded_accounts=['fb16','fb18','fb21'],
+        ai_label=False,include_fb10_pages=include_pages,excluded_accounts=sorted(excluded_accounts(date)),
         comment_text=comment,jobs=jobs)
+    if policy:payload['publication_preferences_sha256']=policy['sha256']
     checksum=digest(payload)
     path=upload.ROOT/'logs'/('frozen-material-'+date+'-'+checksum[:16]+'.json')
     manifest=dict(payload=payload,sha256=checksum,created_at=now.isoformat(),issues=issues,report_format=report_format)
@@ -214,7 +229,9 @@ $i=Get-ScheduledTaskInfo -TaskName $d.name
     return name
 
 
-def validate_job(job):
+def validate_job(job,date=None):
+    policy=preferences.load(date) if date else None
+    if policy and (job['account'] in excluded_accounts(date) or job['caption_text']!=policy['payload']['caption']):raise ValueError('原任务不符合当前跳过账号或统一正文规则')
     config=upload.read_json(upload.CONFIG,{})
     entries=[e for e in config.get('targets',[]) if (e.get('account'),e.get('target'))==(job['account'],job['target'])]
     if len(entries)!=1 or digest(entries[0])!=job['entry_sha256']:raise ValueError('目标配置已变化，未替换目标')
@@ -342,7 +359,7 @@ def run(path,output_dir=None,before_job=None,defer_comments=False,retry_before_p
                             attempt['action']='existing_record';continue
                         if any(r.get('account')==job['account'] and r.get('status') in {'preparing','posting'} for r in state.values()):
                             raise RuntimeError('该账号仍有准备中或提交中的旧任务，不关闭其浏览器、不解除记录；需手动核实')
-                        entry=validate_job(job)
+                        entry=validate_job(job,date=payload['date'])
                         if before_job is not None:
                             before_job(job)
                             state=upload.read_json(state_path,{})

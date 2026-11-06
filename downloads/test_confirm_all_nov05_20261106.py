@@ -56,6 +56,11 @@ class ConfirmNov05Tests(unittest.TestCase):
         Path(self.missing_record['video']).write_bytes(b'replaced same-name video')
         with self.assertRaises(ValueError):run.execute()
         self.assertEqual(upload.read_json(self.f.state_path,{}),self.state);self.assert_other_data()
+    def test_nov06_skip_and_caption_rules_do_not_prevent_nov05_confirmation(self):
+        import publication_preferences as preferences
+        preferences.save_authorized();run.execute()
+        state=upload.read_json(self.f.state_path,{})
+        self.assertTrue(all(state[j['key']]['status']=='published' for j in self.jobs));self.assert_other_data()
     def test_known_record_replacement_file_stays_untouched_after_original_confirmation(self):
         job=next(j for j in self.jobs if self.state.get(j['key'],{}).get('status')=='needs_review');video=Path(self.state[job['key']]['video']);video.write_bytes(b'todays replacement bytes')
         run.execute();self.assertEqual(video.read_bytes(),b'todays replacement bytes');self.assertEqual(upload.read_json(self.f.state_path,{})[job['key']]['status'],'published');self.assert_other_data()
