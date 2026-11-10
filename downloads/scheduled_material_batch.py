@@ -28,6 +28,7 @@ SCHEMA='frozen-scheduled-material-v1'
 RESUME_WORKFLOW_VERSION='1.0-preserve-attempted-jobs'
 NEW_PERSONAL_ACCOUNTS_VERSION='1.0-verified-onboarding'
 PUBLICATION_PREFERENCES_VERSION=preferences.VERSION
+ACCOUNT_RESUMPTION_VERSION=preferences.ACCOUNT_RESUMPTION_VERSION
 ET.register_namespace('',NS)
 
 
@@ -40,8 +41,9 @@ def file_hash(path):
 
 
 def excluded_accounts(date=None):
-    policy=preferences.load(date) if date else None
-    return {'fb16','fb18','fb21'}|set(policy['payload']['excluded_accounts'] if policy else [])
+    policy=preferences.load(date or datetime.now(timezone.utc).astimezone(BJ).date().isoformat())
+    payload=policy['payload'] if policy else {}
+    return ({'fb16','fb18','fb21'}|set(payload.get('excluded_accounts',[])))-set(payload.get('included_accounts',[]))
 
 
 def eligible(entry,include_pages,date=None):

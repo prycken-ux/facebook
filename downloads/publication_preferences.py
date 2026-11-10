@@ -5,6 +5,7 @@ import fb_upload as upload
 from apply_common_caption import atomic_caption
 
 VERSION='1.0-exact-caption-excluded-accounts'
+ACCOUNT_RESUMPTION_VERSION='1.0-effective-dated-resumption'
 SCHEMA='publication-preferences-v1'
 CAPTION='''A small decision can change the way a story unfolds.
 What would you have done in this situation?
@@ -33,14 +34,37 @@ def load(for_date):
             or not isinstance(payload.get('excluded_accounts'),list)
             or any(not re.fullmatch(r'fb\d{2,}',str(a)) for a in payload['excluded_accounts'])):raise ValueError('后续发布规则校验失败，未使用其他文案或账号范围')
     effective=date.fromisoformat(payload['effective_from']);requested=date.fromisoformat(for_date)
-    return value if requested>=effective else None
+    resumption=value.get('account_resumption')
+    resumed=None
+    if resumption is not None:
+        if not isinstance(resumption,dict):raise ValueError('账号恢复日期规则格式异常')
+        resumed=resumption.get('payload',{})
+        if (not isinstance(resumed,dict) or resumption.get('sha256')!=digest(resumed)
+                or resumed.get('schema')!='account-resumption-v1' or not isinstance(resumed.get('accounts'),list)
+                or not resumed['accounts'] or len(set(resumed['accounts']))!=len(resumed['accounts'])
+                or not set(resumed['accounts']).issubset(set(payload['excluded_accounts']))):raise ValueError('账号恢复日期规则校验失败')
+        if date.fromisoformat(resumed['effective_from'])<effective:raise ValueError('账号恢复日期早于规则起始日期')
+    if requested<effective:return None
+    if resumed is None or requested<date.fromisoformat(resumed['effective_from']):return value
+    # Keep the base fingerprint valid for historical dates; project only the active future rule.
+    active=dict(payload,excluded_accounts=[a for a in payload['excluded_accounts'] if a not in resumed['accounts']],
+                included_accounts=list(resumed['accounts']),account_resumption_sha256=resumption['sha256'])
+    return dict(payload=active,sha256=digest(active))
 
 
-def save_authorized():
+def save_authorized(resume_from=None):
     """Caller holds original upload locks. No source video or caption sidecar edited here."""
     payload=dict(schema=SCHEMA,effective_from='2026-11-06',caption_policy='exact-unified-new-videos',caption=CAPTION,excluded_accounts=EXCLUDED)
     desired=dict(payload=payload,sha256=digest(payload));path=upload.ROOT/'publication_preferences.json';common=upload.ROOT/'common_caption_today.txt'
-    if upload.read_json(path,None)==desired and common.is_file() and common.read_text(encoding='utf-8-sig').strip()==CAPTION:return desired
+    existing=upload.read_json(path,None)
+    if isinstance(existing,dict) and existing.get('account_resumption') is not None:
+        load('2026-11-06')  # Validate before preserving a later explicit authorization.
+        desired['account_resumption']=existing['account_resumption']
+    if resume_from is not None:
+        if date.fromisoformat(resume_from)<date.fromisoformat(payload['effective_from']):raise ValueError('恢复日期无效')
+        resumed=dict(schema='account-resumption-v1',effective_from=resume_from,accounts=list(EXCLUDED))
+        desired['account_resumption']=dict(payload=resumed,sha256=digest(resumed))
+    if existing==desired and common.is_file() and common.read_text(encoding='utf-8-sig').strip()==CAPTION:return desired
     backup=upload.ROOT/'backups'/('publication-preferences-'+uuid.uuid4().hex[:12]);backup.mkdir(parents=True)
     for file in (path,common):
         if file.is_file():shutil.copy2(file,backup/file.name)
