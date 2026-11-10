@@ -83,7 +83,7 @@ def start(root,real_footage=False):
     exec(compile(helper,'verified-lock-library','exec'),namespace);namespace['recover_locks'](root)
     install(root,updates)
     print('直接开始11月10日今天新视频：今天跳过fb16/fb17/fb18/fb21，从11月11日起恢复；普通Chrome先发布、再安全补发一次、最后评论，AI标签关闭。请保持窗口打开。',flush=True)
-    result=subprocess.run([sys.executable,str(root/'publish_today_20261110.py'),'--real-footage'])
+    result=subprocess.run([sys.executable,str(root/'publish_today_20261110.py'),str(root),'--real-footage'])
     if result.returncode not in {0,3}:raise RuntimeError('今天批次已停止；保留全部发布和发送记录，重跑同一命令继续原批次')
     if result.returncode==3:print('仍有失败、待核实或未完成评论；详见逐条结果。视频成功与评论成功分别统计。',flush=True)
     return result.returncode

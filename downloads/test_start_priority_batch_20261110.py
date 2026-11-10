@@ -48,7 +48,16 @@ class Nov10PriorityStartTests(unittest.TestCase):
             clock.now.return_value=datetime(2026,11,10,4,tzinfo=timezone.utc)
             self.assertEqual(start.start(self.fx.root,True),3)
         self.assertEqual(events,['install']);self.assertNotIn('input',run.call_args.kwargs);self.assertNotIn('stdin',run.call_args.kwargs)
-        self.assertIn('--real-footage',run.call_args.args[0]);self.assertEqual(run.call_args.args[0][1],str(self.fx.root/'publish_today_20261110.py'))
+        self.assertEqual(run.call_args.args[0],[sys.executable,str(self.fx.root/'publish_today_20261110.py'),str(self.fx.root),'--real-footage'])
+    def test_real_child_process_receives_upload_root_before_real_footage_flag(self):
+        # Exercise the actual launcher argv contract without opening a browser or claiming jobs.
+        driver=self.fx.root/'publish_today_20261110.py'
+        driver.write_text("import sys\nfrom pathlib import Path\nassert len(sys.argv)==3,sys.argv\nassert Path(sys.argv[1]).resolve()==Path(__file__).resolve().parent,sys.argv\nassert sys.argv[2]=='--real-footage',sys.argv\n",encoding='utf-8')
+        state=self.fx.state_path.read_bytes();config=upload.CONFIG.read_bytes()
+        with patch.object(start.sys,'platform','win32'),patch.object(start,'datetime',wraps=datetime) as clock,patch.object(start,'download',side_effect=[self.package(),b'def recover_locks(root):pass\n']),patch.object(start,'install'):
+            clock.now.return_value=datetime(2026,11,10,4,tzinfo=timezone.utc)
+            self.assertEqual(start.start(self.fx.root,True),0)
+        self.assertEqual(self.fx.state_path.read_bytes(),state);self.assertEqual(upload.CONFIG.read_bytes(),config)
     def test_wrong_date_refuses_before_downloading(self):
         with patch.object(start.sys,'platform','win32'),patch.object(start,'datetime',wraps=datetime) as clock,patch.object(start,'download') as download:
             clock.now.return_value=datetime(2026,11,2,4,tzinfo=timezone.utc)
