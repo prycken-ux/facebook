@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parent
 MANIFEST = 'additional_personal_accounts.json'
 SCHEMA = 'additional-personal-logins-v1'
 SHORTCUTS = '新增账号登录'
+RESERVATION_VERSION = '1.1-minimum-account-number'
 
 
 def number(account):
@@ -63,9 +64,11 @@ def occupied_numbers(config, registry, manifest):
     return result
 
 
-def reserve(count, batch_id):
+def reserve(count, batch_id, minimum_number=14):
     if type(count) is not int or count < 1:
         raise ValueError('新增数量必须是正整数。')
+    if type(minimum_number) is not int or minimum_number < 14:
+        raise ValueError('新增个人号起始编号必须是不小于14的整数。')
     if not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', batch_id):
         raise ValueError('新增批次编号格式无效。')
     config, registry, original = documents()
@@ -74,20 +77,21 @@ def reserve(count, batch_id):
     if batch is not None:
         accounts = batch.get('accounts', [])
         if (batch.get('count') != count or len(accounts) != count or len(set(accounts)) != count
-                or any(account not in manifest['slots'] or manifest['slots'][account].get('batch_id') != batch_id for account in accounts)):
+                or any(account not in manifest['slots'] or manifest['slots'][account].get('batch_id') != batch_id
+                       or number(account) < minimum_number for account in accounts)):
             raise ValueError('同一新增批次的数量或账号已变化，未另建账号。')
         for account in accounts:
             if manifest['slots'][account]['state'] == 'registered' and not (ROOT / 'profiles' / account).is_dir():
                 raise ValueError(account + ' 已登记但浏览器资料缺失，未创建空白资料代替。')
     else:
-        start = max(occupied_numbers(config, registry, manifest)) + 1
+        start = max(minimum_number, max(occupied_numbers(config, registry, manifest)) + 1)
         accounts = ['fb%02d' % i for i in range(start, start + count)]
         for account in accounts:
             for path in (ROOT / 'profiles' / account, ROOT / 'videos' / account,
                          ROOT / SHORTCUTS / (account + ' 登录.lnk')):
                 if path.exists():
                     raise ValueError('账号路径已存在，未接管：' + str(path))
-        manifest['batches'][batch_id] = dict(accounts=accounts, count=count,
+        manifest['batches'][batch_id] = dict(accounts=accounts, count=count, minimum_number=minimum_number,
             created=datetime.now().astimezone().isoformat())
         for account in accounts:
             manifest['slots'][account] = dict(state='pending', batch_id=batch_id, type='personal')
