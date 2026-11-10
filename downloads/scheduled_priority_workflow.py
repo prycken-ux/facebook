@@ -17,6 +17,7 @@ from add_fb_accounts import locked
 from diagnose_personal_identity import close_selected_window
 
 VERSION='1.0-frozen-priority-task'
+FRESH_FB24_VERSION='1.0-explicit-new-fb24-only'
 SETUP_DATE='2026-11-06'
 
 
@@ -33,7 +34,14 @@ def validate(path,value):
     priority.validate(path,value,value['payload']['date'])
     if (value.get('scheduled_priority_runner')!=VERSION or value.get('browser_launch_mode')!=normal.NORMAL_CHROME_VERSION
             or value.get('local_file_input_mode')!=local.VERSION):raise ValueError('计划不是普通Chrome本机文件优先发布流程')
-    if any(j['account'] in {'fb24','fb25','fb26'} for j in value['payload']['jobs']):raise ValueError('已删除账号不进入计划')
+    for job in value['payload']['jobs']:
+        if job['account'] in {'fb25','fb26'}:raise ValueError('已删除账号不进入计划')
+        if job['account']=='fb24':
+            registry=upload.read_json(upload.ROOT/'additional_personal_accounts.json',{})
+            batch_id='personal-20261110-one-fb24';slot=registry.get('slots',{}).get('fb24',{})
+            reservation=registry.get('batches',{}).get(batch_id,{})
+            if slot.get('batch_id')!=batch_id or reservation.get('accounts')!=['fb24'] or reservation.get('count')!=1:
+                raise ValueError('fb24不是用户这次指定并核验的新账号，未恢复旧账号')
 
 
 def task_xml(path,value):

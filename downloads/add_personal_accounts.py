@@ -17,6 +17,7 @@ MANIFEST = 'additional_personal_accounts.json'
 SCHEMA = 'additional-personal-logins-v1'
 SHORTCUTS = '新增账号登录'
 RESERVATION_VERSION = '1.1-minimum-account-number'
+EXACT_RESERVATION_VERSION = '1.0-unoccupied-exact-account'
 
 
 def number(account):
@@ -64,11 +65,13 @@ def occupied_numbers(config, registry, manifest):
     return result
 
 
-def reserve(count, batch_id, minimum_number=14):
+def reserve(count, batch_id, minimum_number=14, exact_account=None):
     if type(count) is not int or count < 1:
         raise ValueError('新增数量必须是正整数。')
     if type(minimum_number) is not int or minimum_number < 14:
         raise ValueError('新增个人号起始编号必须是不小于14的整数。')
+    if exact_account is not None and (count != 1 or not isinstance(exact_account,str) or exact_account != exact_account.lower() or number(exact_account) < minimum_number):
+        raise ValueError('指定编号仅用于预留一个合法的新个人号。')
     if not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', batch_id):
         raise ValueError('新增批次编号格式无效。')
     config, registry, original = documents()
@@ -77,6 +80,7 @@ def reserve(count, batch_id, minimum_number=14):
     if batch is not None:
         accounts = batch.get('accounts', [])
         if (batch.get('count') != count or len(accounts) != count or len(set(accounts)) != count
+                or (exact_account is not None and accounts != [exact_account])
                 or any(account not in manifest['slots'] or manifest['slots'][account].get('batch_id') != batch_id
                        or number(account) < minimum_number for account in accounts)):
             raise ValueError('同一新增批次的数量或账号已变化，未另建账号。')
@@ -84,7 +88,10 @@ def reserve(count, batch_id, minimum_number=14):
             if manifest['slots'][account]['state'] == 'registered' and not (ROOT / 'profiles' / account).is_dir():
                 raise ValueError(account + ' 已登记但浏览器资料缺失，未创建空白资料代替。')
     else:
-        start = max(minimum_number, max(occupied_numbers(config, registry, manifest)) + 1)
+        occupied=occupied_numbers(config, registry, manifest)
+        if exact_account is not None and number(exact_account) in occupied:
+            raise ValueError(exact_account+' 已有其他资料或登记，未覆盖或恢复旧账号。')
+        start = number(exact_account) if exact_account is not None else max(minimum_number, max(occupied) + 1)
         accounts = ['fb%02d' % i for i in range(start, start + count)]
         for account in accounts:
             for path in (ROOT / 'profiles' / account, ROOT / 'videos' / account,
