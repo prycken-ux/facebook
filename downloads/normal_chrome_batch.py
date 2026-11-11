@@ -9,6 +9,7 @@ import local_file_input as local_files
 
 NORMAL_CHROME_VERSION='1.0-batch-scoped-local-cdp'
 LOCAL_FILE_INPUT_COMPATIBILITY=local_files.VERSION
+BATCH_DATE_VERSION=local_files.BATCH_DATE_VERSION
 
 
 def endpoint(path):
@@ -87,7 +88,7 @@ def launch_normal(playwright,entry):
         raise
 
 
-def launcher_for_jobs(jobs):
+def launcher_for_jobs(jobs,date=None):
     owners={}
     for job in jobs:
         pair=job['account'],job['target'];owner=upload.target_key(job['url'])
@@ -98,7 +99,7 @@ def launcher_for_jobs(jobs):
         if pair not in owners or upload.target_key(entry.get('url',''))!=owners[pair]:
             raise ValueError('普通Chrome启动目标不属于今天原清单')
         context=launch_normal(playwright,entry)
-        try:local_files.authorize(context._context,entry,jobs)
+        try:local_files.authorize(context._context,entry,jobs,date=date)
         except BaseException:context.close();raise
         return context
     return launch

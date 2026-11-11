@@ -53,6 +53,12 @@ class NormalChromeTests(unittest.TestCase):
             with self.assertRaises(ValueError):launch(None,dict(self.entry,account='fb03'))
             with self.assertRaises(ValueError):launch(None,dict(self.entry,url='https://www.facebook.com/profile.php?id=9999'))
             self.assertEqual(native.call_count,1)
+    def test_launcher_passes_exact_frozen_batch_date_to_file_authorization(self):
+        jobs=[dict(self.entry,publication_content_sha256='a'*64)]
+        launch=normal.launcher_for_jobs(jobs,date='2026-11-11');wrapper=MagicMock()
+        with patch.object(normal,'launch_normal',return_value=wrapper),patch.object(normal.local_files,'authorize') as authorize:
+            self.assertIs(launch(None,self.entry),wrapper)
+        authorize.assert_called_once_with(wrapper._context,self.entry,jobs,date='2026-11-11')
 
 
 class RealLocalCdpTests(unittest.TestCase):

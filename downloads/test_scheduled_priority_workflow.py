@@ -48,7 +48,7 @@ class ScheduledPriorityTests(unittest.TestCase):
         with patch.object(runner.priority,'datetime',wraps=datetime) as clock,patch.object(runner.batch,'run',side_effect=lambda *a,**k:events.append('uploads')),patch.object(runner.retry,'run',side_effect=lambda *a,**k:events.append('retry')),patch.object(runner.daily,'backfill',side_effect=lambda *a,**k:events.append('comments')) as comments,patch.object(runner.local,'self_check') as selfcheck,patch.object(runner,'close_selected_window'),patch('playwright.sync_api.sync_playwright'),patch.object(runner.normal,'launcher_for_jobs',return_value=MagicMock()) as launch:
             clock.now.return_value=datetime(2026,11,6,9,1,tzinfo=timezone.utc)
             self.assertEqual(runner.run(path),3)
-        self.assertEqual(events,['uploads','retry','comments']);selfcheck.assert_called_once();launch.assert_called_once_with(value['payload']['jobs'])
+        self.assertEqual(events,['uploads','retry','comments']);selfcheck.assert_called_once();launch.assert_called_once_with(value['payload']['jobs'],date=value['payload']['date'])
         self.assertTrue(comments.call_args.kwargs['future_only']);self.assertIs(upload.launch_context,original);self.assertIs(runner.priority.prepare,original_prepare)
     def test_expired_worker_policy_changes_unconfirmed_and_active_setup_are_blocked(self):
         with self.assertRaises(ValueError):runner.setup(False)

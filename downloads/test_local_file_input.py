@@ -6,6 +6,7 @@ import fb_upload as upload
 import scheduled_material_batch as batch
 import normal_chrome_batch as normal
 import local_file_input as local
+import publication_preferences as preferences
 
 
 class LargeLocalFileTests(unittest.TestCase):
@@ -75,3 +76,24 @@ class LargeLocalFileTests(unittest.TestCase):
     def test_windows_startup_selfcheck_uses_both_paths_and_removes_temporary_fixture(self):
         self.authorize();local.self_check(self.context,self.job)
         self.assertFalse(list((self.root/'logs').glob('*.html')))
+    def test_new_content_revision_selfcheck_requires_and_uses_frozen_date(self):
+        (self.root/'logs').mkdir(exist_ok=True)
+        with patch.object(upload,'CONFIG',self.root/'upload_config.json'):
+            preferences.save_authorized(resume_from='2026-11-11');revision=preferences.save_content_authorized()
+            original=self.caption.read_bytes();self.caption.write_text(preferences.EVERYDAY_CAPTION)
+            job=dict(self.job,caption_text=preferences.EVERYDAY_CAPTION,caption_sha256=batch.file_hash(self.caption),publication_content_sha256=revision['sha256'])
+            try:
+                # Reproduce the missing-date failure at the old file-check boundary.
+                with self.assertRaises(TypeError):batch.validate_job(job)
+                with self.assertRaisesRegex(ValueError,'缺少冻结批次日期'):local.authorize(self.context,self.entry,[job])
+                local.authorize(self.context,self.entry,[job],date='2026-11-11')
+                local.self_check(self.context,job)
+                self.assertEqual(batch.file_hash(self.video),self.sha)
+                local.release(self.context)
+                local.authorize(self.context,self.entry,[job],date='2026-11-10')
+                with self.assertRaises(ValueError):self.page.locator('input').set_input_files(str(self.video))
+                self.assertEqual(self.page.locator('input').evaluate('e=>e.files.length'),0)
+            finally:
+                local.release(self.context);self.caption.write_bytes(original)
+                (self.root/'publication_preferences.json').unlink(missing_ok=True)
+                (self.root/'common_caption_today.txt').unlink(missing_ok=True)

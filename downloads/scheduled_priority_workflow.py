@@ -18,6 +18,7 @@ from diagnose_personal_identity import close_selected_window
 
 VERSION='1.0-frozen-priority-task'
 FRESH_FB24_VERSION='1.0-explicit-new-fb24-only'
+BATCH_DATE_VERSION=local.BATCH_DATE_VERSION
 SETUP_DATE='2026-11-06'
 
 
@@ -160,7 +161,7 @@ def run(path):
         pointer=upload.read_json(upload.ROOT/'logs'/('priority-batch-'+date+'.json'),{})
         if pointer!={'date':date,'manifest':path.name,'sha256':value['sha256']}:raise ValueError('原计划指针不一致')
     original_prepare=priority.prepare;original_launch=upload.launch_context
-    upload.launch_context=normal.launcher_for_jobs(value['payload']['jobs'])
+    upload.launch_context=normal.launcher_for_jobs(value['payload']['jobs'],date=date)
     def prepare(requested):
         if requested!=date or upload.read_json(path,{})!=value:raise ValueError('计划在运行期间发生变化')
         validate(path,value)

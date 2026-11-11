@@ -1,10 +1,12 @@
 """Set authorized local file paths through public CDP, without file-byte transfer."""
 import uuid
+from datetime import date as CalendarDate
 from pathlib import Path
 import fb_upload as upload
 import scheduled_material_batch as batch
 
 VERSION='1.0-verified-local-file-paths'
+BATCH_DATE_VERSION='1.0-frozen-batch-date-binding'
 _CONTEXTS={}
 _ORIGINALS={}
 
@@ -21,7 +23,7 @@ def _source(metadata,files):
     path=Path(values[0]).resolve();path.relative_to(upload.ROOT.resolve())
     matches=[j for j in metadata['jobs'] if (upload.ROOT/'videos'/j['account']/j['target']/'inbox'/j['filename']).resolve()==path]
     if len(matches)!=1:raise ValueError('文件路径不属于当前账号的原视频清单')
-    job=matches[0];entry=batch.validate_job(job)
+    job=matches[0];entry=batch.validate_job(job,date=metadata.get('date'))
     if (entry['account'],entry['target'])!=metadata['pair'] or upload.target_key(entry['url'])!=metadata['owner']:
         raise ValueError('文件原任务与浏览器身份目标不一致')
     if path.stat().st_size!=job.get('video_size',path.stat().st_size):raise ValueError('原视频大小发生变化')
@@ -76,15 +78,20 @@ def _chooser(self,files,**kwargs):
     return _set(self.element,files)
 
 
-def authorize(context,entry,jobs):
+def authorize(context,entry,jobs,date=None):
     from playwright.sync_api import Locator,ElementHandle,FileChooser
     pair=entry['account'],entry['target'];owner=upload.target_key(entry['url'])
     selected=[j for j in jobs if (j['account'],j['target'])==pair and upload.target_key(j['url'])==owner]
     if not selected:raise ValueError('本机文件选择没有绑定本批原目标')
+    if date is not None:
+        if not isinstance(date,str):raise ValueError('本机文件选择的冻结批次日期必须是文字')
+        CalendarDate.fromisoformat(date)
+    elif any('publication_content_sha256' in job for job in selected):
+        raise ValueError('本机文件选择缺少冻结批次日期，未跳过正文版本校验')
     if not _CONTEXTS:
         _ORIGINALS.update(locator=Locator.set_input_files,element=ElementHandle.set_input_files,chooser=FileChooser.set_files)
         Locator.set_input_files=_locator;ElementHandle.set_input_files=_element;FileChooser.set_files=_chooser
-    _CONTEXTS[id(context)]=dict(context=context,pair=pair,owner=owner,jobs=selected)
+    _CONTEXTS[id(context)]=dict(context=context,pair=pair,owner=owner,jobs=selected,date=date)
 
 
 def release(context):
