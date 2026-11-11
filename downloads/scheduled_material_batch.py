@@ -29,6 +29,7 @@ RESUME_WORKFLOW_VERSION='1.0-preserve-attempted-jobs'
 NEW_PERSONAL_ACCOUNTS_VERSION='1.0-verified-onboarding'
 PUBLICATION_PREFERENCES_VERSION=preferences.VERSION
 ACCOUNT_RESUMPTION_VERSION=preferences.ACCOUNT_RESUMPTION_VERSION
+CONTENT_UPDATES_VERSION=preferences.CONTENT_UPDATES_VERSION
 ET.register_namespace('',NS)
 
 
@@ -100,6 +101,8 @@ def freeze(date,time_text,include_pages,comment,now,report_format="csv",exclude_
     state=upload.read_json(upload.ROOT/'logs/publish_state.json',{})
     previous=previous_plan_keys(date) if exclude_previous_plans else {}
     policy=preferences.load(date)
+    content=preferences.content_policy(date)
+    if content:comment=content['payload']['comment']
     entries=[e for e in config.get('targets',[]) if eligible(e,include_pages,date=date)]
     urls=Counter(upload.target_key(e['url']) for e in entries)
     pairs=Counter((e['account'],e['target']) for e in entries)
@@ -142,7 +145,7 @@ def freeze(date,time_text,include_pages,comment,now,report_format="csv",exclude_
                     caption=video.with_suffix('.txt')
                     caption.resolve().relative_to(folder.resolve())
                     text=caption.read_text(encoding='utf-8-sig',errors='replace' if policy else 'strict').strip() if caption.is_file() else ''
-                    exact=policy['payload']['caption'] if policy else None
+                    exact=content['payload']['caption'] if content else policy['payload']['caption'] if policy else None
                     if exact is not None and text!=exact:
                         backup.mkdir(parents=True,exist_ok=True)
                         if caption.exists():
@@ -157,6 +160,7 @@ def freeze(date,time_text,include_pages,comment,now,report_format="csv",exclude_
                         text=common
                     jobs.append(dict(account=pair[0],target=pair[1],filename=video.name,key=key,url=entry['url'],
                         entry_sha256=digest(entry),caption_text=text,caption_sha256=file_hash(caption),video_size=after.st_size))
+                    if content:jobs[-1]['publication_content_sha256']=content['sha256']
                     seen.add(key)
                 except Exception as error:
                     issues.append(dict(account=pair[0],target=pair[1],filename=video.name,reason=str(error)))
@@ -167,6 +171,7 @@ def freeze(date,time_text,include_pages,comment,now,report_format="csv",exclude_
         ai_label=False,include_fb10_pages=include_pages,excluded_accounts=sorted(excluded_accounts(date)),
         comment_text=comment,jobs=jobs)
     if policy:payload['publication_preferences_sha256']=policy['sha256']
+    if content:payload['publication_content_sha256']=content['sha256']
     checksum=digest(payload)
     path=upload.ROOT/'logs'/('frozen-material-'+date+'-'+checksum[:16]+'.json')
     manifest=dict(payload=payload,sha256=checksum,created_at=now.isoformat(),issues=issues,report_format=report_format)
@@ -231,9 +236,23 @@ $i=Get-ScheduledTaskInfo -TaskName $d.name
     return name
 
 
+def content_for_payload(payload):
+    revision=payload.get('publication_content_sha256')
+    if revision is None:
+        if any('publication_content_sha256' in j for j in payload.get('jobs',[])):raise ValueError('冻结批次缺少正文评论版本')
+        return None
+    content=preferences.content_policy(payload['date'],revision)
+    if (payload.get('comment_text')!=content['payload']['comment'] or any(
+            j.get('publication_content_sha256')!=revision or j.get('caption_text')!=content['payload']['caption'] for j in payload.get('jobs',[]))):
+        raise ValueError('冻结正文或评论与本批版本不一致')
+    return content
+
+
 def validate_job(job,date=None):
     policy=preferences.load(date) if date else None
-    if policy and (job['account'] in excluded_accounts(date) or job['caption_text']!=policy['payload']['caption']):raise ValueError('原任务不符合当前跳过账号或统一正文规则')
+    content=preferences.content_policy(date,job['publication_content_sha256']) if 'publication_content_sha256' in job else None
+    exact=content['payload']['caption'] if content else policy['payload']['caption'] if policy else None
+    if (policy and job['account'] in excluded_accounts(date)) or (exact is not None and job['caption_text']!=exact):raise ValueError('原任务不符合当前跳过账号或统一正文规则')
     config=upload.read_json(upload.CONFIG,{})
     entries=[e for e in config.get('targets',[]) if (e.get('account'),e.get('target'))==(job['account'],job['target'])]
     if len(entries)!=1 or digest(entries[0])!=job['entry_sha256']:raise ValueError('目标配置已变化，未替换目标')
@@ -329,6 +348,7 @@ def run(path,output_dir=None,before_job=None,defer_comments=False,retry_before_p
     manifest=upload.read_json(path,{})
     payload=manifest.get('payload',{})
     if payload.get('schema')!=SCHEMA or digest(payload)!=manifest.get('sha256'):raise ValueError('冻结计划校验失败')
+    content_for_payload(payload)
     now=datetime.now(timezone.utc)
     if now.astimezone(BJ).date().isoformat()!=payload['date']:raise ValueError('已不是本批授权日期，不补跑过期计划')
     if now<datetime.fromisoformat(payload['start']):raise ValueError('尚未到指定开始时间，不提前发布')

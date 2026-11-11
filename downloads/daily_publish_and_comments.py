@@ -23,6 +23,7 @@ from published_video_lookup import find_published
 OLD_DATE='2026-10-29'
 TODAY='2026-10-30'
 COMMENT='Get your own copy:\nhttps://www.amazon.com/s?maas=maas_adg_B87EF70D0CB3092D4D7277407B28F038_afap_abs&ref_=aa_maas&tag=maas&me=AEFRCMPTGXRXD&marketplaceID=ATVPDKIKX0DER'
+CONTENT_UPDATES_VERSION='1.0-frozen-caption-and-comment'
 EXCLUDED={'fb16','fb18','fb21'}
 EXPECTED_PAIRS={(f'fb{n:02}','page01') for n in (1,2,5,6,12,13)} | {
     (f'fb{n:02}','personal') for n in (3,4,7,8,9,10,11,14,15,17,19,20,22,23)} | {
@@ -134,6 +135,8 @@ def write_backfill_report(manifest,rows,output_dir):
 def backfill(manifest,output_dir,links_path=None,only_keys=None,rows=None,already_locked=False,future_only=False,reporter=None):
     from playwright.sync_api import sync_playwright
     jobs=manifest['payload']['jobs'];links=manual_links(links_path,jobs)
+    content=batch.content_for_payload(manifest['payload']) if future_only else None
+    text=content['payload']['comment'] if content else COMMENT
     state_path=upload.ROOT/'logs/publish_state.json';rows=[] if rows is None else rows
     start=datetime.fromisoformat(manifest['payload']['date']+'T00:00:00+08:00').timestamp()
     # Each job keeps the first confirmation cutoff, before any video from today's new batch.
@@ -156,7 +159,7 @@ def backfill(manifest,output_dir,links_path=None,only_keys=None,rows=None,alread
                 if record.get('comment_status') in {'sent','already_present','sending','verifying','needs_review'}:
                     result.update(status=record['comment_status'],permalink=record.get('permalink',''),error=record.get('comment_error',''))
                     continue
-                comment_key=comments.hashlib.sha256((job['key']+'\0'+comments.text_hash(COMMENT)).encode()).hexdigest()
+                comment_key=comments.hashlib.sha256((job['key']+'\0'+comments.text_hash(text)).encode()).hexdigest()
                 existing=upload.read_json(upload.ROOT/'logs/video_comments.json',{}).get(comment_key,{})
                 if existing.get('status') in {'sent','already_present','sending','verifying','needs_review'}:
                     result.update(status=existing['status'],permalink=existing.get('permalink',''),error=existing.get('error',''))
@@ -183,8 +186,8 @@ def backfill(manifest,output_dir,links_path=None,only_keys=None,rows=None,alread
                                 diagnostic_path=upload.ROOT/'logs'/('comment-'+job['key'][:12]+'-lookup.json'))
                             record.update(permalink=verified[0],comment_link_job_key=job['key'],comment_link_method=verified[1])
                             upload.save_json(state_path,state)
-                        value=comments.after_publication(page,context,entry,proof,job['key'],record,COMMENT,None,verified_link=verified,require_reload_verification=future_only)
-                        if future_only:value=comments.verify_after_reload(page,entry,proof,job['key'],COMMENT,value)
+                        value=comments.after_publication(page,context,entry,proof,job['key'],record,text,None,verified_link=verified,require_reload_verification=future_only)
+                        if future_only:value=comments.verify_after_reload(page,entry,proof,job['key'],text,value)
                         record.update(comment_status=value['status'],comment_error=value.get('error',''))
                         upload.save_json(state_path,state)
                         result.update(status=value['status'],permalink=value.get('permalink',''),error=value.get('error',''))

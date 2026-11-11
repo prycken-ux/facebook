@@ -1,0 +1,11 @@
+User-approved future content update, effective for newly frozen batches from November 11, 2026 (Beijing).
+
+The new caption starts with Everyday moments can offer a new perspective and ends with #EverydayMoments #NewPerspectives #Prycken. The new comment retains the exact original Amazon URL and adds the user-supplied literal line Shop on Shopfy https://prycken.com/. The user spelling Shopfy is preserved. No external publication or comment is triggered by configuration installation.
+
+New checksummed content revisions are appended to publication_preferences.json without changing its original base policy or dated account-resumption fingerprint. New jobs and their batch payload are bound to the same explicit revision; the exact caption and comment are verified against it before publication. The historical daily.COMMENT and base caption remain the fallback for previously frozen jobs, including same-day sources created before this update. Existing same-day pointers are resumed without replacing their copy or adding new files.
+
+Only new, unrecorded material receives the revised caption sidecar at freeze time. Historical records, media, captions, retry claims, Page configuration, Chrome profiles, and comment-intent ledgers are preserved. Comment sending and reload verification use the batch-bound comment; ledger hashing uses that same text. Existing sent or unresolved send intents still block repeat sends.
+
+Installer scope: four Python workflow modules plus the two existing preference/common-caption files, all backed up under the original worker locks; changes are rolled back on failed fresh-process verification. No AI decision, video job, scheduled task, or historical success confirmation is created. The four accounts resumed November 11 and the ten fb09 Page registrations remain unchanged.
+
+Validation: 99 tests passed across new content defaults, fresh-process installer and rollback, publication preferences, dated account resumption, first-pass/retry/comment workflow, historical and same-day frozen-source resumption, material freezing, comment intent protection, exact reload-verified comment text, Page registration and the prior direct launcher. Local tests do not claim live Windows/Facebook execution.
