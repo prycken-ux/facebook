@@ -30,6 +30,7 @@ NEW_PERSONAL_ACCOUNTS_VERSION='1.0-verified-onboarding'
 PUBLICATION_PREFERENCES_VERSION=preferences.VERSION
 ACCOUNT_RESUMPTION_VERSION=preferences.ACCOUNT_RESUMPTION_VERSION
 CONTENT_UPDATES_VERSION=preferences.CONTENT_UPDATES_VERSION
+COMMENT_RETRY_POLICY='1.0-scoped-retry-readonly-reconcile'
 ET.register_namespace('',NS)
 
 
@@ -172,6 +173,7 @@ def freeze(date,time_text,include_pages,comment,now,report_format="csv",exclude_
         comment_text=comment,jobs=jobs)
     if policy:payload['publication_preferences_sha256']=policy['sha256']
     if content:payload['publication_content_sha256']=content['sha256']
+    if date>='2026-11-11':payload['comment_retry_policy']=COMMENT_RETRY_POLICY
     checksum=digest(payload)
     path=upload.ROOT/'logs'/('frozen-material-'+date+'-'+checksum[:16]+'.json')
     manifest=dict(payload=payload,sha256=checksum,created_at=now.isoformat(),issues=issues,report_format=report_format)

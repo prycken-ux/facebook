@@ -8,17 +8,20 @@ import daily_publish_and_comments as daily
 import automatic_batch_retry as retry
 import actual_reels_comment_lookup as actual
 import safe_video_comments as comments
+import automatic_comment_retry as comment_retry
 from add_fb_accounts import locked
 
 PRIORITY_WORKFLOW_VERSION='1.0-publish-retry-comments'
 TIMING='after-video-pass-and-retry-v1'
 CONTENT_UPDATES_VERSION=batch.CONTENT_UPDATES_VERSION
+COMMENT_RECOVERY_VERSION='1.0-scoped-retry-readonly-reconcile'
 
 
 def validate(path,value,date):
     payload=value.get('payload',{});checksum=batch.digest(payload);jobs=payload.get('jobs',[])
     content=batch.content_for_payload(payload)
     expected_comment=content['payload']['comment'] if content else daily.COMMENT
+    if payload.get('comment_retry_policy') not in {None,COMMENT_RECOVERY_VERSION}:raise ValueError('本批补评规则不匹配')
     if (value.get('sha256')!=checksum or payload.get('schema')!=batch.SCHEMA or payload.get('date')!=date
             or not re.fullmatch('frozen-material-'+re.escape(date)+'-'+checksum[:16]+r'\.json',path.name)
             or value.get('workflow')!='future-video-comments-v1' or value.get('auto_retry_policy')!=retry.POLICY
@@ -99,6 +102,12 @@ def execute(date,real_footage):
             daily.find_published=original
             prior=upload.read_json(path.with_name(path.stem+'-results.json'),{})
             batch.results(path,value,prior.get('attempts',[]),None,final=True)
+        if value['payload'].get('comment_retry_policy')==COMMENT_RECOVERY_VERSION:
+            print('阶段4：补评未提交的失败评论；已提交但结果待核实的只刷新核验，不重复发送。',flush=True)
+            try:comment_retry.run(path,reporter=lambda manifest,rows,output_dir:comment_report(path,value,rows))
+            finally:
+                prior=upload.read_json(path.with_name(path.stem+'-results.json'),{})
+                batch.results(path,value,prior.get('attempts',[]),None,final=True)
     state=upload.read_json(upload.ROOT/'logs/publish_state.json',{})
     successes=sum(state.get(j['key'],{}).get('status')=='published' for j in value['payload']['jobs'])
     print('视频发布成功：',successes,'/',len(value['payload']['jobs']),'；评论失败不改变视频成功状态。',flush=True)

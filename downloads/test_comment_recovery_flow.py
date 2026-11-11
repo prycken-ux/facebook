@@ -9,6 +9,7 @@ import fb_upload as upload
 import daily_publish_and_comments as daily
 import safe_video_comments as comments
 import repair_oct31_published_comments as repair
+import publication_preferences as preferences
 
 class CommentRecoveryFlowTests(unittest.TestCase):
     @classmethod
@@ -43,10 +44,10 @@ class CommentRecoveryFlowTests(unittest.TestCase):
             card='<article role=article><h2><a href="'+self.entry['url']+'">Example Page</a></h2><a href="/reel/9001"><time datetime="2026-11-02T07:12:00Z">2h</time></a><div data-ad-preview="message">'+self.job['caption_text']+'</div><a href="/reel/9001">Watch reel</a></article>'
             body='<main><article role=article><div role=status>Loading...</div></article></main><script>setTimeout(()=>document.querySelector("main").innerHTML='+json.dumps(card)+',120)</script>'
         r.fulfill(content_type='text/html',body=body)
-    def run_comments(self):
+    def run_comments(self,reconcile_pending=False):
         original=comments.verify_after_reload
         with patch('playwright.sync_api.sync_playwright'),patch.object(upload,'launch_context',return_value=self.context),patch.object(comments,'verify_after_reload',side_effect=lambda *a,**k:original(*a,**dict(k,timeout_ms=250))):
-            return daily.backfill(self.manifest,None,future_only=True,reporter=lambda *a:None)
+            return daily.backfill(self.manifest,None,future_only=True,reconcile_pending=reconcile_pending,reporter=lambda *a:None)
     def test_no_saved_link_loading_posts_real_lookup_send_and_refresh_are_one_pipeline(self):
         rows=self.run_comments();self.assertEqual(rows[0]['status'],'sent');self.assertEqual(self.saved,[daily.COMMENT]);self.assertEqual(self.sends,1)
         state=upload.read_json(self.state_path,{})['a'*64];self.assertEqual(state['status'],'published');self.assertEqual(state['permalink'],'https://www.facebook.com/reel/9001');self.assertEqual(state['comment_link_job_key'],'a'*64)
@@ -58,6 +59,21 @@ class CommentRecoveryFlowTests(unittest.TestCase):
         with patch.object(upload,'launch_context',side_effect=AssertionError('must not resend')):
             self.assertEqual(daily.backfill(self.manifest,None,future_only=True,reporter=lambda *a:None)[0]['status'],'needs_review')
         self.assertEqual(self.sends,1)
+    def test_two_link_comment_sends_once_and_survives_real_reload(self):
+        preferences.save_authorized(resume_from='2026-11-11');content=preferences.save_content_authorized()
+        self.manifest['payload'].update(date='2026-11-11',comment_text=preferences.EVERYDAY_COMMENT,publication_content_sha256=content['sha256'])
+        self.job.update(caption_text=preferences.EVERYDAY_CAPTION,publication_content_sha256=content['sha256'])
+        self.state['a'*64].update(created='2026-11-11T07:10:00+00:00',published_at='2026-11-11T07:13:00+00:00',permalink='https://www.facebook.com/reel/9001',comment_link_job_key='a'*64)
+        upload.save_json(self.state_path,self.state)
+        self.assertEqual(self.run_comments()[0]['status'],'sent');self.assertEqual(self.saved,[preferences.EVERYDAY_COMMENT]);self.assertEqual(self.sends,1)
+    def test_later_readonly_reconciliation_finds_pending_comment_without_second_send(self):
+        self.assertEqual(self.run_comments()[0]['status'],'sent')
+        state=upload.read_json(self.state_path,{});state['a'*64]['comment_status']='needs_review';upload.save_json(self.state_path,state)
+        path=self.root/'logs/video_comments.json';ledger=upload.read_json(path,{})
+        for item in ledger.values():item['status']='needs_review'
+        upload.save_json(path,ledger)
+        self.context=self.browser.new_context();self.context.expose_function('persistComment',self.save);self.context.route('https://www.facebook.com/**',self.route);self.context.new_page()
+        self.assertEqual(self.run_comments(reconcile_pending=True)[0]['status'],'sent');self.assertEqual(self.sends,1)
     def test_repair_gate_stops_batch_after_an_unknown_first_comment_without_uploading(self):
         def pretend(value,*a,**k):k['rows'].append(dict(self.job,status='needs_review',error='unknown'))
         with patch.object(repair,'source_manifest',return_value=self.manifest),patch.object(repair.daily,'backfill',side_effect=pretend) as send,patch.object(repair,'datetime',wraps=datetime) as clock:

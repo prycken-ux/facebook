@@ -153,6 +153,40 @@ class ConfirmedDailyTests(unittest.TestCase):
         path.write_text(path.read_text().replace(job['account'],'fb99'))
         with self.assertRaises(ValueError):daily.manual_links(path,self.jobs)
 
+    def pending_comment(self):
+        job=self.jobs[0];self.state[job['key']].update(status='published',comment_status='needs_review',permalink='https://www.facebook.com/reel/9001')
+        upload.save_json(self.state_path,self.state)
+        key=comments.hashlib.sha256((job['key']+'\0'+comments.text_hash(daily.COMMENT)).encode()).hexdigest()
+        item=dict(status='needs_review',permalink='https://www.facebook.com/reel/9001',video_job=job['key'],account=job['account'],target=job['target'],text_sha256=comments.text_hash(daily.COMMENT))
+        upload.save_json(self.root/'logs/video_comments.json',{key:item})
+        return job,item
+
+    def test_recovery_mode_only_verifies_pending_comment_and_never_sends_again(self):
+        job,item=self.pending_comment();browser=MagicMock();browser.pages=[MagicMock()]
+        with patch('playwright.sync_api.sync_playwright'),patch.object(upload,'launch_context',return_value=browser),patch.object(upload,'ensure_identity',return_value={}),patch.object(daily,'close_selected_window'),patch.object(comments,'after_publication',side_effect=AssertionError('unknown send must only be verified')),patch.object(comments,'verify_after_reload',return_value=dict(item,status='sent')) as verify:
+            rows=daily.backfill(self.manifest,None,only_keys={job['key']},future_only=True,reconcile_pending=True)
+        self.assertEqual(rows[0]['status'],'sent');self.assertTrue(verify.call_args.kwargs['reconcile_pending'])
+        self.assertEqual(upload.read_json(self.state_path,{})[job['key']]['status'],'published')
+
+    def test_recovery_missing_pending_receipt_does_not_open_browser(self):
+        job,item=self.pending_comment();(self.root/'logs/video_comments.json').write_text('{}')
+        with patch.object(daily,'close_selected_window') as close:
+            rows=daily.backfill(self.manifest,None,only_keys={job['key']},future_only=True,reconcile_pending=True)
+        close.assert_not_called();self.assertEqual(rows[0]['status'],'needs_review')
+
+    def test_pending_network_error_preserves_unknown_send_status_and_ledger(self):
+        job,item=self.pending_comment();before=(self.root/'logs/video_comments.json').read_bytes();browser=MagicMock();page=MagicMock();browser.pages=[page];page.goto.side_effect=RuntimeError('net::ERR_CONNECTION_CLOSED')
+        with patch('playwright.sync_api.sync_playwright'),patch.object(upload,'launch_context',return_value=browser),patch.object(daily,'close_selected_window'),patch.object(comments,'capture_failure'),patch.object(comments,'after_publication',side_effect=AssertionError('must not resend')):
+            rows=daily.backfill(self.manifest,None,only_keys={job['key']},future_only=True,reconcile_pending=True)
+        self.assertEqual(rows[0]['status'],'needs_review');self.assertEqual((self.root/'logs/video_comments.json').read_bytes(),before)
+        self.assertEqual(upload.read_json(self.state_path,{})[job['key']]['comment_status'],'needs_review')
+
+    def test_conflicting_pending_video_link_does_not_open_or_send(self):
+        job,item=self.pending_comment();self.state[job['key']]['permalink']='https://www.facebook.com/reel/9002';upload.save_json(self.state_path,self.state)
+        with patch.object(daily,'close_selected_window') as close:
+            rows=daily.backfill(self.manifest,None,only_keys={job['key']},future_only=True,reconcile_pending=True)
+        close.assert_not_called();self.assertEqual(rows[0]['status'],'needs_review')
+
 
 class TodayFirstOrderTests(unittest.TestCase):
     def test_all_today_uploads_run_before_today_comments_and_yesterday_is_not_loaded(self):

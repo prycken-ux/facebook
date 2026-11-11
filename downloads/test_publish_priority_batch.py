@@ -45,7 +45,7 @@ class PriorityBatchTests(unittest.TestCase):
             events.append('comments')
             self.assertEqual(events,['uploads','retry','comments'])
             self.assertTrue(kwargs['future_only'])
-        with patch.object(priority,'prepare',return_value=(path,value)),patch.object(batch,'run',side_effect=finish) as run,patch.object(priority.retry,'run',side_effect=lambda *a:events.append('retry')),patch.object(priority.daily,'backfill',side_effect=comments),patch.object(batch,'results',return_value=[]),patch.object(priority.actual,'make_finder',return_value=object()):
+        with patch.object(priority,'prepare',return_value=(path,value)),patch.object(batch,'run',side_effect=finish) as run,patch.object(priority.retry,'run',side_effect=lambda *a:events.append('retry')),patch.object(priority.daily,'backfill',side_effect=comments),patch.object(priority.comment_retry,'run',side_effect=lambda *a,**k:events.append('comment-retry')),patch.object(batch,'results',return_value=[]),patch.object(priority.actual,'make_finder',return_value=object()):
             self.assertEqual(priority.execute('2026-10-29',True),3)
         self.assertEqual(events,['uploads','retry','comments'])
         self.assertEqual(run.call_args.kwargs,dict(defer_comments=True,resume=True))

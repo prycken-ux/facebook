@@ -169,6 +169,48 @@ class VideoCommentTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):self.send()
         self.assertEqual(self.page.evaluate('window.sent'),1)
 
+    def test_two_link_comment_text_blocks_match_across_rendered_urls(self):
+        self.text+='\nShop on Shopfy https://prycken.com/'
+        self.assertEqual(self.send()['status'],'sent');self.assertEqual(self.page.evaluate('window.sent'),1)
+        self.assertEqual(len(comments.scan_comments(self.page,self.entry,self.text)),1)
+        self.page.get_by_role('article').locator('span').evaluate("e=>e.textContent=e.textContent.replace('https://prycken.com/','https://other.example/')")
+        self.assertEqual(comments.scan_comments(self.page,self.entry,self.text),[])
+
+    def test_exact_reel_and_owner_scope_ignores_other_reels_comment_toolbar(self):
+        self.page.locator('#compose').evaluate('e=>e.hidden=true')
+        self.page.evaluate("""()=>{
+          for(const id of ['9001','9002']){
+            const a=document.createElement('article');a.innerHTML='<video></video><a href="/profile.php?id=1001">Example Page</a><a href="/reel/'+id+'">Watch reel</a>';
+            const b=document.createElement('button');b.textContent='Comments';
+            b.onclick=()=>{if(id==='9001')document.querySelector('#compose').hidden=false;else window.wrongReel=true};a.append(b);document.querySelector('main').append(a);
+          }
+        }""")
+        self.assertEqual(self.send()['status'],'sent');self.assertIsNone(self.page.evaluate('window.wrongReel'));self.assertEqual(self.page.evaluate('window.sent'),1)
+
+    def test_reply_box_is_filtered_before_counting_top_level_composers(self):
+        self.page.evaluate("document.body.insertAdjacentHTML('beforeend','<div role=article aria-label=\"Comment by Viewer\"><textarea aria-label=\"Write a comment...\"></textarea></div>')")
+        self.assertEqual(self.send()['status'],'sent');self.assertEqual(self.page.locator('textarea').input_value(),'')
+
+    def test_scope_still_refuses_two_unproven_comment_toolbars(self):
+        self.page.locator('#compose').evaluate('e=>e.hidden=true')
+        self.page.evaluate("document.body.insertAdjacentHTML('beforeend','<button onclick=\"window.bad=true\">Comments</button><button onclick=\"window.bad=true\">Comments</button>')")
+        self.assertEqual(self.send()['status'],'manual_required');self.assertIsNone(self.page.evaluate('window.bad'))
+
+    def test_pending_comment_is_reconciled_after_reload_without_second_send(self):
+        item=self.send();self.html=self.page.content()
+        key=comments.hashlib.sha256((self.key+'\0'+comments.text_hash(self.text)).encode()).hexdigest()
+        ledger=upload.read_json(self.root/'logs/video_comments.json',{});ledger[key]['status']='needs_review';upload.save_json(self.root/'logs/video_comments.json',ledger)
+        with patch.object(comments,'send_control',side_effect=AssertionError('read only reconciliation must not send')):
+            result=comments.verify_after_reload(self.page,self.entry,{},self.key,self.text,ledger[key],timeout_ms=100,reconcile_pending=True)
+        self.assertEqual(result['status'],'sent');self.assertEqual(result['verification'],'own_comment_seen_after_reload')
+
+    def test_missing_pending_comment_stays_unresolved_without_resending(self):
+        self.send();key=comments.hashlib.sha256((self.key+'\0'+comments.text_hash(self.text)).encode()).hexdigest()
+        ledger=upload.read_json(self.root/'logs/video_comments.json',{});ledger[key]['status']='sending';upload.save_json(self.root/'logs/video_comments.json',ledger)
+        with patch.object(comments,'send_control',side_effect=AssertionError('must not resend an unknown submission')):
+            result=comments.verify_after_reload(self.page,self.entry,{},self.key,self.text,ledger[key],timeout_ms=100,reconcile_pending=True)
+        self.assertEqual(result['status'],'needs_review');self.assertEqual(self.page.locator('#field').inner_text(),'')
+
 
 class PublicVideoLinkTests(unittest.TestCase):
     def test_only_new_published_owned_video_with_exact_caption_can_supply_link(self):

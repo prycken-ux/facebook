@@ -1,0 +1,15 @@
+Future-only comment retry and conservative verification, authorized November 11, 2026. The user explicitly declined historical comment backfill. Installation changes workflow/defaults only: it starts no publication, comment, historical reconciliation, or scheduled task.
+
+Observed Nov-10 final log: 29 video jobs, 16 program-confirmed publications, 14 comments sent, two pre-send failures reporting non-unique comment expansion controls (fb09/personal and fb10/page04). Thirteen video outcomes remain needs_review and were not sent comments, so 14/29 is different from 14/16 among program-confirmed publications. Their actual live result cannot be inferred from the log.
+
+Improvements:
+- When duplicate comment controls/composers exist, narrow only to a unique DOM article/dialog backed by the current exact Reel URL and expected author profile link. Remove reply/form/background-modal candidates. Ambiguous controls remain blocked.
+- For comments with multiple URLs and text blocks, match the non-URL blocks in order and verify each exact merchant URL separately. This fixes false negatives introduced by concatenating text on opposite sides of a rendered URL; author proof and affiliate URL checks remain.
+- Newly frozen batches carry an explicit checksummed comment_retry_policy. Previously frozen sources lack it and never enter the new retry phase.
+- After video publication, the existing one safe video retry, and the first comment pass, retry known pre-send failures once. Reserve an immutable attempt claim by video key plus exact comment hash before opening the browser. Confirmed comment receipts are skipped. Platform/security/login failures are left for review.
+- Previously submitted but unresolved comments only navigate and verify the stored exact video/comment after reload. They cannot fill a composer, click Send, or reset a send intent. Missing/conflicting receipt evidence remains unresolved. Read-only reconciliation also verifies account, target, job and text hash.
+- Video success is preserved when comments fail. Unknown video outcomes are not silently marked successful or reuploaded.
+
+The approved everyday caption and Amazon-plus-Shopfy comment remain the defaults for new batches. Frozen sources keep their original texts. fb09 Pages, original personal targets, account resumption rules, Chrome profiles, publication history, existing comment intents, and video retry claims are preserved. Installer writes only six workflow modules and the existing preference/common-caption defaults with backups and rollback under the original worker locks.
+
+Verification completed: 65 browser/comment tests (including wrong-target rejection, dual-link matching, no duplicate submission, and read-only pending checks); 82 workflow/preferences/retry/installer tests; 31 real browser recovery/immediate-comment/material tests. Includes a persistent two-link comment surviving real browser reload and a pending comment reconciled with no second submission. These are local fixtures and do not claim live Facebook execution.

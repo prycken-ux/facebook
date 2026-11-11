@@ -9,6 +9,7 @@ from urllib.parse import urlparse,parse_qs,urljoin
 import fb_upload as upload
 
 COMMENT_WORKFLOW_VERSION = "1.4-exact-post-lookup"
+COMMENT_RECOVERY_VERSION = '1.0-scoped-retry-readonly-reconcile'
 
 
 def text_hash(text):
@@ -194,8 +195,11 @@ COMMENT_SCAN_JS=r'''({name,text,urls,owner}) => {
    const copy=node.cloneNode(true);
    for(const e of copy.querySelectorAll('[contenteditable],textarea,[role="textbox"],[role="article"]'))e.remove();
    const body=norm(copy.textContent);
-   const plain=norm(text.replace(/https:\/\/[^\s]+/g,''));
-   if(!body.includes(plain))continue;
+   // Separate text blocks may have a rendered link between them. Require
+   // each block in order, then independently verify every exact outgoing URL.
+   const parts=text.split(/https:\/\/[^\s]+/g).map(norm).filter(Boolean);
+   let offset=0;const missing=parts.some(part=>{const i=body.indexOf(part,offset);if(i<0)return true;offset=i+part.length;return false});
+   if(missing)continue;
    const anchors=[...copy.querySelectorAll('a[href]')];
    const author=anchors.some(a=>norm(a.textContent)===norm(name) && identity(a.getAttribute('href'))===identity(owner));
    if(!author)continue;
@@ -215,15 +219,19 @@ def scan_comments(page,entry,text):
     return found if isinstance(found,list) else []
 
 
-def verify_after_reload(page,entry,proof,key,text,item,timeout_ms=30000):
+def verify_after_reload(page,entry,proof,key,text,item,timeout_ms=30000,reconcile_pending=False):
     """Verify only the just-attempted comment; never resend or reconcile old receipts."""
-    if item.get('status') not in {'verifying','already_present'}:return item
+    allowed={'verifying','already_present'}|({'sending','needs_review'} if reconcile_pending else set())
+    if item.get('status') not in allowed:return item
     ledger_path=upload.ROOT/'logs/video_comments.json'
     comment_key=hashlib.sha256((key+'\0'+text_hash(text)).encode()).hexdigest()
     ledger=upload.read_json(ledger_path,{})
     current=ledger.get(comment_key)
     if not current or current.get('status')!=item['status'] or current.get('permalink')!=item.get('permalink'):
         raise RuntimeError('本次评论核验记录不一致，未修改其他记录')
+    if reconcile_pending and (current.get('video_job')!=key or current.get('text_sha256')!=text_hash(text)
+            or (current.get('account'),current.get('target'))!=(entry['account'],entry['target'])):
+        raise RuntimeError('待核实评论缺少确切账号、任务或文案证据，未重复发送')
     try:
         link=direct_link(item['permalink'])
         if not link:raise ValueError('本次评论链接无效')
@@ -237,7 +245,7 @@ def verify_after_reload(page,entry,proof,key,text,item,timeout_ms=30000):
             if scan_comments(page,entry,text):break
             if time.monotonic()>=deadline:raise ValueError('刷新后未看到本人规定评论，未重复发送')
             if not expanded:
-                try:ready_comment_field(page,timeout_ms=min(5000,max(1,int((deadline-time.monotonic())*1000))))
+                try:ready_comment_field(page,timeout_ms=min(5000,max(1,int((deadline-time.monotonic())*1000))),entry=entry)
                 except CommentComposerMissing:pass
                 expanded=True
             page.wait_for_timeout(250)
@@ -254,28 +262,57 @@ def verify_after_reload(page,entry,proof,key,text,item,timeout_ms=30000):
 class CommentComposerMissing(RuntimeError):pass
 
 
-def comment_field(page):
+def mark_exact_reel_scope(page,entry):
+    """Narrow duplicates only with the current Reel ID and exact author link."""
+    link=direct_link(page.url)
+    if not link or not entry:return False
+    owners=[entry['url']]
+    if entry.get('type')=='personal':
+        owners.extend('https://www.facebook.com/profile.php?id='+c['value'] for c in page.context.cookies(['https://www.facebook.com/']) if c.get('name')=='c_user' and str(c.get('value','')).isdecimal())
+    return page.evaluate(r'''({link,owners})=>{
+      for(const e of document.querySelectorAll('[data-local-exact-reel-scope]'))e.removeAttribute('data-local-exact-reel-scope');
+      const identity=value=>{try{const u=new URL(value,location.href);if(!['www.facebook.com','facebook.com'].includes(u.hostname))return null;
+        return u.pathname==='/profile.php'?'id:'+u.searchParams.get('id'):'path:'+u.pathname.replace(/\/$/,'').toLowerCase()}catch{return null}};
+      const reel=value=>{try{const u=new URL(value,location.href);if(!['www.facebook.com','facebook.com'].includes(u.hostname))return null;
+        const m=u.pathname.match(/^\/reels?\/(\d+)\/?$/);return m?'https://www.facebook.com/reel/'+m[1]:null}catch{return null}};
+      const known=owners.map(identity);const modals=[...document.querySelectorAll('[role=dialog],[role=alertdialog],dialog')].filter(e=>e.getClientRects().length);
+      const candidates=[...document.querySelectorAll('article,[role=article],[role=dialog],dialog')].filter(e=>{
+        if(!e.getClientRects().length||!e.querySelector('video')||!modals.every(d=>d.contains(e)))return false;
+        const anchors=[...e.querySelectorAll('a[href]')];
+        return anchors.some(a=>reel(a.href)===link)&&anchors.some(a=>known.includes(identity(a.href)));
+      });
+      const smallest=candidates.filter(e=>!candidates.some(other=>other!==e&&e.contains(other)));
+      if(smallest.length!==1)return false;
+      smallest[0].setAttribute('data-local-exact-reel-scope','true');return true;
+    }''',dict(link=link,owners=owners)) is True
+
+
+def comment_field(page,entry=None):
     fields=page.get_by_role('textbox',name=re.compile(r'^(?:Write a (?:public )?comment(?: as .+)?(?:\.{3}|…)?|Comment as .+)$',re.I))
     visible=[fields.nth(i) for i in range(fields.count()) if fields.nth(i).is_visible() and fields.nth(i).is_editable()]
     if not visible:raise CommentComposerMissing('评论输入框尚未出现')
-    if len(visible)!=1:raise RuntimeError('未找到唯一顶层评论输入框，不使用 Reply 或猜测位置；请手动评论')
-    field=visible[0]
-    if not field.evaluate('''e=>{
+    valid=[]
+    for field in visible:
+        if field.evaluate('''e=>{
       if(/reply/i.test((e.getAttribute('aria-label')||'')+' '+(e.getAttribute('data-placeholder')||'')))return false;
       if(e.closest('[role="article"][aria-label^="Comment by " i]'))return false;
       const modals=[...document.querySelectorAll('[role="dialog"],[role="alertdialog"],dialog')].filter(d=>d.getClientRects().length);
       return modals.every(d=>d.contains(e));
-    }'''):raise RuntimeError('评论框属于回复或被其他弹窗遮挡，未发送')
-    return field
+    }'''):valid.append(field)
+    if len(valid)>1 and mark_exact_reel_scope(page,entry):
+        valid=[field for field in valid if field.evaluate('e=>Boolean(e.closest(\'[data-local-exact-reel-scope="true"]\'))')]
+    if not valid:raise RuntimeError('评论框属于回复或被其他弹窗遮挡，未发送')
+    if len(valid)!=1:raise RuntimeError('未找到唯一顶层评论输入框，不使用 Reply 或猜测位置；请手动评论')
+    return valid[0]
 
 
 
-def ready_comment_field(page,timeout_ms=30000):
+def ready_comment_field(page,timeout_ms=30000,entry=None):
     deadline=time.monotonic()+timeout_ms/1000
     expanded=False
     while True:
         upload.checkpoint(page);upload.require_no_advanced_protection(page)
-        try:return comment_field(page)
+        try:return comment_field(page,entry)
         except CommentComposerMissing:pass
         if not expanded:
             # Bare "Comment" can be a draft's send button, so never use it to expand.
@@ -297,6 +334,13 @@ def ready_comment_field(page,timeout_ms=30000):
                         if(labels.length<=8 && labels.some(s=>/\bLike\b/i.test(s)) && labels.some(s=>/Share/i.test(s)))return true;
                       }return false;
                     }"""):buttons.append(button)
+            buttons=[button for button in buttons if button.evaluate('''e=>{
+              if(e.closest('form,[role=form],[role="article"][aria-label^="Comment by " i]'))return false;
+              return [...document.querySelectorAll('[role="dialog"],[role="alertdialog"],dialog')]
+                .filter(d=>d.getClientRects().length).every(d=>d.contains(e));
+            }''')]
+            if len(buttons)>1 and mark_exact_reel_scope(page,entry):
+                buttons=[button for button in buttons if button.evaluate('e=>Boolean(e.closest(\'[data-local-exact-reel-scope="true"]\'))')]
             if len(buttons)>1:raise RuntimeError('展开评论入口不唯一，未猜选')
             if buttons:
                 button=buttons[0]
@@ -423,7 +467,7 @@ def after_publication(page,context,entry,proof,key,record,text,collector,verifie
         require_video_author(page,entry)
         if scan_comments(page,entry,text):
             item['status']='already_present';ledger[comment_key]=item;upload.save_json(ledger_path,ledger);return item
-        field=ready_comment_field(page)
+        field=ready_comment_field(page,entry=entry)
         field.fill(text)
         actual=field.input_value() if field.evaluate("e=>e.matches('input,textarea')") else field.inner_text()
         if actual.replace('\r\n','\n')!=text.replace('\r\n','\n'):raise RuntimeError('评论框文字与授权原文不一致，未发送')

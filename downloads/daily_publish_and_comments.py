@@ -24,6 +24,7 @@ OLD_DATE='2026-10-29'
 TODAY='2026-10-30'
 COMMENT='Get your own copy:\nhttps://www.amazon.com/s?maas=maas_adg_B87EF70D0CB3092D4D7277407B28F038_afap_abs&ref_=aa_maas&tag=maas&me=AEFRCMPTGXRXD&marketplaceID=ATVPDKIKX0DER'
 CONTENT_UPDATES_VERSION='1.0-frozen-caption-and-comment'
+COMMENT_RECOVERY_VERSION='1.0-scoped-retry-readonly-reconcile'
 EXCLUDED={'fb16','fb18','fb21'}
 EXPECTED_PAIRS={(f'fb{n:02}','page01') for n in (1,2,5,6,12,13)} | {
     (f'fb{n:02}','personal') for n in (3,4,7,8,9,10,11,14,15,17,19,20,22,23)} | {
@@ -132,7 +133,7 @@ def write_backfill_report(manifest,rows,output_dir):
     print('视频评论结果：',out/(stem+'.zip'),flush=True)
 
 
-def backfill(manifest,output_dir,links_path=None,only_keys=None,rows=None,already_locked=False,future_only=False,reporter=None):
+def backfill(manifest,output_dir,links_path=None,only_keys=None,rows=None,already_locked=False,future_only=False,reporter=None,reconcile_pending=False):
     from playwright.sync_api import sync_playwright
     jobs=manifest['payload']['jobs'];links=manual_links(links_path,jobs)
     content=batch.content_for_payload(manifest['payload']) if future_only else None
@@ -156,14 +157,20 @@ def backfill(manifest,output_dir,links_path=None,only_keys=None,rows=None,alread
                 if record.get('status')!='published':
                     result.update(status='video_not_confirmed',error='视频未确认成功，保留记录，不发送评论')
                     continue
-                if record.get('comment_status') in {'sent','already_present','sending','verifying','needs_review'}:
+                if record.get('comment_status') in {'sent','already_present'} or (not reconcile_pending and record.get('comment_status') in {'sending','verifying','needs_review'}):
                     result.update(status=record['comment_status'],permalink=record.get('permalink',''),error=record.get('comment_error',''))
                     continue
                 comment_key=comments.hashlib.sha256((job['key']+'\0'+comments.text_hash(text)).encode()).hexdigest()
                 existing=upload.read_json(upload.ROOT/'logs/video_comments.json',{}).get(comment_key,{})
-                if existing.get('status') in {'sent','already_present','sending','verifying','needs_review'}:
+                if existing.get('status') in {'sent','already_present'} or (not reconcile_pending and existing.get('status') in {'sending','verifying','needs_review'}):
                     result.update(status=existing['status'],permalink=existing.get('permalink',''),error=existing.get('error',''))
                     continue
+                verify_only=reconcile_pending and (record.get('comment_status') in {'sending','verifying','needs_review'} or existing.get('status') in {'sending','verifying','needs_review'})
+                if verify_only and (existing.get('status') not in {'sending','verifying','needs_review'} or not comments.direct_link(existing.get('permalink',''))):
+                    result.update(status=record.get('comment_status','needs_review'),error='已有提交记录但缺少可核验的确切评论链接，保留待核实，不重复发送')
+                    continue
+                if verify_only and comments.direct_link(record.get('permalink','')) and comments.direct_link(record['permalink'])!=comments.direct_link(existing['permalink']):
+                    raise ValueError('视频记录与待核实评论链接冲突，未更改记录或重复发送')
                 if any(r.get('account')==job['account'] and r.get('status') in {'preparing','posting'} for r in state.values()):
                     raise RuntimeError('该账号另有提交中的任务，未关闭其浏览器或补评论')
                 entry=dict(configured(job),auto_switch_personal=True)
@@ -177,7 +184,7 @@ def backfill(manifest,output_dir,links_path=None,only_keys=None,rows=None,alread
                         page=pages[0] if pages else context.new_page();page.set_default_timeout(15000)
                         page.goto(upload.english_url(entry['url']),wait_until='domcontentloaded',timeout=30000)
                         proof=upload.ensure_identity(page,entry)
-                        link=links.get(job['key'])
+                        link=comments.direct_link(existing.get('permalink','')) if verify_only else links.get(job['key'])
                         if link:verified=(link,'user_supplied_exact_job_link')
                         elif record.get('comment_link_job_key')==job['key'] and comments.direct_link(record.get('permalink','')):
                             verified=(comments.direct_link(record['permalink']),'previously_verified_exact_job_link')
@@ -186,8 +193,11 @@ def backfill(manifest,output_dir,links_path=None,only_keys=None,rows=None,alread
                                 diagnostic_path=upload.ROOT/'logs'/('comment-'+job['key'][:12]+'-lookup.json'))
                             record.update(permalink=verified[0],comment_link_job_key=job['key'],comment_link_method=verified[1])
                             upload.save_json(state_path,state)
-                        value=comments.after_publication(page,context,entry,proof,job['key'],record,text,None,verified_link=verified,require_reload_verification=future_only)
-                        if future_only:value=comments.verify_after_reload(page,entry,proof,job['key'],text,value)
+                        if verify_only:
+                            value=comments.verify_after_reload(page,entry,proof,job['key'],text,existing,reconcile_pending=True)
+                        else:
+                            value=comments.after_publication(page,context,entry,proof,job['key'],record,text,None,verified_link=verified,require_reload_verification=future_only)
+                            if future_only:value=comments.verify_after_reload(page,entry,proof,job['key'],text,value)
                         record.update(comment_status=value['status'],comment_error=value.get('error',''))
                         upload.save_json(state_path,state)
                         result.update(status=value['status'],permalink=value.get('permalink',''),error=value.get('error',''))
@@ -205,7 +215,9 @@ def backfill(manifest,output_dir,links_path=None,only_keys=None,rows=None,alread
                 result['error']=(str(error).strip() or type(error).__name__)[:2000]
                 current=upload.read_json(state_path,{})
                 if current.get(job['key'],{}).get('status')=='published':
-                    current[job['key']].update(comment_status='manual_required',comment_error=result['error'])
+                    protected=current[job['key']].get('comment_status')
+                    result['status']=protected if protected in {'sent','already_present','sending','verifying','needs_review'} else 'manual_required'
+                    current[job['key']].update(comment_status=result['status'],comment_error=result['error'])
                     upload.save_json(state_path,current)
             finally:
                 rows.append(result);(reporter or write_backfill_report)(manifest,rows,output_dir)
