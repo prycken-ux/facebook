@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parent
 CONFIG = ROOT / "upload_config.json"
 VERSION = "2.47"
 IMMEDIATE_COMMENT_VERSION = '1.0-receipt-first-reload'
+VERIFIED_OWNER_REPLACEMENT_VERSION = '1.0-retain-previous-owner-history'
 IMMEDIATE_COMMENT_TIMING = 'immediate-after-publication-v1'
 SUCCESS_PATTERN = (
     r"^(?:Your reel (?:is(?: now)?|has been|was) (?:successfully )?"
@@ -1469,6 +1470,21 @@ def launch_context(playwright, entry):
         raise RuntimeError(entry['account'] + ' 的 Chrome 启动/初始化失败，尚未选择视频。' + first + '；' + saved) from None
 
 
+def is_verified_previous_owner_review(entry,row):
+    """Keep prior-person history without blocking a proven replacement identity."""
+    swap=entry.get('verified_owner_replacement')
+    if entry.get('type')!='personal' or entry.get('target')!='personal' or not isinstance(swap,dict) or row.get('status')!='needs_review':return False
+    try:
+        current=target_key(entry['url']);previous=swap.get('previous_target_key')
+        return (swap.get('version')==VERIFIED_OWNER_REPLACEMENT_VERSION and current.startswith('id:')
+                and isinstance(previous,str) and re.fullmatch(r'id:[0-9]+|slug:[a-z0-9._-]+',previous) is not None
+                and previous!=current and swap.get('current_target_key')==current
+                and swap.get('session_marker')==hashlib.sha256(('personal:'+current[3:]).encode()).hexdigest()
+                and isinstance(swap.get('verified_at'),str) and bool(swap['verified_at'])
+                and target_key(row.get('url',''))==previous)
+    except (ValueError,TypeError,KeyError):return False
+
+
 def run_entry(entry, state, state_path, publish, filename=None, review_before_post=False, pause_before_reel=False,
               ai_label_override=None, new_video_with_old_review=False, expected_job_key=None,
               preserve_old_review_for_exact_job=False,defer_comments=False,retry_before_post=False):
@@ -1496,7 +1512,8 @@ def run_entry(entry, state, state_path, publish, filename=None, review_before_po
         raise RuntimeError("尚未启用发布。先完成 prepare 检查，再执行 enable。")
     blocking = [(key, row) for key, row in state.items()
                 if (row['account'], row['target']) == identity
-                and row['status'] in {'preparing', 'posting', 'needs_review'}]
+                and row['status'] in {'preparing', 'posting', 'needs_review'}
+                and not (preserve_old_review_for_exact_job and is_verified_previous_owner_review(entry,row))]
     if blocking and (not (new_video_with_old_review or preserve_old_review_for_exact_job)
                      or any(row['status'] != 'needs_review' for _, row in blocking)):
         raise RuntimeError("该目标有待核对任务。先检查主页并 confirm 或 retry，避免重复发布。")
