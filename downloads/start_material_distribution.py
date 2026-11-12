@@ -11,8 +11,8 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
-COMMIT='a6378eb6325ef6144a28c9ede7ca8cc731d120f9'
-MODULE_SHA='301449b5247d5dce9f50bbc29ac23a0dc18bdb1e0727812069fce4227c0f8ed6'
+COMMIT='3e893be7fde08c6284a81041fcb69db9af22ba8d'
+MODULE_SHA='c56798d64ed367f0be62bf29e4a404c0966d2326d281593757af6471669d870b'
 MODULE='distribute_video_materials.py'
 VERIFY=("import sys;sys.path.insert(0,sys.argv[1]);"
         "import fb_upload as u,add_fb_accounts as a,distribute_video_materials as d;"
