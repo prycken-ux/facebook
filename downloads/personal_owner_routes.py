@@ -74,6 +74,7 @@ def scoped(accounts):
     original_recheck=upload.recheck_publish_identity
     def ensure(page,entry):
         if entry.get('account') not in accounts or entry.get('target')!='personal':return original(page,entry)
+        if not upload.target_key(entry['url']).startswith('id:'):return original(page,entry)
         rows=[r for r in upload.read_json(upload.CONFIG,{}).get('targets',[]) if (r.get('account'),r.get('target'))==(entry['account'],'personal')]
         if len(rows)!=1 or upload.target_key(rows[0]['url'])!=upload.target_key(entry['url']):
             raise RuntimeError('当前登记身份与本次确切个人号不一致。')
