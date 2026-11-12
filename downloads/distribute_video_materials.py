@@ -92,12 +92,21 @@ def read_plan(upload,path):
     return value
 
 
-def plan(upload,source,day,selected):
+def validate_source(source):
     source=source.resolve()
     if not source.is_dir():raise ValueError('素材总文件夹不存在：'+str(source))
-    for excluded in ('videos','profiles','logs','backups'):
-        if source.is_relative_to((ROOT/excluded).resolve()):
-            raise ValueError('请使用独立的素材总文件夹，不要选择发布、登录或日志目录。')
+    if any(source.is_relative_to((ROOT/name).resolve()) for name in ('profiles','logs','backups')):
+        raise ValueError('请选择素材总文件夹，不要选择登录、日志或备份目录。')
+    videos=(ROOT/'videos').resolve()
+    if source.is_relative_to(videos):
+        parts=source.relative_to(videos).parts
+        if len(parts)>=2 and re.fullmatch(r'fb[0-9]+',parts[0],re.I) and re.fullmatch(r'personal|page[0-9]+',parts[1],re.I):
+            raise ValueError('不要把某个账号现有的视频目录作为总素材目录。')
+    return source
+
+
+def plan(upload,source,day,selected):
+    source=validate_source(source)
     source_id=hashlib.sha256(str(source).casefold().encode()).hexdigest()[:16]
     folder=ROOT/'logs/material-distribution'/source_id
     path=folder/(day+'.json')
@@ -200,8 +209,7 @@ def distribute(root,source=None,day=None,choose=False):
     if not re.fullmatch(r'\d{4}-\d{2}-\d{2}',day):raise ValueError('分配日期格式无效。')
     with locked():
         selected=targets(upload)
-        if not source.is_dir() or any(source.is_relative_to((ROOT/name).resolve()) for name in ('videos','profiles','logs','backups')):
-            raise ValueError('请使用独立且存在的素材总文件夹。')
+        validate_source(source)
         upload.save_json(ROOT/SETTINGS,dict(schema=SCHEMA,source=str(source),scope='all-known-and-reserved-targets',rule='one-per-target-natural-order',copy_mode='retain-source'))
         path,value=plan(upload,source,day,selected)
         progress_path=path.with_name(path.stem+'-progress.json')

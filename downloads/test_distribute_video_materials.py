@@ -132,5 +132,11 @@ class DistributionTests(unittest.TestCase):
         self.assertIn('-STA',call.call_args.args[0])
         self.assertTrue(call.call_args.kwargs['check'])
 
+    def test_separate_total_folder_under_videos_is_allowed_but_account_inbox_is_not(self):
+        pool=self.root/'videos/总素材';pool.mkdir(parents=True)
+        self.assertEqual(app.validate_source(pool),pool)
+        inbox=self.root/'videos/fb01/page01/inbox';inbox.mkdir(parents=True)
+        with self.assertRaises(ValueError):app.validate_source(inbox)
+
 
 if __name__=='__main__':unittest.main()
