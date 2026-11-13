@@ -13,6 +13,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 SCHEMA = 'one-video-per-target-distribution-v1'
+SCOPED_TARGETS_VERSION = '1.1-two-wave-scopes'
+TARGET_SCOPES = {'all', 'existing24', 'reserved50'}
 SETTINGS = 'material_distribution_settings.json'
 BJ = timezone(timedelta(hours=8))
 
@@ -51,7 +53,12 @@ def safe_inbox(account,target):
     return path
 
 
-def targets(upload):
+def targets(upload,scope='all'):
+    if scope not in TARGET_SCOPES:raise ValueError('素材分配账号范围无效。')
+    def allowed(account):
+        if not re.fullmatch(r'fb(?:0[1-9]|[1-9][0-9]+)',str(account)):raise ValueError('发布账号编号格式异常。')
+        number=int(account[2:])
+        return scope=='all' or (number<=24 if scope=='existing24' else 25<=number<=74)
     config=upload.read_json(ROOT/'upload_config.json',None)
     registry=upload.read_json(ROOT/'account_registry.json',None)
     if not isinstance(config,dict) or not isinstance(config.get('targets'),list) or not isinstance(registry,dict) or not isinstance(registry.get('accounts'),list):
@@ -59,6 +66,7 @@ def targets(upload):
     result={}
     def add(row,configured=False):
         account=row.get('account','')
+        if not allowed(account):return
         target=row.get('target') or ('personal' if row.get('type')=='personal' else 'page01')
         safe_inbox(account,target)
         if configured:
@@ -74,6 +82,7 @@ def targets(upload):
     if not isinstance(manifest,dict) or manifest.get('schema')!='additional-personal-logins-v1' or not isinstance(manifest.get('slots'),dict):
         raise ValueError('新增账号预留登记异常。')
     for account,slot in manifest['slots'].items():
+        if not allowed(account):continue
         if not isinstance(slot,dict) or slot.get('state') not in {'pending','registered'}:
             raise ValueError('新增账号预留状态异常。')
         if any(a==account for a,t in result):continue
@@ -105,22 +114,24 @@ def validate_source(source):
     return source
 
 
-def plan(upload,source,day,selected):
+def plan(upload,source,day,selected,scope='all'):
     source=validate_source(source)
     source_id=hashlib.sha256(str(source).casefold().encode()).hexdigest()[:16]
     folder=ROOT/'logs/material-distribution'/source_id
-    path=folder/(day+'.json')
+    path=folder/(day+('-reserved50' if scope=='reserved50' else '')+'.json')
     if path.exists():
         value=read_plan(upload,path)
         if value['payload'].get('source')!=str(source) or value['payload'].get('date')!=day:
             raise ValueError('原分配清单的素材路径或日期不一致。')
         current={(r['account'],r['target']) for r in selected}
-        if any((r['account'],r['target']) not in current for r in value['payload']['assignments']):
-            raise ValueError('原分配目标已删除或变更，未重新创建该账号目录。')
+        original={(r['account'],r['target']) for r in value['payload']['assignments']}
+        if original!=current or value['payload'].get('target_scope','all')!=scope:
+            raise ValueError('当天原分配目标范围已变化；保留原分配清单，未重新排列或增加其他账号。')
         return path,value
     processed=set()
     if folder.is_dir():
-        for old_path in folder.glob('????-??-??.json'):
+        for old_path in folder.glob('*.json'):
+            if not re.fullmatch(r'\d{4}-\d{2}-\d{2}(?:-reserved50)?\.json',old_path.name):continue
             old=read_plan(upload,old_path)
             progress=upload.read_json(old_path.with_name(old_path.stem+'-progress.json'),{})
             if progress.get('sha256')!=old['sha256'] or progress.get('complete') is not True:
@@ -150,7 +161,8 @@ def plan(upload,source,day,selected):
         else:raise ValueError('无法为目标选择不覆盖旧素材的文件名。')
         assignments.append(dict(target,source_token=token,video_filename=file.name,
                                 files=[dict(p,destination_name=prefix+p['name']) for p in parts]))
-    payload=dict(schema=SCHEMA,source=str(source),date=day,assignments=assignments,leftover_count=len(files)-len(selected),copy_mode='retain-source')
+    payload=dict(schema=SCHEMA,source=str(source),date=day,assignments=assignments,leftover_count=len(files)-len(selected),copy_mode='retain-source',target_scope=scope,
+                 publication_order=['fb01-fb24-and-registered-pages','fb25-fb74'])
     value=dict(payload=payload,sha256=digest(payload))
     upload.save_json(path,value)
     return path,value
@@ -192,15 +204,18 @@ try { if($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK){[Cons
     return value
 
 
-def distribute(root,source=None,day=None,choose=False):
+def distribute(root,source=None,day=None,choose=False,scope=None):
     global ROOT
     ROOT=Path(root).resolve()
     sys.path.insert(0,str(ROOT))
     import fb_upload as upload
     from add_fb_accounts import locked
     if upload.ROOT.resolve()!=ROOT:raise ValueError('原上传程序目录不一致。')
+    settings=upload.read_json(ROOT/SETTINGS,{})
+    scope=scope or settings.get('target_scope','all')
+    if scope not in TARGET_SCOPES:raise ValueError('素材分配账号范围无效。')
     if source is None and not choose:
-        source=upload.read_json(ROOT/SETTINGS,{}).get('source')
+        source=settings.get('source')
     if choose or not source:
         print('请选择素材总文件夹；以后会记住该目录。',flush=True)
         source=choose_source()
@@ -208,10 +223,14 @@ def distribute(root,source=None,day=None,choose=False):
     day=day or datetime.now(timezone.utc).astimezone(BJ).date().isoformat()
     if not re.fullmatch(r'\d{4}-\d{2}-\d{2}',day):raise ValueError('分配日期格式无效。')
     with locked():
-        selected=targets(upload)
+        selected=targets(upload,scope=scope)
         validate_source(source)
-        upload.save_json(ROOT/SETTINGS,dict(schema=SCHEMA,source=str(source),scope='all-known-and-reserved-targets',rule='one-per-target-natural-order',copy_mode='retain-source'))
-        path,value=plan(upload,source,day,selected)
+        print('本次分配范围：', {'existing24':'第一批：fb01–fb24及已登记公共主页，跳过fb25–fb74',
+                              'reserved50':'第二批：仅fb25–fb74，保留第一批原分配',
+                              'all':'全部已登记和已预留账号及公共主页'}[scope],flush=True)
+        path,value=plan(upload,source,day,selected,scope=scope)
+        upload.save_json(ROOT/SETTINGS,dict(schema=SCHEMA,source=str(source),scope={'all':'all-known-and-reserved-targets','existing24':'original-accounts-and-registered-pages','reserved50':'reserved-accounts-25-to-74'}[scope],target_scope=scope,rule='one-per-target-natural-order',copy_mode='retain-source',
+                                          publication_order=['fb01-fb24-and-registered-pages','fb25-fb74']))
         progress_path=path.with_name(path.stem+'-progress.json')
         progress=upload.read_json(progress_path,dict(sha256=value['sha256'],done=[],complete=False))
         keys={r['account']+'/'+r['target'] for r in value['payload']['assignments']}
@@ -250,7 +269,8 @@ def distribute(root,source=None,day=None,choose=False):
             upload.save_json(progress_path,progress)
             video=row['files'][-1]['destination_name']
             print(str(index)+'/'+str(len(rows)),key,'←',row['video_filename'],'→',video,flush=True)
-        summary=['每个发布目标1条视频；复制分配，保留总文件夹原件。','素材总目录：'+str(source),'']
+        summary=['每个发布目标1条视频；复制分配，保留总文件夹原件。',
+                 '后续发布顺序：先fb01–fb24及其公共主页，再fb25–fb74；本工具只分配素材。','素材总目录：'+str(source),'']
         known=set(progress.get('existing_video_records',[]))
         summary.extend(r['account']+'/'+r['target']+' <- '+r['video_filename']+' -> '+('已有此视频任务记录，未重复放入' if r['account']+'/'+r['target'] in known else str(safe_inbox(r['account'],r['target'])/r['files'][-1]['destination_name'])) for r in rows)
         path.with_suffix('.txt').write_text('\n'.join(summary),encoding='utf-8-sig')
@@ -267,9 +287,10 @@ if __name__=='__main__':
     parser=argparse.ArgumentParser()
     parser.add_argument('--root',default=str(ROOT));parser.add_argument('--source')
     parser.add_argument('--choose',action='store_true');parser.add_argument('--pause',action='store_true')
+    parser.add_argument('--scope',choices=sorted(TARGET_SCOPES))
     args=parser.parse_args()
     sys.stdout.reconfigure(encoding='utf-8',line_buffering=True)
-    try:distribute(args.root,args.source,choose=args.choose)
+    try:distribute(args.root,args.source,choose=args.choose,scope=args.scope)
     except KeyboardInterrupt:print('已取消；保留素材及分配进度。',flush=True);raise SystemExit(130)
     except Exception as error:print('STOP：',str(error) or type(error).__name__,flush=True);raise SystemExit(1)
     finally:
