@@ -50,6 +50,21 @@ class DistributorInstallerTests(unittest.TestCase):
         self.assertFalse((self.root/start.MODULE).exists())
         self.assertEqual(lock.read_text(),'active')
 
+    def test_original_accounts_scope_is_passed_to_picker_child_without_publishing(self):
+        (self.root/'add_fb_accounts.py').write_text('# installed module')
+        with patch.object(start.sys,'platform','win32'),patch.object(start,'download',side_effect=[self.data,b'def recover_locks(root):pass\n']), \
+             patch.object(start,'install'),patch.object(start.subprocess,'run',return_value=subprocess.CompletedProcess([],0)) as launch:
+            self.assertEqual(start.start(self.root,'existing24'),0)
+        self.assertEqual(launch.call_args.args[0],
+                         [sys.executable,str(self.root/start.MODULE),'--root',str(self.root),'--choose','--scope','existing24'])
+
+    def test_all_accounts_scope_matches_latest_request_and_is_passed_to_child(self):
+        (self.root/'add_fb_accounts.py').write_text('# installed module')
+        with patch.object(start.sys,'platform','win32'),patch.object(start,'download',side_effect=[self.data,b'def recover_locks(root):pass\n']), \
+             patch.object(start,'install'),patch.object(start.subprocess,'run',return_value=subprocess.CompletedProcess([],0)) as launch:
+            self.assertEqual(start.start(self.root,'all'),0)
+        self.assertEqual(launch.call_args.args[0][-2:],['--scope','all'])
+
     def test_fresh_process_probe_imports_reusable_distributor_without_opening_gui(self):
         result=subprocess.run([sys.executable,'-c',start.VERIFY,str(Path(__file__).parent)],capture_output=True,text=True)
         self.assertEqual(result.returncode,0,result.stderr)

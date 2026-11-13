@@ -11,12 +11,13 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
-COMMIT='3e893be7fde08c6284a81041fcb69db9af22ba8d'
-MODULE_SHA='c56798d64ed367f0be62bf29e4a404c0966d2326d281593757af6471669d870b'
+COMMIT='702c6268057d5ef69c40ce8b870c97d6fc3520ac'
+MODULE_SHA='029836f26d39464ca63e10d104de1254ad4c08655711b84a5e9f7116f5499398'
 MODULE='distribute_video_materials.py'
 VERIFY=("import sys;sys.path.insert(0,sys.argv[1]);"
         "import fb_upload as u,add_fb_accounts as a,distribute_video_materials as d;"
         "assert d.SCHEMA=='one-video-per-target-distribution-v1';assert callable(d.choose_source);"
+        "assert d.SCOPED_TARGETS_VERSION=='1.1-two-wave-scopes';assert d.TARGET_SCOPES=={'all','existing24','reserved50'};"
         "assert all(callable(getattr(u,n,None)) for n in ('read_json','save_json','validate_entry','job_key'));"
         "assert callable(a.write_shortcuts);print('INSTALL VERIFIED: one video per target, retained originals and resumable copy journal.',flush=True)")
 
@@ -65,16 +66,17 @@ def install(root,data):
             clear_cache(root)
             raise
         legacy.write_shortcuts([dict(path=str(shortcut),chrome=sys.executable,working=str(root),
-            description='全部已登记和已预留账号，每个发布目标分配1条视频；保留原素材',
+            description='按已保存账号范围，每个发布目标分配1条视频；保留原素材',
             arguments=subprocess.list2cmdline([str(path),'--root',str(root),'--pause']))])
     print('自动分配视频入口已创建：',shortcut,flush=True)
     print('本次首次运行请选择素材总文件夹，以后双击此入口即可使用保存的目录。',flush=True)
     print('需要更换总素材目录时，重跑本安装指令重新选择。',flush=True)
 
 
-def start(root):
+def start(root,scope=None):
     root=Path(root).resolve()
     if sys.platform!='win32':raise ValueError('请在原Windows上传电脑运行。')
+    if scope not in {None,'all','existing24','reserved50'}:raise ValueError('素材分配范围无效。')
     if not all((root/n).is_file() for n in ('upload_config.json','account_registry.json','add_fb_accounts.py')):
         raise ValueError('缺少原上传配置或账号模块，未安装。')
     data=download(COMMIT,MODULE,MODULE_SHA)
@@ -82,11 +84,16 @@ def start(root):
     namespace={'__name__':'verified_lock_library','__file__':'verified_lock_library.py'}
     exec(compile(helper,'verified-lock-library','exec'),namespace);namespace['recover_locks'](root)
     install(root,data)
-    return subprocess.run([sys.executable,str(root/MODULE),'--root',str(root),'--choose']).returncode
+    command=[sys.executable,str(root/MODULE),'--root',str(root),'--choose']
+    if scope:command.extend(['--scope',scope])
+    return subprocess.run(command).returncode
 
 
 if __name__=='__main__':
     sys.stdout.reconfigure(encoding='utf-8',line_buffering=True)
-    try:raise SystemExit(start(Path(sys.argv[1])))
+    try:
+        extra=sys.argv[2:]
+        if extra and (len(extra)!=2 or extra[0]!='--scope'):raise ValueError('请使用--scope existing24、reserved50或all。')
+        raise SystemExit(start(Path(sys.argv[1]),extra[1] if extra else None))
     except KeyboardInterrupt:print('已取消，保留原素材及已有分配进度。',flush=True);raise SystemExit(130)
     except Exception as error:print('STOP：',str(error) or type(error).__name__,flush=True);raise SystemExit(1)
