@@ -6,6 +6,7 @@ from add_fb_accounts import find_chrome
 from chrome_profile_guard import require_profile_free
 from diagnose_personal_identity import close_selected_window
 import local_file_input as local_files
+import browser_background_mode as background
 
 NORMAL_CHROME_VERSION='1.0-batch-scoped-local-cdp'
 LOCAL_FILE_INPUT_COMPATIBILITY=local_files.VERSION
@@ -38,6 +39,7 @@ class NormalContext:
 
 def launch_normal(playwright,entry):
     upload.validate_entry(entry)
+    run_mode=background.mode(upload.ROOT)
     account=entry['account']
     if not re.fullmatch(r'fb(?:0[1-9]|[1-9][0-9]+)',account):raise ValueError('账号编号不合法')
     profile=upload.ROOT/'profiles'/account
@@ -49,8 +51,8 @@ def launch_normal(playwright,entry):
     selfcheck=entry.get('_local_file_selfcheck') is True
     args=[str(find_chrome()),'--user-data-dir='+str(profile),'--profile-directory=Default',
           '--no-first-run','--no-default-browser-check','--remote-debugging-address=127.0.0.1',
-          '--remote-debugging-port=0','--new-window','about:blank' if selfcheck else upload.english_url(entry['url'])]
-    print('使用原资料启动普通Chrome：',account,entry['target'],'；保留原扩展和代理。',flush=True)
+          '--remote-debugging-port=0',*background.arguments(run_mode),'about:blank' if selfcheck else upload.english_url(entry['url'])]
+    print('使用原资料启动'+('无窗口后台Chrome' if run_mode=='background' else '普通Chrome')+'：',account,entry['target'],'；沿用原资料和代理设置。',flush=True)
     process=subprocess.Popen(args,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
     wrapper=None
     try:

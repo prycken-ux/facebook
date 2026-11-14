@@ -38,7 +38,8 @@ def profile_owners(profile):
     try:
         result = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', QUERY],
                                 input=json.dumps({'profile': str(profile)}).encode('utf-8'),
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20, check=False)
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20, check=False,
+                                **({'creationflags':0x08000000} if sys.platform=='win32' else {}))
         if result.returncode:
             raise ValueError('query failed')
         rows = json.loads(result.stdout.decode('utf-8-sig'))

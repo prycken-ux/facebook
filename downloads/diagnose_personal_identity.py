@@ -46,7 +46,8 @@ def close_selected_window(account):
         raise RuntimeError('关闭账号窗口需在 Windows 上传电脑运行。')
     result = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', CLOSE_WINDOWS],
         input=json.dumps({'profile': str(ROOT / 'profiles' / account)}).encode('utf-8'),
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20, check=False)
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20, check=False,
+        **({'creationflags':0x08000000} if sys.platform=='win32' else {}))
     if result.returncode:
         raise RuntimeError('无法正常请求关闭此账号窗口，请手动关闭后重试。')
     for attempt in range(10):
