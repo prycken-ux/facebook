@@ -7,7 +7,8 @@ if __name__=='__main__':sys.path.insert(0,str(Path(sys.argv[2]).resolve())) if l
 import fb_upload as upload
 import distribute_video_materials as materials
 
-VERSION='1.0-independent-material-staging'
+VERSION='1.1-scoped-independent-material-staging'
+SCOPES={'all','existing24'}
 SCHEMA='next-material-staging-v1'
 STAGING='material-staging'
 WORKERS=r'''
@@ -24,7 +25,7 @@ foreach($p in @(Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name
   $sameExe=[string]::Equals($exe,[string]$d.python,[StringComparison]::OrdinalIgnoreCase)
   $sameRoot=$line.IndexOf([string]$d.root,[StringComparison]::OrdinalIgnoreCase) -ge 0
   if(-not($sameExe -or $sameRoot)){continue}
-  if($line -match '(?i)(?:stage_next_materials_20261114_v1|start_stage_next_materials_20261114)\.py'){continue}
+  if($line -match '(?i)(?:stage_next_materials_20261114_v1|start_stage_(?:next|first24)_materials_20261114)\.py'){continue}
   $result += [pscustomobject]@{pid=[long]$p.ProcessId;name=[string]$p.Name}
 }
 ConvertTo-Json -InputObject @($result) -Compress
@@ -71,7 +72,8 @@ def staging_lock(folder):
     finally:handle.close()
 
 
-def target_snapshot(root):
+def target_snapshot(root,scope='all'):
+    if scope not in SCOPES:raise ValueError('暂存分配范围无效。')
     paths=[root/n for n in ('upload_config.json','account_registry.json','additional_personal_accounts.json')]
     read=upload.read_json
     for _ in range(5):
@@ -79,7 +81,7 @@ def target_snapshot(root):
         values={p:json.loads(blob.decode('utf-8-sig')) if blob is not None else None for p,blob in before.items()}
         def from_snapshot(path,default):return copy.deepcopy(values[path] if values[path] is not None else default) if path in values else read(path,default)
         try:
-            with patch.object(upload,'read_json',side_effect=from_snapshot):selected=materials.targets(upload,scope='all')
+            with patch.object(upload,'read_json',side_effect=from_snapshot):selected=materials.targets(upload,scope=scope)
         except Exception:
             if any((p.read_bytes() if p.is_file() else None)!=blob for p,blob in before.items()):time.sleep(.2);continue
             raise
@@ -95,14 +97,18 @@ def validate_stage(root,path):
     p=value.get('payload',{})
     if value.get('sha256')!=materials.digest(p) or p.get('schema')!=SCHEMA:raise ValueError('暂存清单指纹异常。')
     source=Path(p.get('source','')).resolve();token=hashlib.sha256(str(source).casefold().encode()).hexdigest()[:16]
-    if (not re.fullmatch(r'\d{4}-\d{2}-\d{2}',p.get('date','')) or p.get('source_id')!=token
-            or path!=root/STAGING/p['date']/token/'manifest.json'):raise ValueError('暂存清单路径或原素材来源异常。')
     distribution=p.get('distribution',{});d=distribution.get('payload',{})
+    scope=d.get('target_scope')
+    if scope not in SCOPES:raise ValueError('暂存清单的分配范围异常。')
+    folder=token+('-existing24' if scope=='existing24' else '')
+    if (not re.fullmatch(r'\d{4}-\d{2}-\d{2}',p.get('date','')) or p.get('source_id')!=token
+            or path!=root/STAGING/p['date']/folder/'manifest.json'):raise ValueError('暂存清单路径或原素材来源异常。')
     if (distribution.get('sha256')!=materials.digest(d) or d.get('schema')!=materials.SCHEMA or d.get('date')!=p['date']
-            or d.get('source')!=str(source) or d.get('target_scope')!='all' or not isinstance(d.get('assignments'),list) or not d['assignments']):raise ValueError('暂存的正式分配清单异常。')
+            or d.get('source')!=str(source) or not isinstance(d.get('assignments'),list) or not d['assignments']):raise ValueError('暂存的正式分配清单异常。')
     pairs=[]
     for row in d['assignments']:
         materials.safe_inbox(row['account'],row['target']);pairs.append((row['account'],row['target']))
+        if scope=='existing24' and not 1<=int(row['account'][2:])<=24:raise ValueError('本批fb01–fb24素材清单混入范围外账号。')
         for info in row['files']:
             if any(not isinstance(info.get(k),str) or Path(info[k]).name!=info[k] or re.search(r'[\\/:\x00-\x1f]',info[k]) for k in ('name','destination_name')):raise ValueError('素材文件名异常。')
         upload.validate_video_filename(row['files'][-1]['name']);upload.validate_video_filename(row['files'][-1]['destination_name'])
@@ -110,8 +116,9 @@ def validate_stage(root,path):
     return path,value
 
 
-def prepare(root,source=None):
+def prepare(root,source=None,scope='all'):
     root=setup(root)
+    if scope not in SCOPES:raise ValueError('暂存分配范围无效。')
     if source is None:
         print('请选择今天的素材总文件夹。本窗口仅准备暂存素材，当前发布任务继续运行。',flush=True)
         source=materials.choose_source()
@@ -119,12 +126,12 @@ def prepare(root,source=None):
     if source.is_relative_to((root/STAGING).resolve()):raise ValueError('请选择素材总文件夹，不要选择已生成的暂存目录。')
     day=datetime.now(timezone.utc).astimezone(materials.BJ).date().isoformat()
     token=hashlib.sha256(str(source).casefold().encode()).hexdigest()[:16]
-    folder=safe_child(root/STAGING,root/STAGING/day/token);folder.mkdir(parents=True,exist_ok=True)
+    folder=safe_child(root/STAGING,root/STAGING/day/(token+('-existing24' if scope=='existing24' else '')));folder.mkdir(parents=True,exist_ok=True)
     path=folder/'manifest.json'
     with staging_lock(folder):
         if path.exists():path,value=validate_stage(root,path)
         else:
-            selected,generations=target_snapshot(root)
+            selected,generations=target_snapshot(root,scope=scope)
             journal=root/'logs/material-distribution'/token
             if (journal/(day+'.json')).exists():raise ValueError('此素材目录今天已有正式分配清单，未另建或重排，请先核对原分配记录。')
             processed=set()
@@ -146,7 +153,8 @@ def prepare(root,source=None):
             for target,(file,info,identity) in zip(selected,files):
                 parts=[materials.file_info(p) for p in (file.with_suffix('.txt'),file.with_suffix('.comment.txt')) if p.exists()]+[info]
                 rows.append(dict(target,source_token=identity,video_filename=file.name,files=[dict(part,destination_name=prefix+part['name']) for part in parts]))
-            d=dict(schema=materials.SCHEMA,source=str(source),date=day,assignments=rows,leftover_count=len(files)-len(rows),copy_mode='retain-source',target_scope='all',publication_order=['fb01-fb24-and-registered-pages','fb25-fb74'])
+            order=['fb01-fb24-and-registered-pages'] if scope=='existing24' else ['fb01-fb24-and-registered-pages','fb25-fb74']
+            d=dict(schema=materials.SCHEMA,source=str(source),date=day,assignments=rows,leftover_count=len(files)-len(rows),copy_mode='retain-source',target_scope=scope,publication_order=order)
             p=dict(schema=SCHEMA,date=day,source=str(source),source_id=token,generations=generations,distribution=dict(payload=d,sha256=materials.digest(d)))
             value=dict(payload=p,sha256=materials.digest(p));upload.save_json(path,value)
         rows=value['payload']['distribution']['payload']['assignments']
@@ -188,8 +196,8 @@ def import_stage(root,manifest):
         if workers:raise RuntimeError('原上传环境仍有任务进程运行（PID：'+','.join(str(r['pid']) for r in workers)+'）。本次没有导入；请等视频、评论及登录检查全部结束后重试。')
         ready=upload.read_json(folder/'prepare-progress.json',{})
         if ready.get('sha256')!=value['sha256'] or ready.get('complete') is not True:raise ValueError('暂存素材尚未全部准备完成。')
-        selected,generations=target_snapshot(root);current={(r['account'],r['target']):r for r in selected}
         distribution=value['payload']['distribution'];d=distribution['payload'];rows=d['assignments']
+        selected,generations=target_snapshot(root,scope=d['target_scope']);current={(r['account'],r['target']):r for r in selected}
         if set(current)!={(r['account'],r['target']) for r in rows}:raise ValueError('准备后账号/公共主页范围变化，未自动重排素材。')
         for row in rows:
             now=current[row['account'],row['target']]
@@ -225,7 +233,8 @@ def import_stage(root,manifest):
                 print('已导入：',pair,'←',row['video_filename'],flush=True)
             progress['done'].append(pair);upload.save_json(progress_path,progress)
         progress['complete']=True;upload.save_json(progress_path,progress)
-        upload.save_json(root/materials.SETTINGS,dict(schema=materials.SCHEMA,source=d['source'],scope='all-known-and-reserved-targets',target_scope='all',rule='one-per-target-natural-order',copy_mode='retain-source',publication_order=d['publication_order']))
+        description='original-accounts-and-registered-pages' if d['target_scope']=='existing24' else 'all-known-and-reserved-targets'
+        upload.save_json(root/materials.SETTINGS,dict(schema=materials.SCHEMA,source=d['source'],scope=description,target_scope=d['target_scope'],rule='one-per-target-natural-order',copy_mode='retain-source',publication_order=d['publication_order']))
         journal.with_suffix('.txt').write_text('\n'.join([r['account']+'/'+r['target']+' <- '+r['video_filename'] for r in rows]),encoding='utf-8-sig')
         upload.save_json(folder/'imported.json',dict(sha256=value['sha256'],distribution_sha256=distribution['sha256'],journal=str(journal)))
         print('正式导入完成：',len(rows),'个目标。没有发布视频或发送评论，原素材保留。',flush=True)
@@ -233,10 +242,10 @@ def import_stage(root,manifest):
 
 
 if __name__=='__main__':
-    parser=argparse.ArgumentParser();parser.add_argument('action',choices=['prepare','import']);parser.add_argument('root');parser.add_argument('--source');parser.add_argument('--manifest')
+    parser=argparse.ArgumentParser();parser.add_argument('action',choices=['prepare','import']);parser.add_argument('root');parser.add_argument('--source');parser.add_argument('--manifest');parser.add_argument('--scope',choices=sorted(SCOPES),default='all')
     args=parser.parse_args();sys.stdout.reconfigure(encoding='utf-8',line_buffering=True)
     try:
-        if args.action=='prepare':prepare(args.root,args.source)
+        if args.action=='prepare':prepare(args.root,args.source,scope=args.scope)
         else:import_stage(args.root,args.manifest)
     except KeyboardInterrupt:print('已取消；保留当前发布任务、原素材和暂存进度。',flush=True);raise SystemExit(130)
     except Exception as error:print('STOP：',str(error) or type(error).__name__,flush=True);raise SystemExit(1)

@@ -1,0 +1,9 @@
+# Stage only fb01–fb24 and their registered Pages
+
+The owner narrowed today's 44-video allocation to fb01–fb24 and their Pages. fb25 and later are excluded from this allocation; the existing publication task continues independently.
+
+The staging tool now accepts immutable `all` or `existing24` scopes. The dedicated first24 entry always passes `--scope existing24`. The existing first24 target resolver uses numeric account ordering with personal first and Pages in page-number order, one naturally sorted MP4 per target. A first24 batch uses its own `<source fingerprint>-existing24` staging folder, so the earlier all94 insufficient-material attempt does not block or alter it. A saved all-target manifest is never rewritten into a narrower scope.
+
+Scope is checked both in the staged fingerprint and before later import. Import resolves only first24 targets, preserves fb25+ material, refuses active task processes/locks, and writes the standard `target_scope=existing24` distribution journal and preferences. Preparation does not acquire the publication lock or change formal inboxes, account mappings or publication/comment state. Current publishing is not cancelled or rescheduled. The source originals are retained, and later import remains a separate command printed after preparation.
+
+Validation: eight local staging tests include the earlier all94 insufficient attempt followed by successful first24 preparation using exactly44 new clips, protected old/live material and publication state, all ten fb09 Pages, first24-only import, unchanged fb25–fb74 contents and immutable/idempotent resumption. Three dedicated launcher tests check the exact scoped child argv with a live upload lock, hash refusal and unknown-cache preservation. Windows UI/process operations are simulated; the operator runs the immutable verified entry in the separate staging PowerShell window.
