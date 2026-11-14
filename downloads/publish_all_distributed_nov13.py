@@ -11,6 +11,8 @@ NEW={f'fb{n:02d}' for n in range(25,75)}
 BATCH_ID='personal-20261112-fifty-fb25-fb74'
 SECOND='nov13-distributed-second-owned-fifty-v1'
 CONTROL='nov13-distributed-two-wave-publication.json'
+SUMMARY='nov13-two-wave-summary.json'
+WAVE_POINTER_PREFIX='nov13-second-wave-'
 RUN=first.execute
 DISTRIBUTION=first.distribution
 ORIGINAL_VALIDATE=first.workflow.validate
@@ -125,7 +127,7 @@ def summary(first_path,control,issues,material):
           '；评论确认成功',sum(r['comment_status'] in {'sent','already_present'} for r in rows.values()),'；尚未进入发布清单',len(missing),flush=True)
     for issue in issues:print('第二批仍需处理：',issue['account'],issue['reason'],flush=True)
     complete=not missing and not issues and all(r['video_status']=='published' and r['comment_status'] in {'sent','already_present'} for r in rows.values())
-    first.upload.save_json(first.upload.ROOT/'logs/nov13-two-wave-summary.json',dict(date=first.DAY,rows=list(rows.values()),new_account_issues=issues,unplanned_targets=missing,complete=complete))
+    first.upload.save_json(first.upload.ROOT/'logs'/SUMMARY,dict(date=first.DAY,source_material_date=first.MATERIAL_DAY,rows=list(rows.values()),new_account_issues=issues,unplanned_targets=missing,complete=complete))
     return complete
 
 
@@ -159,7 +161,7 @@ def execute(real_footage):
         all_targets={r['account']+'/'+r['target'] for r in material['payload']['assignments']}
         if not all_targets<=set(progress.get('done',[])):
             print('第二批素材分配曾中断，现在只续完原分配清单，再开始新账号发布。',flush=True)
-            first.materials.distribute(first.upload.ROOT,material['payload']['source'],day=first.DAY,scope='all')
+            first.materials.distribute(first.upload.ROOT,material['payload']['source'],day=first.MATERIAL_DAY,scope='all')
         with first.locked():
             ready,issues=ready_new()
             # Recover any second-wave freeze committed before its controller update.
@@ -170,10 +172,10 @@ def execute(real_footage):
                         and value['payload'].get('distribution_sha256')==material['sha256']):
                     fresh_validate(candidate,value)
                     accounts=value['payload']['intended_accounts'];tag=first.batch.digest(sorted(accounts))[:12]
-                    control['waves'].append(dict(accounts=accounts,scope=value['payload']['distributed_scope'],pointer='nov13-second-wave-'+tag+'.json',manifest=candidate.name,sha256=value['sha256']))
+                    control['waves'].append(dict(accounts=accounts,scope=value['payload']['distributed_scope'],pointer=WAVE_POINTER_PREFIX+tag+'.json',manifest=candidate.name,sha256=value['sha256']))
             covered=set()
             for saved in control['waves']:
-                if (not re.fullmatch(r'nov13-second-wave-[a-f0-9]{12}\.json',saved.get('pointer',''))
+                if (not re.fullmatch(re.escape(WAVE_POINTER_PREFIX)+r'[a-f0-9]{12}\.json',saved.get('pointer',''))
                         or not re.fullmatch('frozen-material-'+first.DAY+r'-[a-f0-9]{16}\.json',saved.get('manifest',''))):
                     raise ValueError('第二批续跑指针格式异常。')
                 value=first.archive.checked_json(first.upload.ROOT/'logs'/saved['manifest']);fresh_validate(first.upload.ROOT/'logs'/saved['manifest'],value)
@@ -181,7 +183,7 @@ def execute(real_footage):
                 covered.update(j['account'] for j in value['payload']['jobs'])
             remaining=ready-covered
             if remaining:
-                tag=first.batch.digest(sorted(remaining))[:12];scope=SECOND+'-'+tag;pointer='nov13-second-wave-'+tag+'.json'
+                tag=first.batch.digest(sorted(remaining))[:12];scope=SECOND+'-'+tag;pointer=WAVE_POINTER_PREFIX+tag+'.json'
                 try:
                     with wave(remaining,scope,pointer):path,value=first.freeze()
                     if path.name not in {w['manifest'] for w in control['waves']}:

@@ -23,6 +23,7 @@ from add_fb_accounts import locked
 from diagnose_personal_identity import close_selected_window
 
 DAY='2026-11-13'
+MATERIAL_DAY='2026-11-13'
 SCOPE='nov13-distributed-new-materials-first-fb01-to-fb24-v1'
 POINTER='nov13-distributed-first24-publication.json'
 ALLOWED={f'fb{n:02d}' for n in range(1,25)}
@@ -40,13 +41,13 @@ def distribution(relative=None):
         source=settings.get('source')
         if not isinstance(source,str) or not source:raise ValueError('请先运行今天的自动分配视频指令，未改选旧素材。')
         token=hashlib.sha256(str(Path(source).resolve()).casefold().encode()).hexdigest()[:16]
-        path=upload.ROOT/'logs/material-distribution'/token/(DAY+'.json')
+        path=upload.ROOT/'logs/material-distribution'/token/(MATERIAL_DAY+'.json')
     else:
         path=upload.ROOT/relative
     archive.safe(path).resolve().relative_to((upload.ROOT/'logs/material-distribution').resolve())
-    if path.name!=DAY+'.json':raise ValueError('不是今天第一批或统一分配的清单。')
+    if path.name!=MATERIAL_DAY+'.json':raise ValueError('不是本批授权来源日期的统一分配清单。')
     value=archive.checked_json(path);payload=value['payload']
-    if (payload.get('schema')!=materials.SCHEMA or payload.get('date')!=DAY
+    if (payload.get('schema')!=materials.SCHEMA or payload.get('date')!=MATERIAL_DAY
             or payload.get('target_scope','all') not in {'all','existing24'}):raise ValueError('今天分配清单范围异常。')
     rows=[r for r in payload.get('assignments',[]) if r.get('account') in ALLOWED]
     pairs=[(r['account'],r['target']) for r in rows]
