@@ -14,21 +14,18 @@ class WindowsQueueScriptTests(unittest.TestCase):
     def run_ps(self,script,data):
         path=self.root/'script.ps1';path.write_text(script)
         return subprocess.run([PWSH,'-NoLogo','-NoProfile','-NonInteractive','-File',str(path)],input=json.dumps(data),text=True,capture_output=True,env=self.env,timeout=20)
-    def test_live_workers_only_exempt_actual_direct_verified_bootstrap_parent(self):
+    def test_cim_snapshot_is_classified_privately_and_only_redacted_results_leave_checker(self):
         root=r'E:\FB-AutoUpload';exe=root+r'\.venv\Scripts\python.exe'
-        rows=[dict(ProcessId=7,ParentProcessId=8,Name='python.exe',ExecutablePath=exe,CommandLine=root+r'\material-staging\tools\cache\finish_first24_nov14_on_nov16.py'),
-              dict(ProcessId=8,ParentProcessId=9,Name='python.exe',ExecutablePath=exe,CommandLine="python -c https://raw.githubusercontent.com/p/r/sha/downloads/start_finish_first24_nov16.py "+root),
-              dict(ProcessId=10,Name='python.exe',ExecutablePath=exe,CommandLine=root+r'\publish_unplanned_fortysix_nov14.py'),
-              dict(ProcessId=11,Name='python.exe',ExecutablePath=exe,CommandLine=root+r'\summarize_nov12_readonly.py'),
-              dict(ProcessId=12,Name='python.exe',ExecutablePath=exe,CommandLine='python -c unrelated_but_unclassified'),
-              dict(ProcessId=13,Name='python.exe',ExecutablePath=exe,CommandLine=root+r'\start_finish_first24_nov16.py'),
-              dict(ProcessId=14,Name='python.exe',ExecutablePath=r'C:\Other\python.exe',CommandLine='other_work.py')]
-        file=self.root/'processes.json';file.write_text(json.dumps(rows))
-        prefix="function Get-CimInstance { Get-Content -Raw '"+str(file)+"' | ConvertFrom-Json }\n"
-        result=self.run_ps(prefix+app.WORKERS,dict(pid=7,root=root,python=exe))
+        runner=root+r'\material-staging\tools\cache\finish_first24_nov14_on_nov16.py'
+        row=dict(ProcessId=7,ParentProcessId=8,Name='python.exe',ExecutablePath=exe,
+                 CommandLine=subprocess.list2cmdline([exe,'-u',runner,root]),CreationDate='2026-11-16T02:00:00+00:00')
+        file=self.root/'processes.json';file.write_text(json.dumps([row]))
+        prefix="function Get-CimInstance { $rows=Get-Content -Raw '"+str(file)+"' | ConvertFrom-Json; foreach($r in $rows){$r.CreationDate=[datetime]$r.CreationDate;$r} }\n"
+        result=self.run_ps(prefix+app.WORKERS,{})
         self.assertEqual(result.returncode,0,result.stderr)
-        self.assertEqual({r['pid'] for r in json.loads(result.stdout)},{10,12,13})
-        self.assertNotIn('CommandLine',result.stdout)
+        workers,allowed=app.classify_workers(json.loads(result.stdout),root,7,runner)
+        self.assertEqual(workers,[]);self.assertEqual(allowed,[7])
+        self.assertNotIn('command',json.dumps(dict(workers=workers,allowed=allowed)).lower())
     def task(self,name,*,state='Ready',date='2026-11-14T09:00:00+08:00',repeat=None,python=None):
         root=r'E:\FB-AutoUpload'
         return dict(TaskName=name,TaskPath='\\',State=state,Actions=[dict(Execute=python or root+r'\.venv\Scripts\python.exe',WorkingDirectory=root,Arguments='"'+root+r'\scheduled_priority_workflow.py" run --manifest fixed.json')],

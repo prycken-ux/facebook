@@ -2,7 +2,7 @@
 
 Retire expired execution queues, never publication evidence or material history.
 """
-import contextlib,copy,json,os,re,shutil,subprocess,sys,uuid
+import contextlib,copy,json,ntpath,os,re,shutil,subprocess,sys,uuid
 from collections import Counter
 from datetime import datetime,timedelta,timezone
 from pathlib import Path
@@ -18,38 +18,125 @@ MATERIAL_DAY='2026-11-14'
 SCOPE='nov16-publish-exact-nov14-stage-ee49926eedf51de8-first24-v1'
 POINTER=SCOPE+'.json'
 VERSION='1.0-nov16-frozen-stage-and-prepost-only'
+WORKER_VERSION='1.1-verified-windows-venv-launch-chain'
 RUN=first.execute
 NORMAL=first.normal.launch_normal
 RECONCILE=first.reconcile
 SKIPPED=set()
 
-# Only verified direct bootstrap ancestors may be excluded. Other Python
-# processes in this environment are reported, never killed or silently waited for.
+# Query locally; raw command lines stay in memory, never console/report output.
+# A Windows venv redirector may retain a Python stub for EACH invocation:
+# bootstrap stub -> bootstrap runtime -> runner stub -> runner runtime.
 WORKERS=r'''
 $ErrorActionPreference='Stop'
 [Console]::InputEncoding=New-Object System.Text.UTF8Encoding($false)
 [Console]::OutputEncoding=New-Object System.Text.UTF8Encoding($false)
 $d=[Console]::In.ReadToEnd() | ConvertFrom-Json
-$all=@(Get-CimInstance Win32_Process -ErrorAction Stop)
-$me=$all | Where-Object {[long]$_.ProcessId -eq [long]$d.pid}
-$allowed=@([long]$d.pid)
-$parent=$all | Where-Object {[long]$_.ProcessId -eq [long]$me.ParentProcessId}
-if($parent -and [string]$parent.Name -match '^pythonw?\.exe$' -and [string]$parent.CommandLine -match 'start_finish_first24_nov16\.py' -and [string]::Equals([string]$parent.ExecutablePath,[string]$d.python,[StringComparison]::OrdinalIgnoreCase)){
-  $allowed+= [long]$parent.ProcessId
-}
 $result=@()
-foreach($p in $all){
-  if([string]$p.Name -notmatch '^pythonw?\.exe$' -or $allowed -contains [long]$p.ProcessId){continue}
-  $line=[string]$p.CommandLine;$exe=[string]$p.ExecutablePath
-  if([string]::IsNullOrWhiteSpace($line) -and [string]::IsNullOrWhiteSpace($exe)){throw 'Cannot inspect Python process safely'}
-  $related=[string]::Equals($exe,[string]$d.python,[StringComparison]::OrdinalIgnoreCase) -or $line.IndexOf([string]$d.root,[StringComparison]::OrdinalIgnoreCase) -ge 0
-  if(-not $related){continue}
-  # Read-only summaries and material preparation do not publish or import.
-  if($line -match '(?:^|[\\/\s"''])(?:summarize_[a-z0-9_]+|start_stage_(?:first24|next)_materials_20261114)\.py(?:[\s"'']|$)'){continue}
-  $result+=[pscustomobject]@{pid=[long]$p.ProcessId;name=[string]$p.Name}
+foreach($p in @(Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='pythonw.exe'" -ErrorAction Stop)){
+  $created=$null
+  if($null -ne $p.CreationDate){$created=$p.CreationDate.ToUniversalTime().ToString('o')}
+  $result+=[pscustomobject]@{pid=[long]$p.ProcessId;parent=[long]$p.ParentProcessId;name=[string]$p.Name;exe=[string]$p.ExecutablePath;command=[string]$p.CommandLine;created=$created}
 }
 ConvertTo-Json -InputObject @($result) -Compress
 '''
+
+BOOTSTRAP=re.compile(
+    r"import hashlib,ssl,sys,urllib\.request;c=ssl\.create_default_context\(\);c\.minimum_version=ssl\.TLSVersion\.TLSv1_2;"
+    r"b=urllib\.request\.urlopen\('https://raw\.githubusercontent\.com/prycken-ux/facebook/[a-f0-9]{40}/downloads/start_finish_first24_nov16\.py',context=c,timeout=30\)\.read\(131073\);"
+    r"hashlib\.sha256\(b\)\.hexdigest\(\)=='[a-f0-9]{64}' or sys\.exit\('Checksum mismatch; stopped'\);"
+    r"exec\(compile\(b,'verified-nov16-first24-and-nov14-stage','exec'\)\)")
+
+
+def win_args(line):
+    """Decode standard Windows CRT quoting without evaluating any command."""
+    result=[];index=0
+    while index<len(line):
+        while index<len(line) and line[index] in ' \t':index+=1
+        if index==len(line):break
+        word=[];quoted=False
+        while index<len(line) and (quoted or line[index] not in ' \t'):
+            slashes=0
+            while index<len(line) and line[index]=='\\':slashes+=1;index+=1
+            if index<len(line) and line[index]=='"':
+                word.extend('\\'*(slashes//2))
+                if slashes%2:word.append('"');index+=1
+                elif quoted and index+1<len(line) and line[index+1]=='"':word.append('"');index+=2
+                else:quoted=not quoted;index+=1
+            else:
+                word.extend('\\'*slashes)
+                if index<len(line) and (quoted or line[index] not in ' \t'):word.append(line[index]);index+=1
+        if quoted:raise ValueError('进程参数引号未能完整核对。')
+        result.append(''.join(word))
+    return result
+
+
+def win_path(value):return ntpath.normcase(ntpath.normpath(str(value)))
+
+
+def classify_workers(rows,root,pid,runner=None):
+    """Exempt only the actual contiguous, argument-verified parent chain.
+
+    Base Python executable paths are allowed within that verified chain. A
+    sibling/second launch, an old publisher, an unknown ancestor, or a recycled
+    parent PID remains a blocker even when it uses the same runtime or filename.
+    """
+    if (not isinstance(rows,list) or any(not isinstance(r,dict) or type(r.get('pid')) is not int or type(r.get('parent')) is not int
+            or r.get('name','').lower() not in {'python.exe','pythonw.exe'} or not isinstance(r.get('command'),str)
+            or not isinstance(r.get('exe'),str) for r in rows)):raise ValueError('发布进程检查数据异常。')
+    lookup={r['pid']:r for r in rows}
+    if len(lookup)!=len(rows) or pid not in lookup:raise ValueError('无法唯一定位本次发布进程。')
+    root_key=win_path(root);runner_key=win_path(runner or Path(__file__).resolve())
+    parsed={}
+    for r in rows:
+        if not r['command'] and not r['exe']:raise ValueError('有Python进程无法核对，未开始发布。')
+        try:parsed[r['pid']]=win_args(r['command'])
+        except ValueError:parsed[r['pid']]=[]
+    def args(row):
+        argv=parsed[row['pid']][1:]
+        return argv[1:] if argv[:1]==['-u'] else argv
+    def role(row):
+        argv=args(row)
+        if len(argv)==2 and win_path(argv[0])==runner_key and win_path(argv[1])==root_key:return 'runner'
+        if len(argv)==3 and argv[0]=='-c' and BOOTSTRAP.fullmatch(argv[1]) and win_path(argv[2])==root_key:return 'bootstrap'
+        return None
+    def born(row):
+        try:return datetime.fromisoformat(row['created'].replace('Z','+00:00')).timestamp()
+        except (ValueError,TypeError,KeyError):return None
+    allowed={pid};current=lookup[pid];phase='runner'
+    if role(current)=='runner':
+        for _ in range(8):
+            parent=lookup.get(current['parent'])
+            if parent is None or parent['pid'] in allowed:break
+            child_time,parent_time=born(current),born(parent)
+            if child_time is None or parent_time is None or parent_time>child_time:break
+            kind=role(parent)
+            duplicate=kind==phase and args(parent)==args(current)
+            transition=phase=='runner' and kind=='bootstrap'
+            if not (duplicate or transition):break
+            allowed.add(parent['pid']);current=parent;phase=kind
+    workers=[]
+    for row in rows:
+        if row['pid'] in allowed:continue
+        related=win_path(row['exe'])==win_path(ntpath.join(str(root),'.venv','Scripts','python.exe')) or root_key in row['command'].replace('/','\\').casefold()
+        if not related:continue
+        argv=args(row);script=ntpath.basename(argv[0]) if argv else ''
+        if (argv and win_path(ntpath.dirname(argv[0]))==root_key
+                and re.fullmatch(r'(?:summarize_[a-z0-9_]+|start_stage_(?:first24|next)_materials_20261114)\.py',script,re.I)):continue
+        kind='另一个本批启动进程' if role(row) else '发布/登录检查任务' if re.fullmatch(r'(?:publish|resume|retry|diagnose|stage|finish|start)_[a-z0-9_]+\.py',script,re.I) else '未识别的Python任务'
+        workers.append(dict(pid=row['pid'],name=row['name'],kind=kind))
+    return workers,sorted(allowed)
+
+
+def active_workers(root):
+    if sys.platform!='win32':raise ValueError('发布进程检查必须在原Windows电脑执行。')
+    result=subprocess.run(['powershell.exe','-NoProfile','-NonInteractive','-Command',WORKERS],input=b'{}',stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=20,creationflags=0x08000000)
+    if result.returncode:raise RuntimeError('无法读取当前发布进程信息，尚未导入或发布。')
+    try:rows=json.loads(result.stdout.decode('utf-8-sig'))
+    except (ValueError,UnicodeError):raise ValueError('发布进程信息未能读取，未开始发布。') from None
+    workers,allowed=classify_workers(rows,root,os.getpid())
+    print('本次启动链已核对（含虚拟环境启动层）：',','.join(map(str,allowed)),'；另有任务：',len(workers),'个。',flush=True)
+    return workers
 
 SCHEDULES=r'''
 $ErrorActionPreference='Stop'
@@ -101,9 +188,10 @@ def require_day():
 
 
 def assert_idle():
-    with patch.object(staged.stage,'WORKERS',WORKERS):workers=staged.stage.active_workers(first.upload.ROOT)
+    workers=active_workers(first.upload.ROOT)
     if workers:
-        raise RuntimeError('仍有本环境Python任务，PID：'+','.join(str(r['pid']) for r in workers)+'。请先在旧发布/导入/登录检查窗口按Ctrl+C正常退出，再运行本指令；没有强制结束进程或导入新素材。')
+        details='；'.join(str(r['pid'])+'（'+r.get('kind','Python任务')+'）' for r in workers)
+        raise RuntimeError('排除本次启动链后仍有任务：'+details+'。请先在对应旧发布/导入/登录检查窗口按Ctrl+C正常退出，再运行本指令；没有强制结束进程或导入新素材。')
 
 
 def retire_queues():
@@ -281,7 +369,7 @@ def freeze_stage():
 def publish_stage():
     require_day();source_path,source=staged.checked_stage();material=source['payload']['distribution']
     assert_idle();staged.lock_recovery.recover_locks(first.upload.ROOT)
-    with patch.object(staged.stage,'WORKERS',WORKERS):staged.stage.import_stage(first.upload.ROOT,source_path)
+    with patch.object(staged.stage,'active_workers',side_effect=active_workers):staged.stage.import_stage(first.upload.ROOT,source_path)
     journal=first.upload.ROOT/'logs/material-distribution'/staged.SOURCE_ID/(MATERIAL_DAY+'.json')
     def bound(relative=None):
         if relative is not None and (first.upload.ROOT/relative).resolve()!=journal.resolve():raise ValueError('本批只接受14号原暂存清单。')

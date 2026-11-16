@@ -27,7 +27,7 @@ class StagedOn16Tests(unittest.TestCase):
         self.files={p:p.read_bytes() for p in (self.root/'videos').rglob('*') if p.is_file()}
         self.stagebytes=path.read_bytes()
     def core(self,unknown=False,fail_once=False):
-        with patch.object(app,'assert_idle'),patch.object(app.staged.stage,'active_workers',return_value=[]), \
+        with patch.object(app,'assert_idle'),patch.object(app,'active_workers',return_value=[]),patch.object(app.staged.stage,'active_workers',return_value=[]), \
              patch.object(app.repair,'wait_session'),patch.object(app.repair,'ensure_background_identity',side_effect=lambda previous,page,entry:previous(page,entry)), \
              patch.object(app.staged.lock_recovery,'recover_locks'),patch.object(app.first,'execute',side_effect=lambda real:app.publish_stage()):
             return self.fx.core(unknown=unknown,fail_once=fail_once)
@@ -75,7 +75,7 @@ class StagedOn16Tests(unittest.TestCase):
         self.assertEqual(parent_path.read_bytes(),parentbytes)
         _,events,_=self.core();self.assertFalse(any(e=='post' for e,p in events))
     def test_any_live_worker_stops_instead_of_waiting_or_mutating(self):
-        with patch.object(app.staged.stage,'active_workers',return_value=[dict(pid=921,name='python.exe')]), \
+        with patch.object(app,'active_workers',return_value=[dict(pid=921,name='python.exe')]), \
              patch.object(app.staged.lock_recovery,'recover_locks') as recover,patch.object(app.staged.stage,'import_stage') as importer:
             with self.assertRaisesRegex(RuntimeError,'921'):app.publish_stage()
         recover.assert_not_called();importer.assert_not_called()
