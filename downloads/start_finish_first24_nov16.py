@@ -3,21 +3,22 @@ import ast,hashlib,io,ssl,subprocess,sys,tempfile,urllib.request,zipfile
 from datetime import datetime,timedelta,timezone
 from pathlib import Path
 
-COMMIT='cd3b2920b75fef077c6a2a49583d481d27a66a9d'
-PACKAGE_SHA='c86212d556e3de33173252da5a0ea5645c7ebeca4114d4be274392a223c70a8e'
+COMMIT='7b04281e9f0430d4cf531b4d88e8ec61658a3407'
+PACKAGE_SHA='418067c7a8053749afa34639f1d92f711070b05b2c6046f1c5cfeff1536c4327'
 NAMES=('finish_first24_nov14_on_nov16.py','retry_first24_original_prepost_on_nov16.py','publish_staged_first24_nov14.py','stage_next_materials_20261114_v1.py','verified_publication_lock_recovery.py')
 VERIFY=("import sys;sys.path.insert(0,sys.argv[1]);sys.path.insert(1,sys.argv[2]);import finish_first24_nov14_on_nov16 as r;"
         "assert r.DAY=='2026-11-16' and r.MATERIAL_DAY=='2026-11-14' and r.staged.PAUSED=={'fb17'};"
         "assert len(r.staged.EXPECTED)==44 and len(r.staged.ALLOWED)==23 and len(r.repair.SPEC)==10;"
         "assert all(a=='fb09' and t.startswith('page') for a,t in r.repair.SPEC);"
         "assert r.VERSION=='1.0-nov16-frozen-stage-and-prepost-only';r.first.workflow.require_versions();"
-        "print('INSTALL VERIFIED: Nov16 bounded original pre-Post repair, exact Nov14 stage, archived expired queues, original comments. fb17 paused. No video uploaded yet.',flush=True)")
+        "assert r.WORKER_VERSION=='1.1-verified-windows-venv-launch-chain';"
+        "print('INSTALL VERIFIED: v2 Windows venv process chain; Nov16 bounded original pre-Post repair, exact Nov14 stage, archived expired queues, original comments. fb17 paused. No video uploaded yet.',flush=True)")
 
 
 
 def download():
     context=ssl.create_default_context();context.minimum_version=ssl.TLSVersion.TLSv1_2
-    with urllib.request.urlopen('https://raw.githubusercontent.com/prycken-ux/facebook/'+COMMIT+'/downloads/nov16-first24-repair-and-nov14-stage-v1.zip',context=context,timeout=30) as response:data=response.read(2*1024*1024+1)
+    with urllib.request.urlopen('https://raw.githubusercontent.com/prycken-ux/facebook/'+COMMIT+'/downloads/nov16-first24-repair-and-nov14-stage-v2.zip',context=context,timeout=30) as response:data=response.read(2*1024*1024+1)
     if hashlib.sha256(data).hexdigest()!=PACKAGE_SHA:raise ValueError('Checksum mismatch; stopped')
     with zipfile.ZipFile(io.BytesIO(data)) as archive:
         if len(archive.namelist())!=len(NAMES) or set(archive.namelist())!=set(NAMES):raise ValueError('本批发布工具范围异常。')
