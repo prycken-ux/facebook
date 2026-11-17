@@ -57,6 +57,8 @@ def allocation(root):
     if pointer.get('complete') is not True:raise ValueError('尚未找到78条新素材的原分配清单，请先运行78目标分配指令；未猜选旧素材。')
     manifest=stage.safe_child(root,root/pointer.get('manifest',''));_,source=stage.validate_stage(root,manifest);p=source['payload'];material=p['distribution'];rows=material['payload']['assignments']
     stage.check_scope(rows)
+    generations=active_reservation().get('slots',{})
+    if any(p.get('generations',{}).get(a)!=owned.BATCH_ID or generations.get(a,{}).get('batch_id')!=owned.BATCH_ID for a in ACTIVE_NEW):raise ValueError('素材分配后的可用新账号代次变化，未猜选旧账号。')
     if p['distribution']['payload'].get('target_scope')!='eligible78' or source['sha256']!=pointer.get('sha256'):raise ValueError('不是这次跳过16个账号的78条原分配清单。')
     journal=stage.safe_child(root,root/'logs/material-distribution'/p['source_id']/(p['date']+'-eligible78.json'))
     actual=first.archive.checked_json(journal);receipt=first.upload.read_json(manifest.parent/'imported.json',{});progress=first.upload.read_json(journal.with_name(journal.stem+'-progress.json'),{})
@@ -131,6 +133,7 @@ def bound_distribution(journal,material,pairs):
 
 
 def workflow_validate(path,value):
+    active_reservation()
     queued.validate_queue(path,value,value['payload']['date']);p=value['payload']
     if (set(p.get('intended_accounts',[]))!=set(first.ALLOWED) or any(j['account'] in BLOCKED or (j['account'],j['target']) not in EXPECTED for j in p['jobs'])
             or p.get('distributed_scope')!=first.SCOPE or value.get('scheduled_priority_runner')!=first.workflow.VERSION

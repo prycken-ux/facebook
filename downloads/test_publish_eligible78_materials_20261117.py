@@ -135,6 +135,10 @@ class Eligible78PublicationTests(unittest.TestCase):
             result,events,_,_,_,_=self.core()
         self.assertEqual(result,0);self.assertEqual(sum(e=='post' for e,p in events),78)
         self.assertTrue(app.first.upload.read_json(path,{})['complete'])
+    def test_old_deleted_generation_is_rejected_before_any_upload(self):
+        path=self.root/'additional_personal_accounts.json';value=app.first.upload.read_json(path,{})
+        value['slots']['fb25']['batch_id']='old-deleted-fb25';app.first.upload.save_json(path,value)
+        with self.assertRaisesRegex(ValueError,'原预留代次|代次变化'):self.core()
     def test_ai_true_or_changed_material_authorization_refused(self):
         self.core();path=self.root/app.REQUEST;value=app.first.upload.read_json(path,{});value['payload']['ai_label']=True;value['sha256']=app.first.batch.digest(value['payload']);app.first.upload.save_json(path,value)
         with self.assertRaisesRegex(ValueError,'标签'):self.core()
