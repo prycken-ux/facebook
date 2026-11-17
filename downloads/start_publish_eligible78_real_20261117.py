@@ -3,8 +3,8 @@ import ast,hashlib,io,ssl,subprocess,sys,tempfile,urllib.request,zipfile
 from datetime import datetime,timedelta,timezone
 from pathlib import Path
 
-COMMIT='4b51de00718ca313673cd09d6240a8229fc34771'
-PACKAGE_SHA='5a6213ba18984bf547d9793bc30009ef951c829bd48c7a920c75bd5d4b2867af'
+COMMIT='a74849b66321fedd1ef02ffd01ea4735700149e6'
+PACKAGE_SHA='53fd9de1b0085d38f15fed014427a8d32430917275a1b13ebbcb1fe8b474a978'
 NAMES=('publish_eligible78_materials_20261117.py','distribute_eligible78_materials_20261117.py', 'eligible78_publication_workflow.py', 'retry_eligible78_prepost_20261117.py', 'stage_eligible78_materials_v4.py', 'material_distribution_worker_check.py', 'verified_publication_lock_recovery.py', 'finish_first24_nov14_on_nov16.py', 'retry_first24_original_prepost_on_nov16.py', 'publish_staged_first24_nov14.py', 'stage_next_materials_20261114_v1.py', 'publish_all_distributed_nov13.py', 'publish_unplanned_fortysix_nov14.py')
 VERIFY=("import sys;sys.path.insert(0,sys.argv[1]);sys.path.insert(1,sys.argv[2]);import publish_eligible78_materials_20261117 as r;"
         "assert r.VERSION=='1.0-eligible78-real-video-comment-automatic-first-manual-last' and len(r.EXPECTED)==78;"
