@@ -61,6 +61,19 @@ class Eligible78PublicationTests(unittest.TestCase):
         rows=[r for k,r in state.items() if k not in self.before_state];self.assertEqual(len(rows),78);self.assertTrue(all(r['ai_label_requested'] is False for r in rows));self.assertTrue(all(r['comment_status']=='sent' for r in rows))
         available=app.first.upload.read_json(self.root/app.AVAILABILITY,{})['payload'];self.assertEqual(available['excluded_accounts'],sorted(app.BLOCKED))
         result,events,_,calls,_,_=self.core();self.assertEqual(result,0);self.assertFalse(any(e=='post' for e,p in events));self.assertEqual(calls,[])
+    def test_stale_foreground_modes_retired_without_resetting_original_progress(self):
+        self.core();request_path=self.root/app.REQUEST;request_bytes=request_path.read_bytes();req=app.first.upload.read_json(request_path,{})
+        path=self.root/'logs'/('eligible78-real-publication-'+req['sha256'][:16]+'.json');control=app.first.upload.read_json(path,{})
+        control['modes'].update(fb03='foreground_minimized',fb09='foreground');app.first.upload.save_json(path,control)
+        frozen={self.root/'logs'/w['manifest']:(self.root/'logs'/w['manifest']).read_bytes() for w in control['waves']}
+        state=(self.root/'logs/publish_state.json').read_bytes()
+        with patch.object(app.owners.guided,'minimized_chrome',side_effect=AssertionError('Do not reuse foreground fallback')):
+            result,events,_,_,_,_=self.core()
+        self.assertEqual(result,0);self.assertFalse(any(e=='post' for e,p in events));self.assertEqual((self.root/'logs/publish_state.json').read_bytes(),state)
+        updated=app.first.upload.read_json(path,{})
+        self.assertEqual(updated['modes']['fb03'],'background');self.assertEqual(updated['modes']['fb09'],'background');self.assertEqual(len(updated['retired_foreground_mode_history']),1)
+        self.assertEqual(request_path.read_bytes(),request_bytes)
+        for file,data in frozen.items():self.assertEqual(file.read_bytes(),data)
     def test_recoverable_network_and_comment_failures_retry_after_other_videos(self):
         result,events,comments,_,phases,_=self.core(network=True,comment_retry=True);self.assertEqual(result,0)
         posts=[p for e,p in events if e=='post'];self.assertEqual(len(posts),78);self.assertEqual(posts[-1],('fb02','page01'));self.assertGreaterEqual(len(comments),2)
@@ -77,7 +90,7 @@ class Eligible78PublicationTests(unittest.TestCase):
         self.assertTrue(any(datetime.fromisoformat(r['published_at']).astimezone(app.first.batch.BJ).day==18 for k,r in state.items() if k not in self.before_state))
     def test_manual_new_login_only_after77_then_publishes_missing_one(self):
         entry,proof=self.fx.discover('fb25')
-        with patch.object(app.owners,'discover_manual',return_value=(entry,proof,'background')) as manual:
+        with patch.object(app,'manual_new',return_value=(entry,proof,'background')) as manual:
             result,events,_,_,phases,prompts=self.core(fail_account='fb25',manual=True)
         self.assertEqual(result,0);self.assertEqual(sum(e=='post' for e,p in events),78);manual.assert_called_once_with('fb25');self.assertIn('comment_retry',prompts[0][1])
         self.assertEqual([p for e,p in events if e=='post'][-1],('fb25','personal'))

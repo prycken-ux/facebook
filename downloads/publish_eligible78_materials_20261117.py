@@ -7,6 +7,7 @@ if __name__=='__main__':
     sys.path.insert(0,str(Path(sys.argv[1]).resolve()));sys.path.insert(0,str(Path(__file__).resolve().parent))
 import eligible78_publication_workflow as queued
 import publication_response_finish_guard as response_guard
+import publication_background_policy as background_policy
 import retry_eligible78_prepost_20261117 as extra
 import publish_all_distributed_nov13 as owned
 import publish_unplanned_fortysix_nov14 as owners
@@ -150,8 +151,6 @@ def wave_context(req,source,journal,material,wave,controller):
         def launch(pw,entry):
             if (entry['account'],entry['target']) not in pairs:raise ValueError('浏览器目标不属于本批次。')
             if entry['account'] in controller.get('manual_skipped',[]):raise extra.SessionNotReady('用户本轮暂跳过此账号，未选择或发布视频。')
-            if controller['modes'].get(entry['account'])=='foreground_minimized':
-                with owners.guided.minimized_chrome(entry):return factory(pw,entry)
             return factory(pw,entry)
         return launch
     with patch.object(first,'DAY',wave['date']),patch.object(first,'MATERIAL_DAY',req['payload']['material_date']),patch.object(first,'ALLOWED',accounts), \
@@ -280,11 +279,11 @@ def report(req,material,controller,control_path):
 def manual_existing(entry):
     from playwright.sync_api import sync_playwright
     context=None
-    with sync_playwright() as pw:
+    with background_policy.manual_verification(),sync_playwright() as pw:
         try:
             context,page=owners.guided.open_for_check(pw,entry,'foreground')
             while True:
-                try:extra.wait_session(page);first.upload.ensure_identity(page,entry);return 'foreground_minimized'
+                try:extra.wait_session(page);first.upload.ensure_identity(page,entry);return 'background'
                 except KeyboardInterrupt:raise
                 except Exception as error:
                     print('最后人工检查：',entry['account'],entry['target'],str(error).split('\n',1)[0],flush=True)
@@ -292,6 +291,30 @@ def manual_existing(entry):
                     if answer=='S':return None
                     if answer=='R':
                         try:page.goto(first.upload.english_url(entry['url']),wait_until='domcontentloaded',timeout=30000)
+                        except Exception:pass
+        finally:
+            if context is not None:context.close()
+
+
+def manual_new(account):
+    from playwright.sync_api import sync_playwright
+    expected=owners.known_owner(account)
+    probe=dict(account=account,target='personal',type='personal',workflow='personal_recording_v1',name='Current personal owner',url='https://www.facebook.com/me',auto_switch_personal=True)
+    context=None
+    with background_policy.manual_verification(),sync_playwright() as pw:
+        try:
+            context,page=owners.guided.open_for_check(pw,probe,'foreground')
+            while True:
+                try:
+                    entry,proof=owners.identify_current(page,account,expected)
+                    return entry,proof,'background'
+                except KeyboardInterrupt:raise
+                except Exception as error:
+                    print('最后人工验证：',account,str(error).split('\n',1)[0],flush=True)
+                    answer=owners.guided.prompt('只处理本人登录/验证或网络；完成后回车核验，R重开本人主页，S暂跳过，Q暂停。核验后自动回后台：')
+                    if answer=='S':return None
+                    if answer=='R':
+                        try:page.goto(first.upload.english_url(probe['url']),wait_until='domcontentloaded',timeout=30000)
                         except Exception:pass
         finally:
             if context is not None:context.close()
@@ -307,9 +330,10 @@ def execute_current(root,real_footage_confirmed=True):
     browser.staged.lock_recovery.recover_locks(root)
     with patch.object(first.batch,'excluded_accounts',side_effect=exclusions),patch.object(owned,'reservation',side_effect=active_reservation):
         _,source,journal,material=allocation(root)
-        with first.locked():req=request(root,source,journal,material);save_availability(root)
+        with first.locked():req=request(root,source,journal,material);save_availability(root);background_policy.save_background(root)
         path=root/'logs'/('eligible78-real-publication-'+req['sha256'][:16]+'.json');controller=first.upload.read_json(path,dict(request_sha256=req['sha256'],waves=[],modes={},pending={}))
         if controller.get('request_sha256')!=req['sha256'] or not isinstance(controller.get('waves'),list):raise ValueError('78目标原发布进度校验失败。')
+        background_policy.retire_foreground_modes(controller)
         recover_waves(req,source,journal,material,controller,path)
         deferred={};print('本次78目标：AI关闭；先自动发布全部可用视频，再安全补发和评论，最后才提示人工检查。fb23及另外15个问题账号均停发。',flush=True)
         ready=registered_ready(material,controller);add_wave(ready,req,source,journal,material,controller,path)
@@ -332,7 +356,7 @@ def execute_current(root,real_footage_confirmed=True):
                     entries=[e for e in config.get('targets',[]) if e.get('account')==account and (e.get('account'),e.get('target')) in EXPECTED]
                     eligible=[e for e in entries if first.batch.eligible(e,True,date=today())]
                     if account in ACTIVE_NEW and not eligible:
-                        found=owners.discover_manual(account)
+                        found=manual_new(account)
                         if found is None:controller['manual_skipped'].append(account);continue
                         entry,proof,mode=found
                         with first.locked(),patch.object(first,'DAY',today()):owned.register_one(account,entry,proof)
@@ -341,7 +365,7 @@ def execute_current(root,real_footage_confirmed=True):
                         if entry is None:controller['pending'][account]='没有可核对的原登记目标，未猜测身份';controller['manual_skipped'].append(account);continue
                         mode=manual_existing(entry)
                         if mode is None:controller['manual_skipped'].append(account);continue
-                    controller['modes'][account]=mode;controller['pending'].pop(account,None);deferred.pop(account,None);first.upload.save_json(path,controller)
+                    controller['modes'][account]='background';controller['pending'].pop(account,None);deferred.pop(account,None);first.upload.save_json(path,controller)
                 except KeyboardInterrupt:raise
                 except Exception as error:
                     controller['manual_skipped'].append(account);controller['pending'][account]=str(error).split('\n',1)[0] or type(error).__name__;print('保留待处理，继续下一账号：',account,controller['pending'][account],flush=True)
@@ -352,7 +376,7 @@ def execute_current(root,real_footage_confirmed=True):
 
 
 def execute(root,real_footage_confirmed=True):
-    with response_guard.installed():return execute_current(root,real_footage_confirmed)
+    with response_guard.installed(),background_policy.installed():return execute_current(root,real_footage_confirmed)
 
 
 if __name__=='__main__':
