@@ -6,6 +6,7 @@ from unittest.mock import patch
 if __name__=='__main__':
     sys.path.insert(0,str(Path(sys.argv[1]).resolve()));sys.path.insert(0,str(Path(__file__).resolve().parent))
 import eligible78_publication_workflow as queued
+import publication_response_finish_guard as response_guard
 import retry_eligible78_prepost_20261117 as extra
 import publish_all_distributed_nov13 as owned
 import publish_unplanned_fortysix_nov14 as owners
@@ -296,7 +297,7 @@ def manual_existing(entry):
             if context is not None:context.close()
 
 
-def execute(root,real_footage_confirmed=True):
+def execute_current(root,real_footage_confirmed=True):
     if real_footage_confirmed is not True:raise ValueError('本批尚未明确确认实拍及AI关闭。')
     root=Path(root).resolve()
     if root!=first.upload.ROOT.resolve():raise ValueError('请在原上传目录运行。')
@@ -348,6 +349,10 @@ def execute(root,real_footage_confirmed=True):
         for phase in ('videos','retry','extra','reconcile','comments','comment_retry'):
             for wave in controller['waves']:run_phase(phase,req,source,journal,material,wave,controller,deferred)
         report(req,material,controller,path);return 0 if controller['complete'] else 3
+
+
+def execute(root,real_footage_confirmed=True):
+    with response_guard.installed():return execute_current(root,real_footage_confirmed)
 
 
 if __name__=='__main__':
