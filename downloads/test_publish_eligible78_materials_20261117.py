@@ -7,6 +7,9 @@ from test_publish_all_distributed_nov13 import TwoWavePublicationTests
 
 class Eligible78PublicationTests(unittest.TestCase):
     def setUp(self):
+        # These original78 regression cases explicitly retain their historical
+        # pause policy; current29-account behavior has its own cases below.
+        self.enterContext(patch.object(app,'PAUSED',set(app.BLOCKED)))
         self.fx=TwoWavePublicationTests();self.fx.setUp();self.addCleanup(self.fx.doCleanups);self.runfx=self.fx.fx;self.root=self.fx.root
         self.runfx.now=datetime(2026,11,17,6,tzinfo=timezone.utc)
         for c in self.runfx.clocks:c.now.return_value=self.runfx.now

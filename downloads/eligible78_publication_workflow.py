@@ -23,6 +23,7 @@ GRANT=None
 STAGE_SHA=None
 VERSION='1.0-real-eligible78-source-bound-manual-last'
 TARGET_PAIRS=set()
+PAUSED_ACCOUNTS=set()
 
 
 
@@ -69,7 +70,7 @@ def validate_queue(path, value, date):
     expected_comment = content['payload']['comment'] if content else daily.COMMENT
     if payload.get('comment_retry_policy') not in {None, first.priority.COMMENT_RECOVERY_VERSION}:
         raise ValueError('本批补评规则不匹配')
-    if value.get('sha256') != checksum or payload.get('schema') != batch.SCHEMA or payload.get('date') != date or (not re.fullmatch('frozen-material-' + re.escape(date) + '-' + checksum[:16] + '\\.json', path.name)) or (value.get('workflow') != 'future-video-comments-v1') or (value.get('auto_retry_policy') != retry.POLICY) or (value.get('comment_timing') != first.priority.TIMING) or (value.get('priority_workflow') != first.priority.PRIORITY_WORKFLOW_VERSION) or (value.get('report_format') != 'text') or (payload.get('ai_label') is not False) or (payload.get('include_fb10_pages') is not True) or (payload.get('comment_text') != expected_comment) or (set(payload.get('excluded_accounts', [])) != batch.excluded_accounts(date)) or (not jobs) or (len({j.get('key') for j in jobs}) != len(jobs)) or any((not batch.eligible(j, True, date=date) or not re.fullmatch('[a-f0-9]{64}', str(j.get('key', ''))) for j in jobs)):
+    if value.get('sha256') != checksum or payload.get('schema') != batch.SCHEMA or payload.get('date') != date or (not re.fullmatch('frozen-material-' + re.escape(date) + '-' + checksum[:16] + '\\.json', path.name)) or (value.get('workflow') != 'future-video-comments-v1') or (value.get('auto_retry_policy') != retry.POLICY) or (value.get('comment_timing') != first.priority.TIMING) or (value.get('priority_workflow') != first.priority.PRIORITY_WORKFLOW_VERSION) or (value.get('report_format') != 'text') or (payload.get('ai_label') is not False) or (payload.get('include_fb10_pages') is not True) or (payload.get('comment_text') != expected_comment) or (set(payload.get('excluded_accounts', [])) != batch.excluded_accounts(date)) or (not jobs) or (len({j.get('key') for j in jobs}) != len(jobs)) or any(((j.get('account') not in PAUSED_ACCOUNTS and not batch.eligible(j, True, date=date)) or not re.fullmatch('[a-f0-9]{64}', str(j.get('key', ''))) for j in jobs)):
         raise ValueError('今天优先发布批次的清单、范围或策略校验失败')
     policy = batch.preferences.load(date)
     caption = content['payload']['caption'] if content else policy['payload']['caption'] if policy else None
@@ -77,7 +78,7 @@ def validate_queue(path, value, date):
         raise ValueError('本批统一正文或后续发布规则已变化，未使用旧文案')
     if payload.get('queue_authorization') != AUTH or payload.get('queue_scope') != SCOPE or payload.get('stage_sha256') != STAGE_SHA or (payload.get('material_source_date') != MATERIAL_DAY) or payload.get('real_footage_confirmed') is not True or payload.get('queue_id')!=QUEUE_ID or any((j['account'] not in first.ALLOWED for j in jobs)):
         raise ValueError('本批实拍78目标标签开启授权、素材来源或范围不符。')
-    if any(not batch.eligible(j,True,date=actual_day) for j in jobs):raise ValueError('当前账号发布授权已变化，保留队列。')
+    if any(j.get('account') not in PAUSED_ACCOUNTS and not batch.eligible(j,True,date=actual_day) for j in jobs):raise ValueError('当前账号发布授权已变化，保留队列。')
     if (payload.get('authorized_target_pairs')!=[list(p) for p in sorted(TARGET_PAIRS)] or any((j['account'],j['target']) not in TARGET_PAIRS for j in jobs)):
         raise ValueError('78目标批次的账号/公共主页范围不符。')
     if payload.get('distributed_scope') != SCOPE:
@@ -231,15 +232,23 @@ def run_queue(path, output_dir=None, before_job=None, defer_comments=False, retr
                 if not isinstance(report, dict) or report.get('manifest') != path.name or (not isinstance(report.get('attempts'), list)) or any((not isinstance(a, dict) or a.get('key') not in keys or (not a.get('action')) for a in report['attempts'])):
                     raise ValueError('续跑结果与原批次不一致，未重新发布')
                 attempts = report['attempts']
-        attempted = {a['key'] for a in attempts}
+        owners_by_key={j['key']:j['account'] for j in payload['jobs']}
+        attempted = {a['key'] for a in attempts if a.get('action')!='paused_by_user' or owners_by_key[a['key']] in PAUSED_ACCOUNTS}
         with contextlib.redirect_stdout(batch.Tee(sys.stdout, log)), contextlib.redirect_stderr(batch.Tee(sys.stderr, log)):
             try:
                 for job in payload['jobs']:
+                    if job['account'] in PAUSED_ACCOUNTS and job['key'] in attempted:
+                        print('用户暂停账号，保留原结果，跳过本轮全部操作：',job['account'],job['target'],flush=True)
+                        continue
                     if job['key'] in attempted:
                         print('本批首轮已有尝试，保留结果，补发统一留给一次补发阶段：', job['account'], job['target'], job['filename'], flush=True)
                         continue
                     attempt = dict(account=job['account'], target=job['target'], key=job['key'], started_at=datetime.now(timezone.utc).isoformat())
                     try:
+                        if job['account'] in PAUSED_ACCOUNTS:
+                            attempt.update(action='paused_by_user',error='用户已暂停此账号，不打开浏览器、不发布或补发')
+                            print('用户暂停账号，直接跳过：',job['account'],job['target'],flush=True)
+                            continue
                         state_path = upload.ROOT / 'logs/publish_state.json'
                         state = upload.read_json(state_path, {})
                         old = state.get(job['key'], {})
@@ -282,6 +291,7 @@ def run_queue(path, output_dir=None, before_job=None, defer_comments=False, retr
     return 0 if all((r['video_status'] == 'published' and r['comment_status'] in {'sent', 'already_present'} for r in rows)) else 3
 
 def decide_queue(job, value, state, attempt, claims):
+    if job.get('account') in PAUSED_ACCOUNTS:return False,'用户已暂停此账号，失败视频不补发'
     if has_submission(state.get(job['key'], {})):
         return (False, '已有提交证据，保留不重发')
     if job['key'] in claims['jobs']:

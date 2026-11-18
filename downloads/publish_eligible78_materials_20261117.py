@@ -13,8 +13,10 @@ import publish_all_distributed_nov13 as owned
 import publish_unplanned_fortysix_nov14 as owners
 import finish_first24_nov14_on_nov16 as browser
 first=queued.first
-VERSION='1.0-eligible78-real-video-comment-automatic-first-manual-last'
+VERSION='1.1-original78-current65-paused29-no-verification'
 BLOCKED={f'fb{n:02d}' for n in (17,23,28,30,33,35,36,38,41,58,64,69,71,72,73,74)}
+# Preserve original frozen scope/SHAs; live restrictions are applied separately.
+PAUSED=BLOCKED|{f'fb{n:02d}' for n in (25,27,29,34,39,42,44,48,50,53,57,59,61)}
 ALLOWED={f'fb{n:02d}' for n in range(1,75)}-BLOCKED
 ACTIVE_NEW={a for a in ALLOWED if int(a[2:])>=25}
 REQUEST='logs/eligible78-real-publication-request-20261117.json'
@@ -36,11 +38,20 @@ def today():return datetime.now(timezone.utc).astimezone(first.batch.BJ).date().
 def exclusions(day=None):return (EXCLUDED(day)-ALLOWED)|BLOCKED
 
 
+def active_new():return ACTIVE_NEW-PAUSED
+
+
+def active_view(value):
+    selected=copy.deepcopy(value)
+    selected['payload']['jobs']=[j for j in value['payload']['jobs'] if j.get('account') not in PAUSED]
+    return selected
+
+
 def active_reservation():
     value=first.upload.read_json(first.upload.ROOT/'additional_personal_accounts.json',{})
     batch=value.get('batches',{}).get(owned.BATCH_ID,{})
     if (value.get('schema')!='additional-personal-logins-v1' or batch.get('accounts')!=sorted(owned.NEW) or batch.get('count')!=50
-            or any(value.get('slots',{}).get(a,{}).get('batch_id')!=owned.BATCH_ID for a in ACTIVE_NEW)):
+            or any(value.get('slots',{}).get(a,{}).get('batch_id')!=owned.BATCH_ID for a in active_new())):
         raise ValueError('可用新账号不是原预留代次，未恢复旧删除账号或猜测编号。')
     return value
 
@@ -52,6 +63,7 @@ def current_workers(root):
 def allocation(root):
     stage.setup(root);pointer=first.upload.read_json(stage.safe_child(root,root/'material-staging/eligible78-pending-import.json'),{})
     if pointer and pointer.get('complete') is not True:
+        if PAUSED-BLOCKED:raise ValueError('暂停名单已更新为29个账号，旧78目标分配不再续拷；本入口只续已完成分配的原发布批次，未向暂停账号复制素材。')
         print('原78目标分配还未收尾；先从上次选定的总目录续完原分配，再发布。不选择其他来源。',flush=True)
         distributor=sibling('distribute_eligible78_materials_20261117.py')
         with patch.object(distributor,'inspect_workers',side_effect=current_workers):distributor.execute(root)
@@ -60,7 +72,7 @@ def allocation(root):
     manifest=stage.safe_child(root,root/pointer.get('manifest',''));_,source=stage.validate_stage(root,manifest);p=source['payload'];material=p['distribution'];rows=material['payload']['assignments']
     stage.check_scope(rows)
     generations=active_reservation().get('slots',{})
-    if any(p.get('generations',{}).get(a)!=owned.BATCH_ID or generations.get(a,{}).get('batch_id')!=owned.BATCH_ID for a in ACTIVE_NEW):raise ValueError('素材分配后的可用新账号代次变化，未猜选旧账号。')
+    if any(p.get('generations',{}).get(a)!=owned.BATCH_ID or generations.get(a,{}).get('batch_id')!=owned.BATCH_ID for a in active_new()):raise ValueError('素材分配后的可用新账号代次变化，未猜选旧账号。')
     if p['distribution']['payload'].get('target_scope')!='eligible78' or source['sha256']!=pointer.get('sha256'):raise ValueError('不是这次跳过16个账号的78条原分配清单。')
     journal=stage.safe_child(root,root/'logs/material-distribution'/p['source_id']/(p['date']+'-eligible78.json'))
     actual=first.archive.checked_json(journal);receipt=first.upload.read_json(manifest.parent/'imported.json',{});progress=first.upload.read_json(journal.with_name(journal.stem+'-progress.json'),{})
@@ -88,8 +100,8 @@ def request(root,source,journal,material):
 
 
 def save_availability(root):
-    path=stage.safe_child(root,root/AVAILABILITY);p=dict(schema='publication-account-exclusions-v1',effective_from='2026-11-17',excluded_accounts=sorted(BLOCKED),
-        reason='user-confirmed-problem-accounts-and-fb23-paused',automatic_first=True,manual_last=True)
+    path=stage.safe_child(root,root/AVAILABILITY);p=dict(schema='publication-account-exclusions-v1',effective_from='2026-11-18',excluded_accounts=sorted(PAUSED),original_frozen_exclusions=sorted(BLOCKED),
+        reason='user-confirmed-temporarily-inaccessible29-including-fb23',automatic_first=True,manual_last=True,skip_material_allocation=True,skip_verification=True,skip_video_retries=True)
     desired=dict(payload=p,sha256=first.batch.digest(p))
     if first.upload.read_json(path,None)==desired:return
     if path.exists():
@@ -101,7 +113,10 @@ def registered_ready(material,controller):
     config=first.upload.read_json(first.upload.CONFIG,{})
     ready=set()
     for row in material['payload']['assignments']:
-        pair=row['account'],row['target'];entries=[e for e in config.get('targets',[]) if (e.get('account'),e.get('target'))==pair]
+        pair=row['account'],row['target']
+        if pair[0] in PAUSED:
+            controller['pending'].pop(pair[0],None);continue
+        entries=[e for e in config.get('targets',[]) if (e.get('account'),e.get('target'))==pair]
         if len(entries)==1 and first.batch.eligible(entries[0],True,date=today()):ready.add(pair)
         else:controller['pending'][pair[0]]='未取得唯一已核验目标；自动可用目标先发布，本目标留到最后检查。'
     for account in {a for a,t in ready}:
@@ -111,7 +126,7 @@ def registered_ready(material,controller):
 
 def auto_register_pending(material,controller,control_path):
     config=first.upload.read_json(first.upload.CONFIG,{})
-    for account in sorted(ACTIVE_NEW):
+    for account in sorted(active_new()):
         entries=[e for e in config.get('targets',[]) if (e.get('account'),e.get('target'))==(account,'personal')]
         if len(entries)==1 and first.batch.eligible(entries[0],True,date=today()):continue
         try:
@@ -150,13 +165,14 @@ def wave_context(req,source,journal,material,wave,controller):
         factory=native(jobs,date=date)
         def launch(pw,entry):
             if (entry['account'],entry['target']) not in pairs:raise ValueError('浏览器目标不属于本批次。')
+            if entry['account'] in PAUSED:raise extra.SessionNotReady('用户已暂停此账号，直接跳过，不打开浏览器或验证。')
             if entry['account'] in controller.get('manual_skipped',[]):raise extra.SessionNotReady('用户本轮暂跳过此账号，未选择或发布视频。')
             return factory(pw,entry)
         return launch
     with patch.object(first,'DAY',wave['date']),patch.object(first,'MATERIAL_DAY',req['payload']['material_date']),patch.object(first,'ALLOWED',accounts), \
          patch.object(first,'SCOPE',wave['scope']),patch.object(first,'POINTER',wave['pointer']),patch.object(first,'distribution',side_effect=bound_distribution(journal,material,pairs)), \
          patch.object(first.workflow,'validate',side_effect=workflow_validate),patch.object(first.archive,'today_files',side_effect=browser.staged.protect_other_materials), \
-         patch.object(first.normal.background,'mode',return_value='background'),patch.object(first.normal,'launcher_for_jobs',side_effect=launcher),patch.object(queued,'TARGET_PAIRS',pairs), \
+         patch.object(first.normal.background,'mode',return_value='background'),patch.object(first.normal,'launcher_for_jobs',side_effect=launcher),patch.object(queued,'TARGET_PAIRS',pairs),patch.object(queued,'PAUSED_ACCOUNTS',set(PAUSED)), \
          queued.installed(source['sha256'],req['payload']['material_date'],req['payload']['content_sha256'],req['sha256'],wave['scope'],wave['date'],grant):yield grant
 
 
@@ -194,6 +210,7 @@ def add_wave(ready,req,source,journal,material,controller,control_path):
 def media_launcher(factory,jobs,path,value,deferred):
     by_pair={(j['account'],j['target']):j for j in jobs}
     def launch(pw,entry):
+        if entry.get('account') in PAUSED:raise extra.SessionNotReady('用户已暂停此账号，直接跳过，不验证或写新失败记录。')
         context=None
         try:
             if entry['account'] in deferred:raise extra.SessionNotReady('该账号登录或安全验证本轮尚未就绪，先跳过：'+deferred[entry['account']])
@@ -225,12 +242,23 @@ def run_phase(phase,req,source,journal,material,wave,controller,deferred):
         if value['sha256']!=wave['sha256']:raise ValueError('原发布清单指纹变化。')
         first.validate(path,value,material);jobs=value['payload']['jobs'];pages={(j['account'],j['target']) for j in jobs if j['target']!='personal'};personal=first.personals.ensure_personal;finder=first.priority.actual.make_finder
         def bounded_finder(*args,**kwargs):kwargs.update(interactive=False,total_timeout_ms=60000);return finder(*args,**kwargs)
+        reconcile=first.reconcile;backfill=first.priority.daily.backfill;candidates=first.priority.comment_retry.candidates
+        def reconcile_active(source_path,source_value):
+            selected=active_view(source_value)
+            if selected['payload']['jobs']:return reconcile(source_path,selected)
+        def backfill_active(source_value,*args,**kwargs):
+            keys={j['key'] for j in source_value['payload']['jobs'] if j['account'] not in PAUSED}
+            requested=kwargs.get('only_keys');kwargs['only_keys']=keys if requested is None else set(requested)&keys
+            if not kwargs['only_keys']:return kwargs.get('rows',[])
+            return backfill(source_value,*args,**kwargs)
+        def candidates_active(source_value,*args):return candidates(active_view(source_value),*args)
         with first.priority.daily.keep_awake(),first.personals.scoped(first.ALLOWED),first.numeric.scoped(pages),first.editor.installed(), \
              patch.object(first.numeric,'ensure',side_effect=browser.staged.page_identity),patch.object(first.personals,'ensure_personal',side_effect=lambda page,entry:extra.ensure_background_identity(personal,page,entry)), \
              patch.object(first.upload,'launch_context',media_launcher(first.normal.launcher_for_jobs(jobs,date=wave['date']),jobs,path,value,deferred)), \
-             patch.object(first.priority.actual,'make_finder',side_effect=bounded_finder),first.capture.installed(path,value):
+             patch.object(first.priority.actual,'make_finder',side_effect=bounded_finder),patch.object(first,'reconcile',side_effect=reconcile_active), \
+             patch.object(first.priority.daily,'backfill',side_effect=backfill_active),patch.object(first.priority.comment_retry,'candidates',side_effect=candidates_active),first.capture.installed(path,value):
             if phase=='videos':
-                with first.locked():first.recover_own(path,value)
+                with first.locked():first.recover_own(path,active_view(value))
                 if datetime.now(timezone.utc)<datetime.fromisoformat(value['payload']['start']):print('等待新素材及统一文案写入稳定，约一分钟后自动开始。',flush=True)
                 while datetime.now(timezone.utc)<datetime.fromisoformat(value['payload']['start']):time.sleep(1)
                 first.batch.run(path,defer_comments=True,resume=True)
@@ -246,6 +274,7 @@ def run_phase(phase,req,source,journal,material,wave,controller,deferred):
                 pointer=first.upload.read_json(first.upload.ROOT/'logs'/(grant+'.json'),{});saved=first.upload.read_json(first.upload.ROOT/'logs'/pointer.get('manifest','missing'),{}) if pointer else {}
                 check=extra.checked
                 def check_allowed(job,state,claims,grant_value):
+                    if job['account'] in PAUSED:return None,'用户暂停此账号，失败视频不补发'
                     if job['account'] in controller.get('manual_skipped',[]):return None,'用户本轮先不发此账号，保留原记录'
                     return check(job,state,claims,grant_value)
                 with patch.object(extra,'checked',side_effect=check_allowed),patch.object(extra,'DAY',saved.get('payload',{}).get('date') or today()),patch.object(extra,'GRANT',grant), \
@@ -262,21 +291,24 @@ def report(req,material,controller,control_path):
     rows=[]
     for assignment in material['payload']['assignments']:
         pair=assignment['account'],assignment['target'];job=jobs.get(pair);record=state.get(job['key'],{}) if job else {}
-        rows.append(dict(account=pair[0],target=pair[1],filename=assignment['files'][-1]['destination_name'],key=job['key'] if job else None,video_status=record.get('status','not_started'),
+        rows.append(dict(user_paused=pair[0] in PAUSED,account=pair[0],target=pair[1],filename=assignment['files'][-1]['destination_name'],key=job['key'] if job else None,video_status=record.get('status','not_started'),
                          comment_status=record.get('comment_status','not_started'),reason=record.get('error') or record.get('comment_error') or issues.get(pair) or controller['pending'].get(pair[0],'')))
-    controller.update(rows=rows,complete=all(r['video_status']=='published' and r['comment_status'] in {'sent','already_present'} for r in rows),updated_at=datetime.now(timezone.utc).isoformat())
+    active=[r for r in rows if not r['user_paused']]
+    controller.update(rows=rows,paused_accounts=sorted(PAUSED),active_target_count=len(active),paused_target_count=len(rows)-len(active),complete=all(r['video_status']=='published' and r['comment_status'] in {'sent','already_present'} for r in active),updated_at=datetime.now(timezone.utc).isoformat())
     first.upload.save_json(control_path,controller)
-    print('本批78目标：视频成功',sum(r['video_status']=='published' for r in rows),'；发布前失败',sum(r['video_status']=='failed_before_post' for r in rows),
-          '；待核实',sum(r['video_status'] in {'preparing','posting','needs_review'} for r in rows),'；未开始',sum(r['video_status']=='not_started' for r in rows),'；评论成功',sum(r['comment_status'] in {'sent','already_present'} for r in rows),flush=True)
-    lines=['78目标实拍视频及评论：AI关闭，自动可用先处理，人工事项留到最后。','停发账号：'+','.join(sorted(BLOCKED))]
+    print('原清单保留',len(rows),'个目标；本次可用',len(active),'个；用户暂停跳过',len(rows)-len(active),'个；可用目标视频成功',sum(r['video_status']=='published' for r in active),'；发布前失败',sum(r['video_status']=='failed_before_post' for r in active),
+          '；待核实',sum(r['video_status'] in {'preparing','posting','needs_review'} for r in active),'；未开始',sum(r['video_status']=='not_started' for r in active),'；评论成功',sum(r['comment_status'] in {'sent','already_present'} for r in active),flush=True)
+    lines=['78目标实拍视频及评论：AI关闭，自动可用先处理，人工事项留到最后。','停发账号：'+','.join(sorted(PAUSED))]
     for row in rows:
-        line=row['account']+'/'+row['target']+' 视频='+row['video_status']+' 评论='+row['comment_status']+(' 原因='+row['reason'] if row['reason'] else '')
+        line=row['account']+'/'+row['target']+(' 用户暂停，直接跳过；原记录保留' if row['user_paused'] else '')+' 视频='+row['video_status']+' 评论='+row['comment_status']+(' 原因='+row['reason'] if row['reason'] else '')
         lines.append(line);print(line,flush=True)
     output=control_path.with_suffix('.txt');output.write_text('\n'.join(lines),encoding='utf-8-sig');print('完整视频及评论清单：',output,flush=True)
     return rows
 
 
 def manual_existing(entry):
+    if entry.get('account') in PAUSED:
+        print('暂停账号直接跳过验证：',entry['account'],flush=True);return None
     from playwright.sync_api import sync_playwright
     context=None
     with background_policy.manual_verification(),sync_playwright() as pw:
@@ -297,6 +329,8 @@ def manual_existing(entry):
 
 
 def manual_new(account):
+    if account in PAUSED:
+        print('暂停账号直接跳过验证：',account,flush=True);return None
     from playwright.sync_api import sync_playwright
     expected=owners.known_owner(account)
     probe=dict(account=account,target='personal',type='personal',workflow='personal_recording_v1',name='Current personal owner',url='https://www.facebook.com/me',auto_switch_personal=True)
@@ -335,14 +369,15 @@ def execute_current(root,real_footage_confirmed=True):
         if controller.get('request_sha256')!=req['sha256'] or not isinstance(controller.get('waves'),list):raise ValueError('78目标原发布进度校验失败。')
         background_policy.retire_foreground_modes(controller)
         recover_waves(req,source,journal,material,controller,path)
-        deferred={};print('本次78目标：AI关闭；先自动发布全部可用视频，再安全补发和评论，最后才提示人工检查。fb23及另外15个问题账号均停发。',flush=True)
+        controller['paused_accounts']=sorted(PAUSED)
+        deferred={};print('原批次进度保留；最新暂停账号',len(PAUSED),'个，可用目标',sum(a not in PAUSED for a,t in EXPECTED),'个继续后台处理。暂停账号不验证、不发布、不补发。',flush=True)
         ready=registered_ready(material,controller);add_wave(ready,req,source,journal,material,controller,path)
         for wave in controller['waves']:run_phase('videos',req,source,journal,material,wave,controller,deferred)
         before=len(controller['waves']);auto_register_pending(material,controller,path);ready=registered_ready(material,controller);add_wave(ready,req,source,journal,material,controller,path)
         for wave in controller['waves'][before:]:run_phase('videos',req,source,journal,material,wave,controller,deferred)
         for phase in ('retry','reconcile','comments','comment_retry'):
             for wave in controller['waves']:run_phase(phase,req,source,journal,material,wave,controller,deferred)
-        rows=report(req,material,controller,path);pending=[r for r in rows if r['video_status']!='published' or r['comment_status'] not in {'sent','already_present'}]
+        rows=report(req,material,controller,path);pending=[r for r in rows if not r['user_paused'] and (r['video_status']!='published' or r['comment_status'] not in {'sent','already_present'})]
         if not pending:return 0
         print('自动发布及安全补发/补评已全部处理完。以下账号留到最后人工检查：',','.join(sorted({r['account'] for r in pending})),flush=True)
         answer=owners.guided.prompt('回车集中检查这些账号并继续；S保留问题账号本轮先不发并结束，Q暂停：')
@@ -352,6 +387,8 @@ def execute_current(root,real_footage_confirmed=True):
         pages={(a,t) for a,t in EXPECTED if t!='personal'}
         with first.personals.scoped(ALLOWED),first.numeric.scoped(pages),patch.object(first.numeric,'ensure',side_effect=browser.staged.page_identity):
             for account in sorted({r['account'] for r in pending}):
+                if account in PAUSED:
+                    print('暂停账号直接跳过验证：',account,flush=True);continue
                 try:
                     entries=[e for e in config.get('targets',[]) if e.get('account')==account and (e.get('account'),e.get('target')) in EXPECTED]
                     eligible=[e for e in entries if first.batch.eligible(e,True,date=today())]
@@ -376,7 +413,9 @@ def execute_current(root,real_footage_confirmed=True):
 
 
 def execute(root,real_footage_confirmed=True):
-    with response_guard.installed(),background_policy.installed():return execute_current(root,real_footage_confirmed)
+    capture=first.capture.installed
+    def capture_active(path,value):return capture(path,active_view(value))
+    with response_guard.installed(),background_policy.installed(),patch.object(first.capture,'installed',side_effect=capture_active):return execute_current(root,real_footage_confirmed)
 
 
 if __name__=='__main__':

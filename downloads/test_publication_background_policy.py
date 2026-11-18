@@ -54,11 +54,11 @@ class BackgroundOnlyPolicyTests(unittest.TestCase):
             self.assertEqual(app.manual_existing(dict(account='fb03',target='personal')),'background')
         self.assertEqual(seen,[(True,'foreground')]);self.assertFalse(policy._MANUAL.get());context.close.assert_called_once()
     def test_new_manual_window_never_offers_legacy_foreground_publishing_fallback(self):
-        context=MagicMock();page=MagicMock();entry=dict(account='fb25',target='personal');proof=dict(method='personal_actor_id_match');seen=[]
+        context=MagicMock();page=MagicMock();entry=dict(account='fb26',target='personal');proof=dict(method='personal_actor_id_match');seen=[]
         def open_window(pw,row,mode):seen.append((policy._MANUAL.get(),mode));return context,page
         with patch('playwright.sync_api.sync_playwright'),patch.object(app.owners,'known_owner',return_value='id:123'),patch.object(app.owners.guided,'open_for_check',side_effect=open_window), \
              patch.object(app.owners,'identify_current',return_value=(entry,proof)),patch.object(app.owners,'discover_manual',side_effect=AssertionError('No legacy F fallback')):
-            self.assertEqual(app.manual_new('fb25'),(entry,proof,'background'))
+            self.assertEqual(app.manual_new('fb26'),(entry,proof,'background'))
         self.assertEqual(seen,[(True,'foreground')]);self.assertFalse(policy._MANUAL.get());context.close.assert_called_once()
 
 if __name__=='__main__':unittest.main()
