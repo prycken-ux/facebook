@@ -13,10 +13,10 @@ import publish_all_distributed_nov13 as owned
 import publish_unplanned_fortysix_nov14 as owners
 import finish_first24_nov14_on_nov16 as browser
 first=queued.first
-VERSION='1.1-original78-current65-paused29-no-verification'
+VERSION='1.2-original78-current62-paused32-no-verification'
 BLOCKED={f'fb{n:02d}' for n in (17,23,28,30,33,35,36,38,41,58,64,69,71,72,73,74)}
 # Preserve original frozen scope/SHAs; live restrictions are applied separately.
-PAUSED=BLOCKED|{f'fb{n:02d}' for n in (25,27,29,34,39,42,44,48,50,53,57,59,61)}
+PAUSED=BLOCKED|{f'fb{n:02d}' for n in (25,27,29,34,39,42,44,48,50,53,56,57,59,61,65,67)}
 ALLOWED={f'fb{n:02d}' for n in range(1,75)}-BLOCKED
 ACTIVE_NEW={a for a in ALLOWED if int(a[2:])>=25}
 REQUEST='logs/eligible78-real-publication-request-20261117.json'
@@ -63,7 +63,7 @@ def current_workers(root):
 def allocation(root):
     stage.setup(root);pointer=first.upload.read_json(stage.safe_child(root,root/'material-staging/eligible78-pending-import.json'),{})
     if pointer and pointer.get('complete') is not True:
-        if PAUSED-BLOCKED:raise ValueError('暂停名单已更新为29个账号，旧78目标分配不再续拷；本入口只续已完成分配的原发布批次，未向暂停账号复制素材。')
+        if PAUSED-BLOCKED:raise ValueError('暂停名单已更新为'+str(len(PAUSED))+'个账号，旧78目标分配不再续拷；本入口只续已完成分配的原发布批次，未向暂停账号复制素材。')
         print('原78目标分配还未收尾；先从上次选定的总目录续完原分配，再发布。不选择其他来源。',flush=True)
         distributor=sibling('distribute_eligible78_materials_20261117.py')
         with patch.object(distributor,'inspect_workers',side_effect=current_workers):distributor.execute(root)
@@ -101,7 +101,7 @@ def request(root,source,journal,material):
 
 def save_availability(root):
     path=stage.safe_child(root,root/AVAILABILITY);p=dict(schema='publication-account-exclusions-v1',effective_from='2026-11-18',excluded_accounts=sorted(PAUSED),original_frozen_exclusions=sorted(BLOCKED),
-        reason='user-confirmed-temporarily-inaccessible29-including-fb23',automatic_first=True,manual_last=True,skip_material_allocation=True,skip_verification=True,skip_video_retries=True)
+        reason='user-confirmed-temporarily-inaccessible-accounts',automatic_first=True,manual_last=True,skip_material_allocation=True,skip_verification=True,skip_video_retries=True)
     desired=dict(payload=p,sha256=first.batch.digest(p))
     if first.upload.read_json(path,None)==desired:return
     if path.exists():
