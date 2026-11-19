@@ -29,6 +29,7 @@ PLAN = 'logs/user-video-cleanup-20261119.json'
 PROGRESS = 'logs/user-video-cleanup-20261119-progress.json'
 ARCHIVES = 'logs/user-archived-video-tasks-20261119.json'
 AUDIT = 'logs/user-video-cleanup-20261119-audit.jsonl'
+POINTERS = ('eligible62-pending-import.json', 'eligible78-pending-import.json', 'first24-pending-import.json')
 EXTENSIONS = {'.mp4', '.mov', '.m4v', '.webm', '.mkv', '.avi', '.wmv', '.flv', '.mpeg', '.mpg', '.3gp', '.mts', '.m2ts'}
 MANAGED = ('videos', 'material-staging', 'backups', 'logs', 'archive', 'archives', 'completed')
 PROTECTED = {'.venv', 'venv', '.git', '__pycache__', 'profiles', 'browser-profile', 'browser-profiles', 'browsers', 'node_modules', 'tools'}
@@ -41,9 +42,8 @@ def stamp():
     return datetime.now(timezone.utc).isoformat()
 
 
-def atomic(path, value):
+def atomic_bytes(path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
-    data = (json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2) + '\n').encode('utf-8')
     with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as handle:
         temporary = Path(handle.name)
         handle.write(data)
@@ -53,6 +53,10 @@ def atomic(path, value):
         temporary.replace(path)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def atomic(path, value):
+    atomic_bytes(path,(json.dumps(value,ensure_ascii=False,sort_keys=True,indent=2)+'\n').encode('utf-8'))
 
 
 def read(path, default=None):
@@ -183,12 +187,24 @@ def prepare(root):
     if not isinstance(state, dict) or any(not isinstance(row, dict) for row in state.values()):
         raise ValueError('原发布状态格式异常，未删除。')
     files, skipped = inventory(root)
+    pointers=[]
+    pointer_bytes={}
+    for name in POINTERS:
+        path=safe(root,root/'material-staging'/name)
+        if not path.exists():
+            continue
+        if not isinstance(read(path),dict):
+            raise ValueError('旧素材续分配指针格式异常，未清理。')
+        data=path.read_bytes()
+        pointers.append(dict(path=str(path.relative_to(root)),sha256=hashlib.sha256(data).hexdigest(),**metadata(path)))
+        pointer_bytes[name]=data
     jobs, bindings = yesterday_jobs(root)
     selected_paths = {r['path'] for r in files}
     keys = sorted(set(jobs) | {key for key,row in state.items() if referenced_paths(root,row) & selected_paths})
     payload = dict(schema=VERSION, root=str(root), authorized_on=DAY, archive_material_date=ARCHIVE_DAY,
                    created_at=stamp(), scope='all-managed-video-files-regardless-publication-result',
-                   files=files, skipped=skipped, state_keys=keys, yesterday_jobs=jobs, source_bindings=bindings,
+                   files=files, skipped=skipped, retired_pointers=pointers,
+                   state_keys=keys, yesterday_jobs=jobs, source_bindings=bindings,
                    original_state_sha256=media.digest(state), no_external_source_deletion=True,
                    no_publication_success_inferred=True)
     value = dict(payload=payload, sha256=media.digest(payload))
@@ -196,6 +212,8 @@ def prepare(root):
     backup.mkdir(parents=True, exist_ok=True)
     atomic(backup/'publish-state-before.json', state)
     atomic(backup/'cleanup-plan.json', value)
+    for name,data in pointer_bytes.items():
+        atomic_bytes(safe(root,backup/'retired-pointers'/name),data)
     atomic(plan_path, value)
     return value
 
@@ -277,6 +295,27 @@ def validate_handle(root, path, stream, row):
             raise ValueError('文件在冻结后变化，保留，不删除新替换视频。')
 
 
+def retire_pointers(root,value,progress,progress_path,audit):
+    completed=progress.setdefault('retired_pointers',{})
+    for row in value['payload'].get('retired_pointers',[]):
+        if row['path'] in completed:
+            continue
+        path=safe(root,root/row['path'])
+        backup=safe(root,root/'backups'/('user-video-cleanup-'+value['sha256'][:16])/'retired-pointers'/path.name)
+        if not backup.is_file() or hashlib.sha256(backup.read_bytes()).hexdigest()!=row['sha256']:
+            raise ValueError('原素材指针备份不符，未删除媒体。')
+        if path.exists():
+            with media.deletion_handle(path) as (stream,remove):
+                validate_handle(root,path,stream,row)
+                if hashlib.sha256(stream.read()).hexdigest()!=row['sha256']:
+                    raise ValueError('素材续分配指针已变化，保留新任务，停止本次清理。')
+                event(audit,dict(event='retire_pointer_intent',at=stamp(),path=row['path'],backup=str(backup.relative_to(root))))
+                remove()
+        completed[row['path']]='retired-with-backup'
+        event(audit,dict(event='retired_pointer',at=stamp(),path=row['path']))
+        atomic(progress_path,progress)
+
+
 def execute(root, apply=False):
     root=Path(root).resolve()
     if root != upload.ROOT.resolve() or not safe(root,root/'upload_config.json').is_file():
@@ -304,6 +343,7 @@ def execute(root, apply=False):
         deleted=[];skipped=[]
         with safe(root,root/AUDIT).open('a',encoding='utf-8') as audit:
             event(audit,dict(event='start',plan_sha256=value['sha256'],at=stamp()))
+            retire_pointers(root,value,progress,progress_path,audit)
             for number,row in enumerate(rows,1):
                 if progress['rows'].get(row['path'],{}).get('status') in {'deleted','already_missing'}:
                     continue

@@ -135,6 +135,17 @@ class CleanupAllVideoTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'指纹'):app.execute(self.root,apply=True)
         self.assertTrue(all(p.exists() for p in self.media))
 
+    def test_old_distribution_pointers_retired_with_exact_backup_new_pointer_not_touched_on_replay(self):
+        pointer=self.write('material-staging/eligible62-pending-import.json','{"manifest":"2026-11-18/source/manifest.json","complete":true}')
+        original=pointer.read_bytes()
+        result=app.execute(self.root,apply=True)
+        self.assertFalse(pointer.exists())
+        backup=self.root/'backups'/('user-video-cleanup-'+result['plan']['sha256'][:16])/'retired-pointers'/pointer.name
+        self.assertEqual(backup.read_bytes(),original)
+        pointer.write_text('{"manifest":"2026-11-19/new-source/manifest.json"}')
+        newer=pointer.read_bytes();app.execute(self.root,apply=True)
+        self.assertEqual(pointer.read_bytes(),newer);self.assertEqual(backup.read_bytes(),original)
+
 
 class CleanupChainTests(unittest.TestCase):
     def test_exact_cleanup_chain_exempts_self_only(self):
