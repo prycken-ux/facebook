@@ -3,8 +3,8 @@ import ast,hashlib,io,ssl,subprocess,sys,tempfile,urllib.request,zipfile
 from datetime import datetime,timedelta,timezone
 from pathlib import Path
 
-COMMIT='ae5c5649a21a31ec963aa6f5db5486ac26734ab0'
-PACKAGE_SHA='0b88d63552d9a444d93ce28857b1f4b3f07fb84a969cf110e5d87cbb21eac449'
+COMMIT='778894c21d039030a12a725ec664cbf5dc09a800'
+PACKAGE_SHA='21933402224620ddbb561b2fd18f5f1e337bc5abf409279f7a9aec0632d369f1'
 NAMES=('publish_eligible60_materials_20261119.py', 'publication_response_finish_guard.py', 'publication_background_policy.py', 'distribute_eligible60_materials_20261119.py', 'eligible60_publication_workflow.py', 'retry_eligible60_prepost_20261119.py', 'stage_eligible60_materials_v6.py', 'material_distribution_worker_check.py', 'verified_publication_lock_recovery.py', 'finish_first24_nov14_on_nov16.py', 'retry_first24_original_prepost_on_nov16.py', 'publish_staged_first24_nov14.py', 'stage_next_materials_20261114_v1.py', 'publish_all_distributed_nov13.py', 'publish_unplanned_fortysix_nov14.py', 'publication_content_20261119.py', 'reel_audience_prompt_hook_20261119.py', 'pending_video_comment_lookup_20261119.py', 'reel_audience_dialog_recovery.py')
 VERIFY=("import sys;sys.path.insert(0,sys.argv[1]);sys.path.insert(1,sys.argv[2]);import publish_eligible60_materials_20261119 as r;"
         "assert r.VERSION=='1.0-new60-paused34-nov19-book-pending-comments' and len(r.EXPECTED)==60;"
