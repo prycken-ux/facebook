@@ -54,10 +54,10 @@ def resolve(first,manifest,only_keys,validate,allowed,seen):
                 raise ValueError('原任务时间与本次冻结来源不符')
             end=datetime.now(timezone.utc).timestamp()+5
             comments=first.priority.daily.comments
-            hint=comments.direct_link(old.get('fresh_publication_candidate',''))
-            explicit=(hint and old.get('fresh_publication_job_key')==job['key']
-                      and old.get('fresh_publication_candidate_count')==1
-                      and old.get('fresh_publication_explicit_published') is True)
+            unique_hint=(old.get('fresh_publication_job_key')==job['key']
+                         and old.get('fresh_publication_candidate_count')==1)
+            hint=comments.direct_link(old.get('fresh_publication_candidate','')) if unique_hint else None
+            explicit=(hint and old.get('fresh_publication_explicit_published') is True)
             if explicit:
                 link,method=hint,'fresh_owned_published_metadata_for_comment'
             else:

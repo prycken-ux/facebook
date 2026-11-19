@@ -108,6 +108,15 @@ class PendingLookupTests(unittest.TestCase):
         self.locate(found=True,seen=set())
         self.assertEqual(self.first.upload.read_json(self.state_path,{})[self.job['key']]['status'],'published')
 
+    def test_ambiguous_hint_is_not_treated_as_unique_published_evidence(self):
+        state=copy.deepcopy(self.before)
+        state[self.job['key']].update(fresh_publication_candidate=self.link,fresh_publication_job_key=self.job['key'],
+                                     fresh_publication_candidate_count=2,fresh_publication_explicit_published=True)
+        self.first.upload.save_json(self.state_path,state)
+        self.locate(found=False)
+        row=self.first.upload.read_json(self.state_path,{})[self.job['key']]
+        self.assertEqual(row['status'],'needs_review');self.assertEqual(row['comment_status'],'lookup_pending')
+
 
 class ContentTests(unittest.TestCase):
     def setUp(self):
