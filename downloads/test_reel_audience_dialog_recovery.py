@@ -61,8 +61,26 @@ class AudienceRecoveryTests(unittest.TestCase):
             self.page.locator('#audience').evaluate('e=>e.hidden=true')
 
     def verify_kept(self):
-        self.assertEqual(self.page.get_by_role('textbox',name='Describe your reel...',include_hidden=True).input_value(),'Keep this caption')
+        self.assertEqual(self.page.get_by_role('textbox',name='Describe your reel...',include_hidden=True).evaluate("e=>e.value ?? e.innerText"),'Keep this caption')
         self.assertEqual(self.page.locator('video').get_attribute('src'),'fixture.mp4')
+        self.assertIsNone(self.page.evaluate('window.posts'))
+        self.assertIsNone(self.page.evaluate('window.editorClosed'))
+
+    def test_contenteditable_caption_supports_no_popup_close_and_continue(self):
+        for overlay in ('', SKELETON, CONTINUE):
+            with self.subTest(overlay=bool(overlay)):
+                self.load(overlay)
+                self.page.locator('textarea').evaluate("e=>{const d=document.createElement('div');d.setAttribute('role','textbox');d.setAttribute('aria-label','Describe your reel...');d.contentEditable='true';d.textContent=e.value;e.replaceWith(d)}")
+                upload.ensure_personal_public_audience(self.page)
+                self.verify_kept()
+                self.assertIn('Public', self.page.locator('#audience').inner_text())
+
+    def test_changed_contenteditable_caption_blocks_after_prompt(self):
+        self.load(CONTINUE)
+        self.page.locator('textarea').evaluate("e=>{const d=document.createElement('div');d.setAttribute('role','textbox');d.setAttribute('aria-label','Describe your reel...');d.contentEditable='true';d.textContent=e.value;e.replaceWith(d)}")
+        self.page.locator('#overlay button').evaluate("e=>e.setAttribute('onclick',\"dismissPrompt();document.querySelector('[role=textbox]').textContent='Changed caption'\")")
+        with self.assertRaisesRegex(recovery.AudienceRecoveryBlocked, '文案发生变化'):
+            upload.ensure_personal_public_audience(self.page)
         self.assertIsNone(self.page.evaluate('window.posts'))
         self.assertIsNone(self.page.evaluate('window.editorClosed'))
 

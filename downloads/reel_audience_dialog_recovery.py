@@ -2,7 +2,7 @@
 import re
 import time
 
-VERSION = '1.0-reel-audience-close-or-continue'
+VERSION = '1.1-contenteditable-caption-audience-recovery'
 
 
 class AudienceRecoveryBlocked(RuntimeError):
@@ -76,6 +76,15 @@ def prompt(page, settings):
     return (candidates[0] if candidates else None), visible_other
 
 
+def caption_value(field):
+    """Read the actual native or contenteditable caption without changing it."""
+    return field.evaluate("""e => {
+      if (e instanceof HTMLInputElement || e instanceof HTMLTextAreaElement || e instanceof HTMLSelectElement) return e.value;
+      if (e.isContentEditable) return e.innerText;
+      throw new Error('Unsupported Reel caption editor; no prompt was clicked');
+    }""")
+
+
 def wait_for_public_controls(page, settings, choice, timeout_ms=60000, grace_ms=2500):
     """One normal Close/Continue click, then require real Public/Friends controls."""
     deadline = time.monotonic() + min(timeout_ms, 60000) / 1000
@@ -85,7 +94,7 @@ def wait_for_public_controls(page, settings, choice, timeout_ms=60000, grace_ms=
     if settings.count() != 1 or not settings.is_visible() or field.count() != 1:
         raise AudienceRecoveryBlocked('未确认唯一 Reel settings 编辑器，不自动关闭弹窗。')
     original_editor = settings.element_handle()
-    original_caption = field.input_value()
+    original_caption = caption_value(field)
     while True:
         guard(page)
         candidate, visible_other = prompt(page, settings)
@@ -109,7 +118,7 @@ def wait_for_public_controls(page, settings, choice, timeout_ms=60000, grace_ms=
                         raise AudienceRecoveryBlocked('公开范围提示操作后未消失，保留视频并跳过。')
                     page.wait_for_timeout(100)
                 if (not original_editor.evaluate('e=>e.isConnected') or not settings.is_visible()
-                        or field.input_value() != original_caption):
+                        or caption_value(field) != original_caption):
                     raise AudienceRecoveryBlocked('提示操作后编辑器或文案发生变化，未点击发布。')
                 print('已自动处理 Reel 公开范围提示：' + action + '；继续核对 Public。', flush=True)
                 continue
