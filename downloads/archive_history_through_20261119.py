@@ -68,6 +68,13 @@ def provenance(root,state):
         if not re.fullmatch(r'\d{4}-\d{2}-\d{2}(?:-reserved50|-eligible78|-eligible62|-eligible60)?\.json',path.name):continue
         value=base.upload.read_json(base.safe(root,path),{});p=value.get('payload',{})
         if value.get('sha256')!=base.digest(p):raise ValueError('原素材分配指纹异常，未归档。')
+        if day(p.get('date')):
+            for row in p.get('assignments',[]):
+                if not base.pair_ok(row.get('account'),row.get('target')) or not row.get('files'):continue
+                video=row['files'][-1]
+                if re.fullmatch('[a-f0-9]{64}',str(video.get('sha256',''))):
+                    for name in {video.get('name'),video.get('destination_name')}:
+                        if name and Path(name).name==name:indexed.setdefault((row['account'],row['target'],name,'sha:'+video['sha256']),[]).append(dict(date=p['date'],owner=None,source='verified_distribution:'+path.name))
         if day(p.get('date')) and p['date']>CUTOFF:
             for row in p.get('assignments',[]):
                 if not base.pair_ok(row.get('account'),row.get('target')):continue
@@ -112,7 +119,7 @@ def scan(root,state):
                     prefix=re.match(r'^(\d{8})-[a-f0-9]{8}-(?:eligible60|weekend60)-',name)
                     if prefix and prefix[1]>CUTOFF.replace('-',''):continue
                     fingerprint,keys=base.info(root,video,owners)
-                    evidence=[];bindings=[]
+                    evidence=list(indexed.get((*pair,name,'sha:'+fingerprint['sha256']),[]));bindings=[]
                     for owner,key in keys.items():
                         for proof in indexed.get((*pair,name,key),[]):
                             if proof['owner']==owner:evidence.append(proof)

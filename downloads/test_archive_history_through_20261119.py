@@ -41,6 +41,15 @@ class HistoryArchiveTests(unittest.TestCase):
         self.assertFalse(self.old.exists())
         plan=app.base.upload.read_json(self.root/app.JOURNAL,{})
         self.assertEqual(len(plan['payload']['rows']),61);self.assertTrue(any(r['filename']==self.unknown.name for r in plan['payload']['retained_for_review']))
+    def test_historical_unregistered_paused_material_can_archive_from_distribution_sha(self):
+        video=self.root/'videos/fb27/personal/inbox/old-unregistered.mp4';video.parent.mkdir(parents=True,exist_ok=True);video.write_bytes(b'old allocated Nov18 no owner registration')
+        info=dict(name=video.name,destination_name=video.name,size=video.stat().st_size,sha256=hashlib.sha256(video.read_bytes()).hexdigest())
+        self.fx.save_signed('logs/material-distribution/old-source/2026-11-18-eligible62.json',dict(schema='one-video-per-target-distribution-v1',date='2026-11-18',assignments=[dict(account='fb27',target='personal',files=[info])]))
+        self.assertEqual(self.run_archive(),0);self.assertFalse(video.exists())
+        state=app.base.upload.read_json(self.root/'logs/publish_state.json',{})
+        self.assertFalse(any(r.get('account')=='fb27' for r in state.values()))
+        self.assertTrue(list((self.root/'videos/fb27/personal/completed').rglob(video.name)))
+
     def test_windows_record_paths_bind_correctly(self):
         state=copy.deepcopy(self.before)
         for row in state.values():
