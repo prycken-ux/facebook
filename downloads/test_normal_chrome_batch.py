@@ -30,7 +30,7 @@ class NormalChromeTests(unittest.TestCase):
         self.assertIn('--remote-debugging-address=127.0.0.1',args);self.assertIn('--remote-debugging-port=0',args)
         self.assertFalse(any(v.startswith(('--disable-extensions','--proxy-server','--no-proxy-server','--no-sandbox')) for v in args))
         self.assertTrue(self.pw.chromium.connect_over_cdp.call_args.args[0].startswith('ws://127.0.0.1:'))
-        wrapper.close();wrapper.close();self.close.assert_called_once_with('fb02')
+        wrapper.close();wrapper.close();self.close.assert_not_called()
         self.browser.new_browser_cdp_session.return_value.send.assert_called_once_with('Browser.close')
     def test_warmup_retries_only_read_navigation_and_rejects_other_account_scope(self):
         self.page.goto.side_effect=[RuntimeError('net::ERR_PROXY_CONNECTION_FAILED'),None]
@@ -43,7 +43,7 @@ class NormalChromeTests(unittest.TestCase):
         with self.assertRaises(ValueError):normal.endpoint(path)
         self.pw.chromium.connect_over_cdp.side_effect=RuntimeError('private local-test-token address')
         with self.assertRaises(RuntimeError) as result:normal.launch_normal(self.pw,self.entry)
-        self.assertNotIn('local-test-token',str(result.exception));self.close.assert_called_once_with('fb02')
+        self.assertNotIn('local-test-token',str(result.exception));self.close.assert_not_called()
     def test_launcher_rejects_pairs_and_owners_outside_the_frozen_batch(self):
         launch=normal.launcher_for_jobs([dict(self.entry),dict(account='fb10',target='page02',url='https://www.facebook.com/profile.php?id=1010')])
         wrapper=MagicMock()

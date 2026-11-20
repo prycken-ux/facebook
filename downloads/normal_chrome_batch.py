@@ -22,19 +22,23 @@ def endpoint(path):
 
 
 class NormalContext:
-    def __init__(self,browser,context,account):self._browser=browser;self._context=context;self._account=account;self._closed=False
+    def __init__(self,browser,context,account,process=None,run_mode=None):
+        self._browser=browser;self._context=context;self._account=account;self._closed=False
+        self._owned_process=process;self._run_mode=run_mode
     def __getattr__(self,name):return getattr(self._context,name)
     def close(self):
         if self._closed:return
         self._closed=True
         try:
             try:self._browser.new_browser_cdp_session().send('Browser.close')
-            except Exception:pass  # The expected connection-close event may race the reply.
+            except Exception:pass
             try:self._browser.close()
             except Exception:pass
         finally:
             local_files.release(self._context)
-            close_selected_window(self._account)  # Graceful exact-profile close; never kill.
+            from owned_chrome_cleanup import finish_owned_process
+            finish_owned_process(self._owned_process,self._run_mode,lambda:close_selected_window(self._account))
+
 
 
 def launch_normal(playwright,entry):
@@ -53,22 +57,16 @@ def launch_normal(playwright,entry):
           '--no-first-run','--no-default-browser-check','--remote-debugging-address=127.0.0.1',
           '--remote-debugging-port=0',*background.arguments(run_mode),'about:blank' if selfcheck else upload.english_url(entry['url'])]
     print('使用原资料启动'+('无窗口后台Chrome' if run_mode=='background' else '普通Chrome')+'：',account,entry['target'],'；沿用原资料和代理设置。',flush=True)
-    process=subprocess.Popen(args,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+    from chrome_startup_wait import spawn,wait_endpoint
+    process=spawn(args,upload.ROOT,account)
     wrapper=None
     try:
-        end=time.monotonic()+30
-        while not port_file.is_file():
-            if process.poll() is not None:raise RuntimeError('普通Chrome在建立本机连接前退出，尚未上传')
-            if time.monotonic()>=end:raise RuntimeError('普通Chrome本机连接尚未就绪，尚未上传')
-            time.sleep(.2)
-        try:address=endpoint(port_file)
-        except (OSError,ValueError):
-            time.sleep(.3);address=endpoint(port_file)
+        address=wait_endpoint(process,port_file,endpoint)
         try:browser=playwright.chromium.connect_over_cdp(address,timeout=20000)
         except Exception:raise RuntimeError(account+'普通Chrome本机控制连接失败，尚未上传') from None
         if len(browser.contexts)!=1:
             browser.close();raise RuntimeError(account+'本机浏览器上下文不唯一，尚未上传')
-        context=browser.contexts[0];wrapper=NormalContext(browser,context,account)
+        context=browser.contexts[0];wrapper=NormalContext(browser,context,account,process=process,run_mode=run_mode)
         context.add_cookies([dict(name='locale',value='en_US',domain='.facebook.com',path='/',secure=True)])
         if selfcheck:
             print('本机原视频选取自检：只打开本地测试页，不访问或提交Facebook。',flush=True)
@@ -85,8 +83,15 @@ def launch_normal(playwright,entry):
         print('普通Chrome已打开目标主页：',account,entry['target'],'；继续身份核验。',flush=True)
         return wrapper
     except BaseException:
-        if wrapper is not None:wrapper.close()
-        else:close_selected_window(account)
+        import traceback
+        from owned_chrome_cleanup import finish_owned_process,save_launch_error
+        original=traceback.format_exc();cleanup_error=None
+        try:
+            if wrapper is not None:wrapper.close()
+            else:finish_owned_process(process,run_mode,lambda:close_selected_window(account))
+        except Exception as cleanup:
+            cleanup_error=cleanup
+        save_launch_error(upload.ROOT,account,original,cleanup_error)
         raise
 
 
@@ -102,6 +107,17 @@ def launcher_for_jobs(jobs,date=None):
             raise ValueError('普通Chrome启动目标不属于今天原清单')
         context=launch_normal(playwright,entry)
         try:local_files.authorize(context._context,entry,jobs,date=date)
-        except BaseException:context.close();raise
+        except BaseException:
+            import traceback
+            from owned_chrome_cleanup import save_launch_error
+            original=traceback.format_exc();cleanup_error=None
+            try:context.close()
+            except Exception as cleanup:cleanup_error=cleanup
+            save_launch_error(upload.ROOT,entry['account'],original,cleanup_error)
+            raise
         return context
     return launch
+
+OWNED_CLEANUP_VERSION='1.0-owned-headless-process-cleanup'
+
+STARTUP_WAIT_VERSION='1.0-wait-for-endpoint-after-launcher-exit'
