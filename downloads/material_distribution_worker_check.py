@@ -49,7 +49,7 @@ def win_args(line):
 
 def win_path(value):return ntpath.normcase(ntpath.normpath(str(value)))
 
-def classify_workers(rows,root,pid,runner=None):
+def classify_workers(rows,root,pid,runner=None,extra_arguments=()):
     """Exempt only the actual contiguous, argument-verified parent chain.
 
     Base Python executable paths are allowed within that verified chain. A
@@ -61,6 +61,7 @@ def classify_workers(rows,root,pid,runner=None):
             or not isinstance(r.get('exe'),str) for r in rows)):raise ValueError('发布进程检查数据异常。')
     lookup={r['pid']:r for r in rows}
     if len(lookup)!=len(rows) or pid not in lookup:raise ValueError('无法唯一定位本次发布进程。')
+    if extra_arguments and (not isinstance(extra_arguments,(tuple,list)) or len(extra_arguments)!=1 or not re.fullmatch('[a-f0-9]{64}',extra_arguments[0])):raise ValueError('固定任务指纹参数异常。')
     root_key=win_path(root);runner_key=win_path(runner or Path(__file__).resolve())
     parsed={}
     for r in rows:
@@ -72,7 +73,7 @@ def classify_workers(rows,root,pid,runner=None):
         return argv[1:] if argv[:1]==['-u'] else argv
     def role(row):
         argv=args(row)
-        if len(argv)==2 and win_path(argv[0])==runner_key and win_path(argv[1])==root_key:return 'runner'
+        if len(argv)==2+len(extra_arguments) and win_path(argv[0])==runner_key and win_path(argv[1])==root_key and argv[2:]==list(extra_arguments):return 'runner'
         if len(argv)==3 and argv[0]=='-c' and BOOTSTRAP.fullmatch(argv[1]) and win_path(argv[2])==root_key:return 'bootstrap'
         return None
     def born(row):
@@ -102,9 +103,9 @@ def classify_workers(rows,root,pid,runner=None):
         workers.append(dict(pid=row['pid'],name=row['name'],kind=kind))
     return workers,sorted(allowed)
 
-def active_workers(root,runner):
+def active_workers(root,runner,extra_arguments=()):
     if sys.platform!='win32':raise ValueError('请在原Windows上传电脑运行。')
     result=subprocess.run(['powershell.exe','-NoProfile','-NonInteractive','-Command',WORKERS],input=b'{}',stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=20,creationflags=0x08000000)
     if result.returncode:raise RuntimeError('发布进程尚未能核对，素材已保留，暂不导入。')
-    workers,_=classify_workers(json.loads(result.stdout.decode('utf-8-sig')),root,os.getpid(),runner)
+    workers,_=classify_workers(json.loads(result.stdout.decode('utf-8-sig')),root,os.getpid(),runner,extra_arguments=extra_arguments)
     return workers
