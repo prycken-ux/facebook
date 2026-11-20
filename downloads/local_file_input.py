@@ -21,7 +21,7 @@ def _source(metadata,files):
     values=[files] if isinstance(files,(str,Path)) else list(files) if isinstance(files,(list,tuple)) else []
     if len(values)!=1 or not isinstance(values[0],(str,Path)):raise ValueError('本批只允许选择一个确切原视频路径')
     path=Path(values[0]).resolve();path.relative_to(upload.ROOT.resolve())
-    matches=[j for j in metadata['jobs'] if (upload.ROOT/'videos'/j['account']/j['target']/'inbox'/j['filename']).resolve()==path]
+    matches=[j for j in metadata['jobs'] if (upload.inbox_for(j)/j['filename']).resolve()==path]
     if len(matches)!=1:raise ValueError('文件路径不属于当前账号的原视频清单')
     job=matches[0];entry=batch.validate_job(job,date=metadata.get('date'))
     if (entry['account'],entry['target'])!=metadata['pair'] or upload.target_key(entry['url'])!=metadata['owner']:
@@ -104,7 +104,7 @@ def release(context):
 
 def self_check(context,job):
     """Check the real original file on Windows before any publication grant."""
-    path=upload.ROOT/'videos'/job['account']/job['target']/'inbox'/job['filename']
+    path=upload.inbox_for(job)/job['filename']
     size=path.stat().st_size
     with path.open('rb') as f:
         first=f.read(4096);f.seek(max(0,size-4096));last=f.read(4096)

@@ -63,6 +63,22 @@ class LargeLocalFileTests(unittest.TestCase):
         finally:
             with self.video.open('r+b') as f:f.write(b'\0')
         self.assertEqual(self.page.locator('input').evaluate('e=>e.files.length'),0)
+    def test_dated_inbox_selects_exact_scheduled_file_and_rejects_other_day(self):
+        folder=self.root/'videos/fb01/page01/scheduled/2026-11-20/inbox';folder.mkdir(parents=True,exist_ok=True)
+        video=folder/self.video.name;caption=video.with_suffix('.txt')
+        import shutil
+        shutil.copyfile(self.video,video);shutil.copyfile(self.caption,caption)
+        other=self.root/'videos/fb01/page01/scheduled/2026-11-21/inbox'/self.video.name;other.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(self.video,other)
+        try:
+            with patch.object(upload,'inbox_for',side_effect=lambda e:folder):
+                self.authorize()
+                self.page.locator('input').set_input_files(str(video));self.assert_bytes()
+                local.self_check(self.context,self.job)
+                self.page.set_content('<input type=file>')
+                with self.assertRaisesRegex(ValueError,'不属于当前账号'):self.page.locator('input').set_input_files(str(other))
+                self.assertEqual(self.page.locator('input').evaluate('e=>e.files.length'),0)
+        finally:video.unlink();caption.unlink();other.unlink()
+
     def test_unrelated_context_keeps_original_behavior_and_release_restores_api(self):
         from playwright.sync_api import Locator
         original=Locator.set_input_files;self.authorize();self.assertIsNot(Locator.set_input_files,original)
