@@ -9,13 +9,15 @@ class StartNov23Tests(unittest.TestCase):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup);self.root=Path(self.temp.name)
         (self.root/'logs').mkdir();(self.root/'upload_config.json').write_text('{}')
         (self.root/'logs/upload.lock').write_bytes(b'old20-task-active')
-        (self.root/'.venv/Scripts').mkdir(parents=True);(self.root/'.venv/Scripts/pythonw.exe').write_bytes(b'fixture')
+        (self.root/'.venv/Scripts').mkdir(parents=True);(self.root/'.venv/Scripts/python.exe').write_bytes(b'fixture')
         self.updates={n:b'# fixture verified runtime\n' for n in starter.NAMES}
     def test_background_queue_does_not_hold_python_wait_or_touch_old_lock(self):
         process=MagicMock(pid=777);process.poll.return_value=None
         def launch(args,**kwargs):
             self.assertEqual(args[0],'powershell.exe');self.assertIn('Hidden',args);self.assertIn('-File',args)
-            self.assertEqual(kwargs['creationflags'],0x08000000)
+            self.assertEqual(kwargs['creationflags'],0x208)
+            self.assertTrue(kwargs['creationflags'] & 0x8)
+            self.assertTrue(kwargs['creationflags'] & 0x200)
             (self.root/'logs/eligible60-2026-11-23-queue.json').write_text(json.dumps(dict(pid=777,phase='waiting_workers',message='waiting old20')))
             return process
         with patch.object(starter.sys,'platform','win32'),patch.object(starter,'download',return_value=self.updates), \

@@ -52,9 +52,11 @@ try {
  if(@(Get-FbWorkers).Count){throw 'Another project task started; no concurrent publisher was launched. Re-run the same entry after it finishes.'}
  Write-FbState 'starting' '今天素材已分配、原任务已结束，开始后台发布11月23日视频及评论。'
  $start=New-Object Diagnostics.ProcessStartInfo
- $start.FileName=Join-Path $fbRoot '.venv\Scripts\pythonw.exe'
+ $start.FileName=Join-Path $fbRoot '.venv\Scripts\python.exe'
  $start.Arguments='-u "'+$Entry+'" "'+$fbRoot+'"'
  $start.WorkingDirectory=$fbRoot;$start.UseShellExecute=$false;$start.CreateNoWindow=$true
+ $start.EnvironmentVariables['FB_PUBLISH_ISOLATED_BACKGROUND']='1'
+ $start.EnvironmentVariables['FB_PUBLISH_FILE_LOG_ONLY']='1'
  $start.RedirectStandardOutput=$true;$start.RedirectStandardError=$true
  $process=[Diagnostics.Process]::Start($start)
  try {
@@ -64,6 +66,7 @@ try {
   if($errorText){$errorText | Add-Content -LiteralPath (Join-Path $fbRoot 'logs\eligible60-2026-11-23-startup-error.txt') -Encoding UTF8}
   if($process.ExitCode -eq 0){Write-FbState 'finished' '本批视频及评论流程完成；实际明细见发布日志。'}
   elseif($process.ExitCode -eq 3){Write-FbState 'review_required' '自动发布和补发阶段已结束，仍有待核实或人工处理项目；请查看发布日志。'}
+  elseif($process.ExitCode -eq -1073741510){Write-FbState 'interrupted' '发布进程收到控制台中断/关闭信号(0xC000013A)，已保留原记录；请使用隔离版入口续跑，已提交视频不重复上传。'}
   else{Write-FbState 'stopped' ('发布入口停止，退出码：'+$process.ExitCode+'；原记录保留，请查看发布日志。')}
  }finally{$process.Dispose()}
 }catch{

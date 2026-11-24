@@ -1,7 +1,8 @@
 import hashlib,json,os,shlex,subprocess,tempfile,time,unittest
+import sys
 from pathlib import Path
 
-PWSH=Path('/tmp/fb-nov23-pwsh/pwsh')
+PWSH=Path(os.environ.get('FB_TEST_PWSH','/workspace/.tools/fb-pwsh/pwsh'))
 SCRIPT=Path(__file__).with_name('queue_publish_eligible60_20261123.ps1')
 HARNESS=r'''
 $global:fbCalls=0
@@ -31,7 +32,7 @@ class QueueControlTests(unittest.TestCase):
         self.sha=hashlib.sha256(self.entry.read_bytes()).hexdigest()
         (self.entry.parent/'runtime-sha256.json').write_text(json.dumps({self.entry.name:self.sha}))
         self.marker=self.root/'launched'
-        pythonw=self.root/'.venv/Scripts/pythonw.exe'
+        pythonw=self.root/'.venv/Scripts/python.exe'
         pythonw.write_text('#!/bin/sh\nprintf launched > '+shlex.quote(str(self.marker))+"\nprintf 'fixture stderr\\n' >&2\nexit 3\n");pythonw.chmod(0o700)
         self.pointer=self.root/'material-staging/eligible60-20261123-pending-import.json';self.pointer.write_text('{"complete":true}')
         self.harness=self.root/'harness.ps1';self.harness.write_text(HARNESS,encoding='utf-8-sig')
@@ -53,6 +54,13 @@ class QueueControlTests(unittest.TestCase):
     def test_runtime_hash_change_blocks_process_creation(self):
         self.entry.write_text('# modified fixture\n')
         status=self.run_queue('idle');self.assertEqual(status['phase'],'error');self.assertFalse(self.marker.exists())
+    def test_worker_receives_isolation_flags_and_large_pipe_output_is_drained(self):
+        python=self.root/'.venv/Scripts/python.exe'
+        emit="import os,sys;assert os.environ['FB_PUBLISH_ISOLATED_BACKGROUND']=='1';assert os.environ['FB_PUBLISH_FILE_LOG_ONLY']=='1';sys.stdout.write('x'*300000);sys.stdout.flush();sys.stderr.write('y'*300000);sys.stderr.flush();sys.exit(3)"
+        python.write_text('#!/bin/sh\nexec '+shlex.quote(sys.executable)+' -c '+shlex.quote(emit)+'\n');python.chmod(0o700)
+        status=self.run_queue('idle');self.assertEqual(status['phase'],'review_required')
+        error=(self.root/'logs/eligible60-2026-11-23-startup-error.txt').read_text(encoding='utf-8-sig')
+        self.assertEqual(error.count('y'),300000)
     def test_duplicate_queue_cannot_launch_a_second_publisher(self):
         args=[str(PWSH),'-NoLogo','-NoProfile','-File',str(self.harness)]
         p=subprocess.Popen(args,env=self.env('forever'),stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,text=True)

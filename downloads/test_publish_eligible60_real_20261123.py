@@ -22,7 +22,7 @@ class Nov23PublicationTests(unittest.TestCase):
         (self.root/'normal_chrome_batch.py').write_text("STARTUP_WAIT_VERSION='1.0-wait-for-endpoint-after-launcher-exit'\n")
         self.sentinel=self.root/'videos/fb10/page09/scheduled/2026-11-20/inbox/old20.mp4';self.sentinel.parent.mkdir(parents=True);self.sentinel.write_bytes(b'old20 protected')
         self.state_before=copy.deepcopy(current.first.upload.read_json(self.root/'logs/publish_state.json',{}))
-    def core(self,unknown=False,network=False,login=False,comment_retry=False):
+    def core(self,unknown=False,network=False,login=False,comment_retry=False,interrupt_first=False):
         native=self.app.first.upload.run_entry;calls=[];failed=[]
         def run(entry,*args,**kwargs):
             self.assertIs(kwargs['ai_label_override'],False);self.assertNotIn(entry['account'],self.app.BLOCKED)
@@ -32,7 +32,13 @@ class Nov23PublicationTests(unittest.TestCase):
             if network and entry['account']=='fb02' and not failed:
                 failed.append(True)
                 with patch.object(self.app.first.upload,'prepare_reel',side_effect=RuntimeError('net::ERR_CONNECTION_RESET')):return native(entry,*args,**kwargs)
-            return native(entry,*args,**kwargs)
+            try:return native(entry,*args,**kwargs)
+            finally:
+                if interrupt_first and (entry['account'],entry['target'])==('fb01','page01'):
+                    path=self.root/'logs/publish_state.json';state=current.first.upload.read_json(path,{})
+                    self.assertTrue(state[kwargs['expected_job_key']].get('post_intent_at'))
+                    state[kwargs['expected_job_key']]['status']='posting';current.first.upload.save_json(path,state)
+                    raise KeyboardInterrupt
         with patch.object(current,'inspect_workers',return_value=[]),patch.object(self.app.workers,'active_workers',return_value=[]), \
              patch.object(self.app.browser.staged.lock_recovery,'recover_locks'),patch.object(self.app.extra,'wait_session'), \
              patch.object(self.app.extra,'ensure_background_identity',side_effect=lambda prev,p,e:prev(p,e)), \
@@ -80,5 +86,18 @@ class Nov23PublicationTests(unittest.TestCase):
     def test_comment_transient_failure_is_retried_without_reposting_video(self):
         result,events,_,_=self.core(comment_retry=True);self.assertEqual(result,0)
         self.assertEqual(sum(e=='post' for e,p in events),60)
+    def test_abrupt_first_post_recovers_on_nov24_and_only_remaining59_are_submitted(self):
+        with self.assertRaises(KeyboardInterrupt):self.core(unknown=True,interrupt_first=True)
+        before=current.first.upload.read_json(self.root/'logs/publish_state.json',{})
+        key=next(k for k,r in before.items() if r.get('account')=='fb01' and r.get('target')=='page01' and '20261123-' in str(r.get('video','')))
+        self.assertEqual(before[key]['status'],'posting');intent=before[key]['post_intent_at']
+        self.runfx.now=datetime(2026,11,24,3,tzinfo=timezone.utc)
+        for clock in self.runfx.clocks:clock.now.return_value=self.runfx.now
+        result,events,_,_=self.core(unknown=True);self.assertEqual(result,3)
+        posts=[p for e,p in events if e=='post'];self.assertEqual(len(posts),59)
+        self.assertEqual(set(posts),self.app.EXPECTED-{('fb01','page01')})
+        after=current.first.upload.read_json(self.root/'logs/publish_state.json',{})
+        self.assertEqual(after[key]['status'],'needs_review');self.assertEqual(after[key]['post_intent_at'],intent)
+        self.assertEqual(self.sentinel.read_bytes(),b'old20 protected')
 
 if __name__=='__main__':unittest.main()

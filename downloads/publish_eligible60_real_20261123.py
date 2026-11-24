@@ -1,15 +1,33 @@
 """Publish only Nov23's completed allocation, with the explicitly confirmed real-footage policy."""
-import contextlib,copy,re,sys,traceback
+import contextlib,copy,os,re,sys,traceback
 from datetime import datetime,timezone
 from pathlib import Path
 from unittest.mock import patch
+
+def isolate_background_interrupts():
+    """Only the detached automatic worker ignores foreground console signals."""
+    if os.environ.get('FB_PUBLISH_ISOLATED_BACKGROUND')!='1' or sys.platform!='win32':return None
+    import ctypes,signal
+    from ctypes import wintypes
+    signal.signal(signal.SIGINT,signal.SIG_IGN)
+    if hasattr(signal,'SIGBREAK'):signal.signal(signal.SIGBREAK,signal.SIG_IGN)
+    kernel=ctypes.WinDLL('kernel32',use_last_error=True)
+    kernel.SetConsoleCtrlHandler.argtypes=[ctypes.c_void_p,wintypes.BOOL]
+    kernel.SetConsoleCtrlHandler.restype=wintypes.BOOL
+    if kernel.SetConsoleCtrlHandler(None,True):return 'console_interrupts_ignored'
+    code=ctypes.get_last_error()
+    if code==6:return 'detached_without_console'
+    raise RuntimeError('无法核验后台控制台隔离，Windows错误：'+str(code))
+
+_BACKGROUND_GUARD=None
 if __name__=='__main__':
     sys.path.insert(0,str(Path(sys.argv[1]).resolve()))
     sys.path.insert(0,str(Path(__file__).resolve().parent))
+    _BACKGROUND_GUARD=isolate_background_interrupts()
 import publish_eligible60_materials_20261119 as app
 
 first=app.first
-VERSION='1.0-nov23-real-off-exact60-background'
+VERSION='1.1-nov23-console-isolated-file-log-background'
 DAY='2026-11-23'
 POINTER='material-staging/eligible60-20261123-pending-import.json'
 REQUEST='logs/eligible60-real-publication-request-20261123.json'
@@ -66,9 +84,11 @@ def main(root):
     if sys.platform!='win32':raise ValueError('请在原Windows上传电脑运行。')
     root=Path(root).resolve();log=root/LOG
     with log.open('a',encoding='utf-8') as handle:
-        out=first.batch.Tee(*[s for s in (sys.stdout,handle) if s is not None]);err=first.batch.Tee(*[s for s in (sys.stderr,handle) if s is not None])
+        file_only=os.environ.get('FB_PUBLISH_FILE_LOG_ONLY')=='1'
+        out=first.batch.Tee(*[s for s in (None if file_only else sys.stdout,handle) if s is not None]);err=first.batch.Tee(*[s for s in (None if file_only else sys.stderr,handle) if s is not None])
         with contextlib.redirect_stdout(out),contextlib.redirect_stderr(err):
             print('Nov23 run started:',datetime.now(timezone.utc).astimezone(first.batch.BJ).isoformat(),flush=True)
+            if _BACKGROUND_GUARD:print('后台控制台隔离：',_BACKGROUND_GUARD,'；进度直接写入日志。',flush=True)
             try:return execute(root)
             except KeyboardInterrupt:print('已暂停并保留全部进度，重跑同一入口继续。',flush=True);return 130
             except Exception as error:traceback.print_exc();print('STOP：',str(error) or type(error).__name__,flush=True);return 1
