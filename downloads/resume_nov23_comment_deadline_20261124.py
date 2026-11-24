@@ -4,7 +4,7 @@ from datetime import datetime,timezone
 from pathlib import Path
 from unittest.mock import patch
 
-VERSION='1.0-external-comment-target-deadline'
+VERSION='1.1-shared-log-takeover'
 LIMIT=180
 DRIVER='resume_nov23_comment_deadline_20261124.py'
 STATUS='logs/eligible60-2026-11-23-deadline.json'

@@ -119,7 +119,7 @@ if index==0:time.sleep(60)
 PWSH=Path('/workspace/.tools/fb-pwsh/pwsh')
 @unittest.skipUnless(PWSH.exists(),'Needs PowerShell parser')
 class StopperTests(unittest.TestCase):
-    def stopper_case(self,recycled=False,fresh=False):
+    def stopper_case(self,recycled=False,fresh=False,changed_on_recheck=False):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp);(root/'logs').mkdir();packet=root/'input.json'
             d.save(packet,dict(root=str(root),queue_sha='expected',log_sha='expected',pid=28688,launch_id='a'*32))
@@ -127,9 +127,13 @@ class StopperTests(unittest.TestCase):
             script=Path(__file__).with_name('stop_stale_nov23_comment_worker_20261124.ps1');harness=root/'test.ps1'
             body=r'''
 . $env:TEST_STOPPER -FunctionsOnly
-$global:killed=@();$global:queries=0
-function Get-FileHash {param($LiteralPath,$Algorithm)
- if($LiteralPath.EndsWith('.py')){[pscustomobject]@{Hash='50b3cb7017669f075904dfe9b1c6eb3501b88368911940dea6c2ef5eddf4c35a'}}else{[pscustomobject]@{Hash='expected'}}
+$global:killed=@();$global:queries=0;$global:logHashes=0
+function Get-SharedFileSha256 {param($LiteralPath)
+ if($LiteralPath.EndsWith('run.log')){
+  $global:logHashes++
+  if($env:TEST_LOG_CHANGE -eq '1' -and $global:logHashes -gt 1){return 'changed'}
+ }
+ if($LiteralPath.EndsWith('.py')){'50b3cb7017669f075904dfe9b1c6eb3501b88368911940dea6c2ef5eddf4c35a'}else{'expected'}
 }
 function Get-Item {param($LiteralPath) [pscustomobject]@{LastWriteTimeUtc=$(if($env:TEST_FRESH -eq '1'){[datetime]::UtcNow}else{[datetime]::UtcNow.AddHours(-1)})}}
 $scriptPath=Join-Path $env:TEST_ROOT 'material-staging/tools/b9876463425ed103/publish_eligible60_real_20261123.py'
@@ -153,7 +157,7 @@ try{Invoke-StaleCommentStop $env:TEST_PACKET;'completed'}catch{'blocked: '+$_.Ex
 'queries='+$global:queries
 '''
             harness.write_text(body,encoding='utf-8-sig')
-            env=dict(os.environ,TEST_STOPPER=str(script),TEST_PACKET=str(packet),TEST_ROOT=str(root),TEST_FRESH=str(int(fresh)),TEST_RECYCLED=str(int(recycled)),XDG_CACHE_HOME=str(root/'cache'),XDG_CONFIG_HOME=str(root/'config'),XDG_DATA_HOME=str(root/'data'))
+            env=dict(os.environ,TEST_STOPPER=str(script),TEST_PACKET=str(packet),TEST_ROOT=str(root),TEST_FRESH=str(int(fresh)),TEST_RECYCLED=str(int(recycled)),TEST_LOG_CHANGE=str(int(changed_on_recheck)),XDG_CACHE_HOME=str(root/'cache'),XDG_CONFIG_HOME=str(root/'config'),XDG_DATA_HOME=str(root/'data'))
             result=subprocess.run([str(PWSH),'-NoLogo','-NoProfile','-File',str(harness)],env=env,capture_output=True,text=True,timeout=15)
             self.assertEqual(result.returncode,0,result.stderr);return result.stdout
     def test_only_verified_old_root_and_descendant_are_stopped(self):
@@ -162,15 +166,52 @@ try{Invoke-StaleCommentStop $env:TEST_PACKET;'completed'}catch{'blocked: '+$_.Ex
         output=self.stopper_case(recycled=True);self.assertIn('blocked:',output);self.assertIn('killed=\n',output)
     def test_fresh_logs_prevent_process_queries_and_termination(self):
         output=self.stopper_case(fresh=True);self.assertIn('日志未停滞三分钟',output);self.assertIn('queries=0',output);self.assertIn('killed=\n',output)
+    def test_log_change_after_process_pinning_still_prevents_termination(self):
+        output=self.stopper_case(changed_on_recheck=True);self.assertIn('日志已有新进度',output);self.assertIn('killed=\n',output)
     def test_script_parses_and_rejects_changed_logs_before_process_access(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp);packet=root/'input.json';d.save(packet,dict(root=str(root),queue_sha='expected',log_sha='expected',pid=28688,launch_id='x'))
             script=Path(__file__).with_name('stop_stale_nov23_comment_worker_20261124.ps1')
             harness=root/'test.ps1'
-            harness.write_text(". $env:TEST_STOPPER -FunctionsOnly\nfunction Get-FileHash {param($LiteralPath,$Algorithm) [pscustomobject]@{Hash='changed'}}\nfunction Get-CimInstance {throw 'MUST NOT QUERY PROCESS'}\ntry {Invoke-StaleCommentStop $env:TEST_PACKET;'unsafe'}catch{$_.Exception.Message}\n",encoding='utf-8-sig')
+            harness.write_text(". $env:TEST_STOPPER -FunctionsOnly\nfunction Get-SharedFileSha256 {param($LiteralPath) 'changed'}\nfunction Get-CimInstance {throw 'MUST NOT QUERY PROCESS'}\ntry {Invoke-StaleCommentStop $env:TEST_PACKET;'unsafe'}catch{$_.Exception.Message}\n",encoding='utf-8-sig')
             env=dict(os.environ,TEST_STOPPER=str(script),TEST_PACKET=str(packet),XDG_CACHE_HOME=str(root/'cache'),XDG_CONFIG_HOME=str(root/'config'),XDG_DATA_HOME=str(root/'data'))
             result=subprocess.run([str(PWSH),'-NoLogo','-NoProfile','-File',str(harness)],env=env,capture_output=True,text=True,timeout=15)
             self.assertEqual(result.returncode,0,result.stderr);self.assertIn('队列记录已经变化',result.stdout);self.assertNotIn('unsafe',result.stdout)
+
+    def run_shared_reader(self,body):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);script=Path(__file__).with_name('stop_stale_nov23_comment_worker_20261124.ps1');harness=root/'test.ps1'
+            harness.write_text('. $env:TEST_STOPPER -FunctionsOnly\n'+body,encoding='utf-8-sig')
+            env=dict(os.environ,TEST_STOPPER=str(script),TEST_ROOT=str(root),XDG_CACHE_HOME=str(root/'cache'),XDG_CONFIG_HOME=str(root/'config'),XDG_DATA_HOME=str(root/'data'))
+            result=subprocess.run([str(PWSH),'-NoLogo','-NoProfile','-File',str(harness)],env=env,capture_output=True,text=True,timeout=15)
+            self.assertEqual(result.returncode,0,result.stderr);return result.stdout
+    def test_real_shared_hash_with_open_writer_preserves_content_and_writer(self):
+        import hashlib
+        body=r'''
+function Get-FileHash {throw 'Default file sharing must not be used'}
+$path=Join-Path $env:TEST_ROOT 'writer.log'
+$writer=[IO.File]::Open($path,[IO.FileMode]::Create,[IO.FileAccess]::Write,[IO.FileShare]::Read)
+try{
+ $bytes=[Text.Encoding]::UTF8.GetBytes('原日志：fb10/page03')
+ $writer.Write($bytes,0,$bytes.Length);$writer.Flush()
+ 'first='+(Get-SharedFileSha256 $path)
+ 'position='+$writer.Position
+ $writer.WriteByte(10);$writer.Flush()
+ 'second='+(Get-SharedFileSha256 $path)
+ $writer.WriteByte(88);$writer.Flush()
+ 'writer-still-open=True'
+}finally{$writer.Dispose()}
+'final='+([Convert]::ToBase64String([IO.File]::ReadAllBytes($path)))
+'''
+        output=self.run_shared_reader(body);raw='原日志：fb10/page03'.encode()
+        self.assertIn('first='+hashlib.sha256(raw).hexdigest(),output)
+        self.assertIn('second='+hashlib.sha256(raw+b'\n').hexdigest(),output)
+        self.assertIn('position='+str(len(raw)),output);self.assertIn('writer-still-open=True',output)
+        import base64
+        self.assertIn('final='+base64.b64encode(raw+b'\nX').decode(),output)
+    def test_shared_reader_never_creates_a_missing_log(self):
+        output=self.run_shared_reader("$path=Join-Path $env:TEST_ROOT 'missing.log'\ntry{Get-SharedFileSha256 $path;'unsafe'}catch{'blocked'}\n'exists='+(Test-Path -LiteralPath $path)\n")
+        self.assertIn('blocked',output);self.assertIn('exists=False',output);self.assertNotIn('unsafe',output)
 
 class WindowsContainmentContractTests(unittest.TestCase):
     def fake_runtime(self,assign=True):
