@@ -18,6 +18,22 @@ def passive(out):
     callback.__module__='safe_video_comments';return callback
 
 class FinishGuardTests(unittest.TestCase):
+    def test_known_oversized_response_is_not_read(self):
+        response=MagicMock();response.headers={'content-length':str(app.MAX_RESPONSE_CHARS+1)}
+        proxy=app.BoundedResponse(response)
+        for _ in range(2):
+            with self.assertRaises(ValueError):proxy.text()
+        response.text.assert_not_called()
+    def test_same_completed_body_is_read_once_per_callback(self):
+        response=MagicMock();response.headers={};response.text.return_value='small response'
+        proxy=app.BoundedResponse(response);self.assertEqual(proxy.text(),proxy.text());response.text.assert_called_once()
+    def test_oversized_unknown_length_is_rejected_without_repeated_download(self):
+        response=MagicMock();response.headers={};response.text.return_value='too many characters'
+        with patch.object(app,'MAX_RESPONSE_CHARS',3):
+            proxy=app.BoundedResponse(response)
+            for _ in range(2):
+                with self.assertRaises(ValueError):proxy.text()
+        response.text.assert_called_once()
     def test_header_does_not_read_body_finished_does_remove_and_restore_exactly(self):
         context=FakeContext();seen=[];callback=passive(seen);response=MagicMock();response.text.return_value='finished body';request=MagicMock();request.response.return_value=response
         on=FakeContext.on;remove=FakeContext.remove_listener

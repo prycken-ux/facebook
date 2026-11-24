@@ -3,9 +3,26 @@ import contextlib,weakref
 from unittest.mock import patch
 import fb_upload as upload
 
-VERSION='1.0-completed-response-capture-bounded-diagnostics'
+VERSION='1.1-completed-response-size-capped'
 PASSIVE_MODULES={'safe_video_comments','capture_current_publication','published_video_lookup','actual_reels_comment_lookup'}
 SCREENSHOT_TIMEOUT_MS=3000
+MAX_RESPONSE_CHARS=4_000_000
+
+
+class BoundedResponse:
+    """Cache one body per callback; oversized evidence never proves success."""
+    def __init__(self,response):self.response=response;self.cached=None;self.rejected=False
+    def __getattr__(self,name):return getattr(self.response,name)
+    def text(self):
+        if self.rejected:raise ValueError('Passive response too large')
+        if self.cached is None:
+            headers=self.response.headers
+            length=headers.get('content-length','') if isinstance(headers,dict) else ''
+            if str(length).isdecimal() and int(length)>MAX_RESPONSE_CHARS:self.rejected=True;raise ValueError('Passive response too large')
+            value=self.response.text()
+            if not isinstance(value,str) or len(value)>MAX_RESPONSE_CHARS:self.rejected=True;raise ValueError('Passive response too large')
+            self.cached=value
+        return self.cached
 
 
 @contextlib.contextmanager
@@ -20,7 +37,7 @@ def installed(context_class=None,page_class=None):
         def finished(request):
             try:
                 response=request.response()
-                if response is not None:callback(response)
+                if response is not None:callback(BoundedResponse(response))
             except Exception:
                 # Missing/evicted response evidence never establishes success
                 # and cannot prevent the pending job from being preserved.
