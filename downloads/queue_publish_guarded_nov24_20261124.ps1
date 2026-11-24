@@ -90,7 +90,12 @@ function Start-Nov24Queue([string]$Root,[string]$Entry,[string]$EntrySha,[string
      if($record.run_id -eq $Run -and $record.phase -in @('running','finished','review_required')){State 'started' ('24号后台监控已确认，PID：'+$record.pid);return}
      if($record.run_id -eq $Run -and $record.phase -eq 'failed'){throw ([string]$record.message)}
     }
-    if($process.HasExited){throw ('后台入口退出，代码：'+$process.ExitCode+'；请查看nov24-launch-'+$Run+'.log')}
+    if($process.HasExited){
+     $diagnostic=Join-Path $Root ('logs\nov24-launch-'+$Run+'.log')
+     $detail=''
+     if(Test-Path -LiteralPath $diagnostic){$detail=(@(Get-Content -LiteralPath $diagnostic -Encoding UTF8 -Tail 30) -join [Environment]::NewLine)}
+     throw ('后台入口退出，代码：'+$process.ExitCode+'；诊断：'+$diagnostic+[Environment]::NewLine+$detail)
+    }
     Start-Sleep -Milliseconds 200
    }
    State 'starting' ('后台核验尚未结束，未启动第二份；诊断：nov24-launch-'+$Run+'.log')

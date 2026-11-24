@@ -26,6 +26,15 @@ class GuardedIntegrationTests(unittest.TestCase):
         own=[r for r in state.values() if '20261124-' in r.get('video','')];self.assertEqual(len(own),60);self.assertTrue(all(r.get('comment_status')=='sent' for r in own))
         self.assertEqual(state[key],old);self.assertEqual(old_file.read_bytes(),b'Nov23 source must stay protected')
         result,events,_,_=self.core();self.assertEqual(sum(e=='post' for e,p in events),0)
+    def test_historical_cleanup_then_current60_video_and_comments(self):
+        import clean_pre_nov24_materials_20261124 as cleanup
+        old=self.root/'videos/fb03/personal/inbox/20261123-12345678-eligible60-old.mp4';old.parent.mkdir(parents=True,exist_ok=True);old.write_bytes(b'old pending source')
+        with patch.object(cleanup.workers,'active_workers',return_value=[]),patch.object(cleanup.recovery,'recover_locks'):
+            cleanup.execute(self.root)
+        self.assertFalse(old.exists())
+        result,events,comments,calls=self.core();self.assertEqual(result,0);self.assertEqual(sum(e=='post' for e,p in events),60)
+        state=day.first.upload.read_json(self.root/'logs/publish_state.json',{})
+        own=[r for r in state.values() if '20261124-' in r.get('video','')];self.assertEqual(len(own),60);self.assertTrue(all(r.get('comment_status')=='sent' for r in own))
     def test_network_safe_retry_and_pending_submit_protection_remain_effective(self):
         result,events,_,calls=self.core(network=True);self.assertEqual(result,0);self.assertEqual(sum(e=='post' for e,p in events),60);self.assertEqual(calls.count(('fb02','page01')),2)
     def test_skipped_video_never_uses_a_new_claim_or_posts_but_other59_continue(self):

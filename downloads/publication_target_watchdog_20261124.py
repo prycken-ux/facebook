@@ -3,9 +3,22 @@ import contextlib,copy,hashlib,json,os,re,subprocess,sys,time,uuid
 from datetime import datetime,timezone
 from pathlib import Path
 from unittest.mock import patch
-import publication_file_state_20261124 as files
-import chrome_profile_guard as profiles
-from comment_deadline_windows_job_20261124 import WindowsJobChild
+# A direct script launch sets sys.path[0] to the immutable tools cache. Add
+# the actual project before ANY project import, matching the package probe.
+if __name__=='__main__':
+    _root=Path(sys.argv[1]).resolve()
+    sys.path.insert(0,str(_root));sys.path.insert(0,str(Path(__file__).resolve().parent))
+try:
+    import publication_file_state_20261124 as files
+    import chrome_profile_guard as profiles
+    from comment_deadline_windows_job_20261124 import WindowsJobChild
+except Exception:
+    if __name__=='__main__':
+        import traceback
+        _run=os.environ.get('FB_NOV24_RUN','')
+        if re.fullmatch('[a-f0-9]{32}',_run):
+            with (_root/'logs'/('nov24-launch-'+_run+'.log')).open('a',encoding='utf-8') as _out:traceback.print_exc(file=_out)
+    raise
 
 DAY='2026-11-24'
 VIDEO_SECONDS=600
