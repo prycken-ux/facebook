@@ -18,6 +18,15 @@ function Start-Nov24Queue([string]$Root,[string]$Entry,[string]$EntrySha,[string
   $temporary=$status+'.'+[guid]::NewGuid().ToString('N')+'.tmp'
   [IO.File]::WriteAllText($temporary,($value | ConvertTo-Json -Compress),(New-Object Text.UTF8Encoding($false)))
   try{for($i=0;$i -lt 20;$i++){try{Move-Item -LiteralPath $temporary -Destination $status -Force;break}catch{if($i -eq 19){throw};Start-Sleep -Milliseconds 20}}}finally{if(Test-Path -LiteralPath $temporary){Remove-Item -LiteralPath $temporary}}
+  # The same progress log is readable even while the queue is waiting. Share
+  # Write access with the eventual publisher; optional logging never changes
+  # the authoritative JSON acknowledgment or masks a running publisher.
+  $stream=$null;$writer=$null
+  try{
+   $stream=[IO.File]::Open((Join-Path $Root 'logs\eligible60-2026-11-24-run.log'),[IO.FileMode]::Append,[IO.FileAccess]::Write,([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+   $writer=New-Object IO.StreamWriter($stream,(New-Object Text.UTF8Encoding($false)))
+   $writer.WriteLine(([datetimeoffset]::UtcNow.ToOffset([timespan]::FromHours(8)).ToString('o')+' '+$Phase+' '+$Message));$writer.Flush()
+  }catch{}finally{if($writer){$writer.Dispose()}elseif($stream){$stream.Dispose()}}
  }
  function Workers {
   foreach($row in @(Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='pythonw.exe'")){
