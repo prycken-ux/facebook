@@ -1,0 +1,11 @@
+Direct background continuation of November23
+
+The previous isolated PowerShell coordinator did not acknowledge startup on the user Windows machine. Its stderr was redirected to NUL, so the screenshot alone cannot establish whether ConsoleHost initialization, compatibility or an existing mutex caused that failure. Do not claim the precise cause is proven. Nov23's completed60 allocation is already available; a waiting coordinator is unnecessary for this repair.
+
+The pinned starter now requires the Nov23 dated import pointer to be complete, then starts the original venv Python worker directly with CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP (0x08000200), NUL stdin and captured startup stdout/stderr. The proven background signal-ignore and direct file logging are retained. No PowerShell coordinator is started or awaited. All original content/source/AI OFF/pause and retry constraints remain unchanged; interrupted fb01 remains review-only, other unattempted jobs proceed, Nov20 stays stopped.
+
+A fresh random launch ID binds a per-launch JSON acknowledgment to the actual worker PID, rather than incorrectly requiring the Windows venv stub PID to equal the actual Python worker PID. The existing strict venv chain validator exempts only verified parents (including this exact checksum bootstrap); identical siblings remain blockers. Failed second launches do not overwrite an existing active worker's shared status. The legacy queue.json status is updated only by a validated running worker or its own terminal phases. No task scheduler, profile/Chrome termination or state deletion is used.
+
+Native startup errors now include the actual child exit code, a unique startup diagnostic path and its captured output. Failures after imports also appear in the original eligible60-2026-11-23-run.log and the nonce-bound acknowledgment. The old PowerShell script remains an unused cached compatibility artifact; it is not invoked by this starter.
+
+Validation: 24tests passed (9 publisher integrations,8 direct bootstrap/cache/venv chain checks,7 signal/file-log/worker-ack checks), plus the pinned original19-module package checksum and fresh-process import. User Windows execution is still required to confirm the resumed process and actual publication results.

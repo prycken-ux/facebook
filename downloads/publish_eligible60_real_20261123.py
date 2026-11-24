@@ -1,5 +1,5 @@
 """Publish only Nov23's completed allocation, with the explicitly confirmed real-footage policy."""
-import contextlib,copy,os,re,sys,traceback
+import contextlib,copy,json,os,re,sys,tempfile,traceback
 from datetime import datetime,timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -27,7 +27,7 @@ if __name__=='__main__':
 import publish_eligible60_materials_20261119 as app
 
 first=app.first
-VERSION='1.1-nov23-console-isolated-file-log-background'
+VERSION='1.2-nov23-direct-background-launch'
 DAY='2026-11-23'
 POINTER='material-staging/eligible60-20261123-pending-import.json'
 REQUEST='logs/eligible60-real-publication-request-20261123.json'
@@ -36,6 +36,23 @@ CONTENT_SHA='ef039935845a6c85c37d4502d113bf15605f5103e374b0cecff29c32cf9bd894'
 LOG='logs/eligible60-2026-11-23-run.log'
 _allocation=app.allocation
 BOOTSTRAP=re.compile(app.workers.BOOTSTRAP.pattern.replace('start_distribute_first24_materials_20261116','start_publish_eligible60_real_20261123').replace('verified-first24-material-distribution','verified-real-eligible60-nov23-publication'))
+
+def worker_status(root,phase,message):
+    launch=os.environ.get('FB_PUBLISH_LAUNCH_ID','')
+    if not re.fullmatch('[a-f0-9]{32}',launch):return
+    root=Path(root).resolve()
+    payload=dict(phase=phase,message=message,pid=os.getpid(),launch_id=launch,material_date=DAY,runner='direct_background',time_beijing=datetime.now(timezone.utc).astimezone(first.batch.BJ).isoformat())
+    def save(path):
+        with tempfile.NamedTemporaryFile(dir=path.parent,delete=False) as handle:
+            temp=Path(handle.name);handle.write(json.dumps(payload,ensure_ascii=False).encode('utf-8'))
+        try:temp.replace(path)
+        finally:temp.unlink(missing_ok=True)
+    try:
+        save(root/'logs'/('eligible60-2026-11-23-worker-'+launch+'.json'))
+        shared=root/'logs/eligible60-2026-11-23-queue.json'
+        previous=first.upload.read_json(shared,{})
+        if phase=='running' or previous.get('launch_id')==launch:save(shared)
+    except (OSError,ValueError) as error:print('后台进程回执暂未写入：',type(error).__name__,flush=True)
 
 def inspect_workers(root):
     with patch.object(app.workers,'BOOTSTRAP',BOOTSTRAP):return app.workers.active_workers(root,Path(__file__).resolve())
@@ -76,6 +93,7 @@ def execute(root):
     if live:raise ValueError('原发布/分配/登录任务仍在运行，未停止其他进程。PID：'+','.join(str(r['pid']) for r in live))
     with authorized_context():
         allocation(root)
+        worker_status(root,'running','23号原素材已通过启动核验，后台续跑视频、评论及安全补发。')
         print('开始11月23日原60目标发布与评论：用户确认全部实拍，AI标签关闭；沿用原正文和更正后的评论。',flush=True)
         print('后台处理；暂停账号跳过，登录/安全验证保留到报告末尾；明确发布前失败安全补发，已提交/待核实不重复上传。',flush=True)
         return app.execute(root,True)
@@ -89,9 +107,16 @@ def main(root):
         with contextlib.redirect_stdout(out),contextlib.redirect_stderr(err):
             print('Nov23 run started:',datetime.now(timezone.utc).astimezone(first.batch.BJ).isoformat(),flush=True)
             if _BACKGROUND_GUARD:print('后台控制台隔离：',_BACKGROUND_GUARD,'；进度直接写入日志。',flush=True)
-            try:return execute(root)
-            except KeyboardInterrupt:print('已暂停并保留全部进度，重跑同一入口继续。',flush=True);return 130
-            except Exception as error:traceback.print_exc();print('STOP：',str(error) or type(error).__name__,flush=True);return 1
+            worker_status(root,'preparing','后台进程已建立，正在核对23号原清单及其他任务。')
+            try:
+                code=execute(root)
+                worker_status(root,'finished' if code==0 else 'review_required','自动流程已结束；实际视频和评论结果请查看发布日志。')
+                return code
+            except KeyboardInterrupt:
+                worker_status(root,'paused','已暂停并保留原进度。');print('已暂停并保留全部进度，重跑同一入口继续。',flush=True);return 130
+            except Exception as error:
+                worker_status(root,'failed',str(error) or type(error).__name__)
+                traceback.print_exc();print('STOP：',str(error) or type(error).__name__,flush=True);return 1
 
 if __name__=='__main__':
     if sys.stdout is not None:sys.stdout.reconfigure(encoding='utf-8',line_buffering=True)

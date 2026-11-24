@@ -1,4 +1,4 @@
-import ctypes,io,os,signal,tempfile,unittest
+import ctypes,io,json,os,signal,tempfile,unittest
 from pathlib import Path
 from unittest.mock import MagicMock,patch
 import publish_eligible60_real_20261123 as driver
@@ -34,5 +34,24 @@ class InterruptIsolationTests(unittest.TestCase):
                 self.assertEqual(driver.main(root),3)
             self.assertEqual(out.getvalue(),'');self.assertEqual(err.getvalue(),'')
             saved=(root/driver.LOG).read_text();self.assertIn('progress marker',saved);self.assertIn('diagnostic marker',saved)
+    def test_worker_receipt_records_real_pid_and_preserves_other_launch_status(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);(root/'logs').mkdir();shared=root/'logs/eligible60-2026-11-23-queue.json'
+            shared.write_text('{"launch_id":"older","phase":"running","pid":123}')
+            previous=shared.read_bytes();token='a'*32
+            with patch.dict(os.environ,{'FB_PUBLISH_LAUNCH_ID':token}):
+                driver.worker_status(root,'preparing','preparing')
+                ack=json.loads((root/'logs'/('eligible60-2026-11-23-worker-'+token+'.json')).read_text())
+                self.assertEqual(ack['pid'],os.getpid());self.assertEqual(ack['launch_id'],token);self.assertEqual(shared.read_bytes(),previous)
+                driver.worker_status(root,'running','running')
+                self.assertEqual(json.loads(shared.read_text())['launch_id'],token)
+                driver.worker_status(root,'review_required','done')
+                self.assertEqual(json.loads(shared.read_text())['phase'],'review_required')
+    def test_failed_second_launch_does_not_overwrite_active_worker(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);(root/'logs').mkdir();shared=root/'logs/eligible60-2026-11-23-queue.json'
+            shared.write_text('{"launch_id":"older","phase":"running","pid":123}');before=shared.read_bytes()
+            with patch.dict(os.environ,{'FB_PUBLISH_LAUNCH_ID':'b'*32}):driver.worker_status(root,'failed','another worker exists')
+            self.assertEqual(shared.read_bytes(),before)
 
 if __name__=='__main__':unittest.main()
