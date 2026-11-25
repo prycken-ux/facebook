@@ -1,5 +1,6 @@
 import copy
 import unittest
+from datetime import datetime
 from unittest.mock import MagicMock,patch
 import pending_video_comment_lookup_20261119 as pending
 from test_publish_eligible60_materials_20261119 import Eligible60PublicationTests
@@ -25,6 +26,7 @@ class PendingLookupTests(unittest.TestCase):
         def finder(*args,**kwargs):
             if not found:raise ValueError('No unique video match')
             self.assertEqual(args[3],self.app.content_today.CAPTION)
+            self.assertEqual(args[4],datetime.fromisoformat(self.before[self.job['key']]['created']).timestamp()-5)
             return self.link,'verified_owner_caption_time'
         with patch.object(self.first.batch,'excluded_accounts',side_effect=self.app.exclusions), \
              patch.object(self.app.owned,'reservation',side_effect=self.app.active_reservation), \

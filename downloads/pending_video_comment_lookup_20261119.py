@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 VERSION='1.0-pending-video-exact-lookup-before-comments'
+TIME_WINDOW_VERSION='1.1-upload-created-before-post-intent'
 DONE={'sent','already_present'}
 PENDING={'sending','verifying','needs_review'}
 
@@ -49,7 +50,7 @@ def resolve(first,manifest,only_keys,validate,allowed,seen):
             first.batch.content_for_payload(source['payload'])
             if any(r.get('account')==job['account'] and r.get('status') in {'preparing','posting'} for r in state.values()):
                 raise ValueError('该账号另有进行中的视频，先跳过评论定位')
-            since=datetime.fromisoformat(old['post_intent_at']).timestamp()-5
+            since=datetime.fromisoformat(old['created']).timestamp()-5
             if datetime.fromisoformat(old['created']).timestamp()<datetime.fromisoformat(source['created_at']).timestamp()-5:
                 raise ValueError('原任务时间与本次冻结来源不符')
             end=datetime.now(timezone.utc).timestamp()+5

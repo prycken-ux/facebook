@@ -98,6 +98,13 @@ class DirectVideoBrowserTests(unittest.TestCase):
         cls.pw=sync_playwright().start();cls.browser=cls.pw.chromium.launch(executable_path='/usr/bin/chromium',headless=True)
     @classmethod
     def tearDownClass(cls):cls.browser.close();cls.pw.stop()
+    def test_exact_metadata_and_author_allow_hidden_player_but_not_pending_post(self):
+        self.video=False
+        valid,proof=guided.inspect_video(self.page,self.context,self.entry,'Exact caption',900,1100,'https://www.facebook.com/reel/9001',seconds=1.2)
+        self.assertTrue(valid,proof);self.assertFalse(proof['visible_video'])
+        self.node['is_pending']=True
+        valid,proof=guided.inspect_video(self.page,self.context,self.entry,'Exact caption',900,1100,'https://www.facebook.com/reel/9001',seconds=.2)
+        self.assertFalse(valid);self.assertTrue(proof['blocked'])
     def setUp(self):
         self.context=self.browser.new_context();self.page=self.context.new_page();self.entry=dict(name='Example Page',url='https://www.facebook.com/profile.php?id=1001',account='fb01',target='page01',type='page')
         self.node=dict(__typename='Video',id='9001',owner={'id':'1001'},description='Exact caption',creation_time=1000);self.video=True;self.editor=False;self.author_in_comment=False;self.kind='application/json'
@@ -135,8 +142,8 @@ class DirectVideoBrowserTests(unittest.TestCase):
         query=parse_qs(urlparse(self.page.url).query)
         self.assertEqual(query['id'],['1001']);self.assertEqual(query['sk'],['reels_tab'])
         self.assertFalse(self.page.evaluate('Boolean(window.clicked)'))
-    def test_missing_player_without_explicit_publication_or_visible_editor_are_not_accepted(self):
-        self.video=False;valid,_=self.inspect();self.assertFalse(valid)
+    def test_hidden_player_allows_exact_proof_but_visible_editor_is_rejected(self):
+        self.video=False;valid,_=self.inspect();self.assertTrue(valid)
         self.video=True;self.editor=True;valid,proof=self.inspect();self.assertFalse(valid);self.assertTrue(proof['editor'])
     def test_mobile_exact_link_is_normalized_and_other_authors_never_pass(self):
         result=guided.validate_selected(self.page,self.entry,'https://m.facebook.com/reel/9001?locale=en_US');self.assertEqual(result,'https://www.facebook.com/reel/9001')

@@ -7,7 +7,7 @@ import safe_video_comments as comments
 import published_video_lookup as lookup
 import daily_publish_and_comments as daily
 
-LOOKUP_VERSION='1.1-fragments-jsonld-noninteractive'
+LOOKUP_VERSION='1.2-nov25-exact-metadata-dom-order'
 REELS_ENTRY_VERSION='1.0-owner-route-fallback'
 
 
@@ -151,7 +151,7 @@ def inspect_video(page,context,entry,caption,start,end,link,seconds=7):
         visible_video=any(page.locator('video').nth(i).is_visible() for i in range(page.locator('video').count()))
         editor=page.get_by_role('form',name='Reels',exact=True)
         has_editor=any(editor.nth(i).is_visible() for i in range(editor.count()))
-        valid=evidence.matched and not evidence.blocked and (visible_video or evidence.published) and not has_editor
+        valid=evidence.matched and not evidence.blocked and not has_editor
         if valid:require_target_author(page,entry)
         return bool(valid),dict(evidence.diagnostic(),visible_video=visible_video,editor=has_editor)
     except Exception as error:return False,dict(evidence.diagnostic(),error=(str(error) or type(error).__name__).split('\n',1)[0][:300])
@@ -174,16 +174,16 @@ def collect_links(page,seconds=8,entry=None):
         route=parsed._replace(query=urlencode(params,doseq=True),fragment='').geturl()
         print('没有唯一可见的Reels标签；改从该主页的Reels地址只读查找。',flush=True)
         page.goto(upload.english_url(route),wait_until='domcontentloaded',timeout=30000)
-    end=time.monotonic()+seconds;links=set();scrolls=0
+    end=time.monotonic()+seconds;links=[];seen_links=set();scrolls=0
     while time.monotonic()<end:
         upload.checkpoint(page);upload.require_no_advanced_protection(page)
         scan=page.evaluate(SCAN)
         for value in scan['main'] or scan['all']:
             link=comments.direct_link(value)
-            if link:links.add(link)
+            if link and link not in seen_links:links.append(link);seen_links.add(link)
         if scrolls<3:page.mouse.wheel(0,600);scrolls+=1
         page.wait_for_timeout(350)
-    return sorted(links)
+    return links
 
 
 def validate_selected(page,entry,raw):
