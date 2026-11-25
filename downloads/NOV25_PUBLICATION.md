@@ -1,0 +1,16 @@
+Nov25 publication
+
+This installer reads only the completed material-staging/eligible60-20261125-pending-import.json allocation and validates its immutable source manifest. It retains the original 60-target/34-paused scope, caption and corrected comment, and the user's Nov25 confirmation of real footage with AI labels off. Historical cleanup and allocation are separate, already delivered tools; this installer performs neither.
+
+The queue is PowerShell, so it can wait for allocation/project Python workers without blocking allocation's process guard. It acknowledges a queue separately from a running publisher. Existing live queue/supervisor detection prevents duplicate launches. The worker owns a Windows Job before its venv launcher resumes; only that job's descendants are terminated after a timeout. Manual Chrome remains protected.
+
+Each video operation, including profile preparation, has a 180-second external deadline. Receipt waiting shares that operation's clock and leaves ten seconds for native durable state/diagnostic cleanup. Each comment operation separately has a 180-second external deadline. Heartbeats are written every fifteen seconds. A timeout preserves submission/comment evidence, marks only the exact frozen operation skipped, and resumes the remaining operations.
+
+Per the user's standing policy, a native receipt timeout after button.click returned changes the video to published with assumed_published=true and publication_confirmation_source=user_authorized_post_receipt_timeout_policy. It preserves the prior needs_review status and native errors and does not invent a Facebook receipt, permalink or confirmed_at. post_intent_at alone, click errors, pre-Post failures and other dates cannot trigger the policy. Reports distinguish this assumed count. Submitted jobs are never automatically uploaded again; explicitly recoverable pre-Post failures retain the original one-retry rule.
+
+Comments still require exact-video proof. Lookup first uses the existing owner/full-caption/upload-time/video-ID metadata verifier and checks the canonical detail URL and visible author with no Reel editor. This avoids requiring a playing video element in headless Chrome. Ambiguous metadata, wrong author or redirects stop that attempt. Missing profile proof returns to the exact actor and falls back to the original Reels verifier within the remaining budget. Existing exact-text comment ledger and reload verification prevent duplicate comments; timeout-assumed video success never implies comment success.
+
+Validation: source-bound end-to-end fixtures for all60, exclusions, AI OFF, content, comments, one pre-Post retry, login skip, next-day recovery and no reupload; actual blocked-process/descendant termination tests for video and comments; PowerShell queue wait and duplicate tests; receipt and exact-video policy failure tests; exact embedded-source/fingerprint checks; pinned base runtime downloaded and the exact installation probe executed. Live Windows/Chrome/Facebook results require the user to run the delivered command.
+
+Rebuild embedded installer with: python downloads/build_nov25_publication_starter.py
+Tests from downloads: python -m unittest test_publish_eligible60_real_20261125 test_publication_target_watchdog_20261125 test_nov25_publication_policy test_start_publish_guarded_nov25_20261125
