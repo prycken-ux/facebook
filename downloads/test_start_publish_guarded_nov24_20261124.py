@@ -26,14 +26,13 @@ class StarterTests(unittest.TestCase):
                 self.assertEqual(starter.start(root),0)
             self.assertEqual(len(calls),1);self.assertEqual(calls[0].args[0],'powershell.exe');self.assertEqual(calls[0].calls,2)
             self.assertEqual(pointer.read_bytes(),original);self.assertEqual(lock.read_text(),'22964');self.assertFalse((root/'logs/publish_state.json').exists())
-    def test_cleanup_failure_prevents_new_queue_creation(self):
-        with tempfile.TemporaryDirectory() as temp:
-            root=Path(temp);(root/'logs').mkdir();(root/'.venv/Scripts').mkdir(parents=True);(root/'.venv/Scripts/python.exe').touch();(root/'upload_config.json').write_text('{}')
-            def run(args,**kwargs):
-                if any(str(a).endswith('clean_pre_nov24_materials_20261124.py') for a in args):raise subprocess.CalledProcessError(1,args)
-            with patch.object(starter.sys,'platform','win32'),patch.object(starter,'base_runtime',return_value=base),patch.object(base,'download',return_value={}),patch.object(starter.subprocess,'run',side_effect=run),patch.object(starter.subprocess,'Popen') as launch:
-                with self.assertRaises(subprocess.CalledProcessError):starter.start(root)
-                launch.assert_not_called()
+    def test_retry10_package_has_no_material_cleanup_and_exact_scope(self):
+        self.assertNotIn('clean_pre_nov24_materials_20261124.py',starter.ADDITIONS)
+        self.assertIn('retry_nov24_prepost10_20261125.py',starter.ADDITIONS)
+        import retry_nov24_prepost10_20261125 as retry10
+        self.assertEqual(len(retry10.EXPECTED),10)
+        self.assertEqual(retry10.REQUEST_PREFIX,'2a3bef46c1aa99e9')
+        self.assertFalse({'fb32','fb52','fb10'} & {a for a,t in retry10.EXPECTED})
     def test_package_probe_imports_original_scope_and_nov24_versions(self):
         # The final package is network-verified separately; this checks that all
         # embedded Python modules are syntactically valid without a live login.

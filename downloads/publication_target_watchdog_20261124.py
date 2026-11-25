@@ -160,6 +160,7 @@ def guarded_worker(day,root,run,attempt,progress_path,operation_path):
         p=progress_read(progress_path,run,req['sha256']);completed.update(p['completed'])
         for job in value['payload']['jobs']:
             key=job['key'];token=phase+':'+key
+            if hasattr(day,'_retry10_allowed') and key not in day._retry10_allowed:continue
             if job['account'] in app.PAUSED or key in p['skipped_comments'] or token in completed:continue
             row=first.upload.read_json(root/'logs/publish_state.json',{}).get(key,{})
             if row.get('comment_status') in {'sent','already_present'} or row.get('status') not in {'published','needs_review'}:continue
@@ -237,11 +238,13 @@ def main(root):
     sys.path.insert(0,str(root));sys.path.insert(0,str(Path(__file__).resolve().parent))
     import publish_eligible60_real_20261124 as day
     day._BACKGROUND_GUARD=day.isolate_background_interrupts()
-    if os.environ.get('FB_NOV24_ROLE')=='worker':
-        attempt=os.environ['FB_PUBLISH_LAUNCH_ID']
-        with guarded_worker(day,root,run,attempt,root/'logs'/('nov24-progress-'+run+'.json'),root/'logs'/('nov24-operation-'+attempt+'.json')),patch.object(day,'inspect_workers',side_effect=lambda p:inspect_workers(day,p)):return day.main(root)
-    if os.environ.get('FB_NOV24_ROLE')!='supervisor':raise ValueError('请使用校验过的启动入口。')
-    return supervisor(day,root,run)
+    import retry_nov24_prepost10_20261125 as retry10
+    with retry10.installed(day):
+        if os.environ.get('FB_NOV24_ROLE')=='worker':
+            attempt=os.environ['FB_PUBLISH_LAUNCH_ID']
+            with guarded_worker(day,root,run,attempt,root/'logs'/('nov24-progress-'+run+'.json'),root/'logs'/('nov24-operation-'+attempt+'.json')),patch.object(day,'inspect_workers',side_effect=lambda p:inspect_workers(day,p)):return day.main(root)
+        if os.environ.get('FB_NOV24_ROLE')!='supervisor':raise ValueError('请使用校验过的启动入口。')
+        return supervisor(day,root,run)
 
 if __name__=='__main__':
     # Use a normal file before imports/preflight; no pipe EOF and no console
