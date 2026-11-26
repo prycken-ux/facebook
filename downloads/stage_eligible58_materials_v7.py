@@ -44,7 +44,7 @@ def save_paused_policy(root):
     value=dict(payload=p,sha256=materials.digest(p))
     if old==value:return
     if path.exists():
-        backup=root/'backups'/('eligible58-paused36-policy-'+datetime.now().strftime('%Y%m%d-%H%M%S-%f'));backup.mkdir(parents=True);shutil.copy2(path,backup/path.name)
+        backup=root/'backups'/('eligible58-paused36-policy-'+datetime.now().strftime('%Y%m%d-%H%M%S-%f')+'-'+uuid.uuid4().hex[:8]);backup.mkdir(parents=True);shutil.copy2(path,backup/path.name)
     upload.save_json(path,value)
 
 def scope_suffix(scope):return '-'+scope if scope in {'existing24','reserved50','eligible78','eligible62','eligible58'} else ''
