@@ -1,0 +1,107 @@
+[
+  {
+    "name": "publication_target_watchdog_20261125.py",
+    "sha256": "acd4261346313f3b63f1ef1d5f34b53ceebf651af05091245a4d7dd971383b2e",
+    "material_date": "2026-11-25"
+  },
+  {
+    "name": "publish_eligible60_real_20261125.py",
+    "sha256": "2a4137b78646746e11f1866d6562b0cc4ec33503aa2f9fe76ae7e1bb90cd87ee",
+    "material_date": "2026-11-25"
+  },
+  {
+    "name": "queue_publish_guarded_nov25_20261125.ps1",
+    "sha256": "19ba22a3a866d1b1cf038e179ada491a43d17780683c02edeba19becf35e0303",
+    "material_date": "2026-11-25"
+  },
+  {
+    "name": "start_publish_guarded_nov25_20261125.py",
+    "sha256": "3dbcac0b3b73a9bf79198967e2a49bfb85c899dbacb6a18aedb1c31b9cade92b",
+    "material_date": "2026-11-25"
+  },
+  {
+    "name": "comment_target_watchdog_20261125.py",
+    "sha256": "84e323b57bb2532664a064e98ad9f22d0ae8dd3a8043c2256ec99f189b53c125",
+    "material_date": "2026-11-25"
+  },
+  {
+    "name": "queue_comment_nov25_20261125.ps1",
+    "sha256": "d1ea630269673dd8c87a40fff95119863eafb89804c17b223638215e7ce162d5",
+    "material_date": "2026-11-25"
+  },
+  {
+    "name": "start_comment_nov25_20261125.py",
+    "sha256": "776a1d7a97f5e366592638ea45df7aebc8ccedeeae19b707bcc96b0b74c22889",
+    "material_date": "2026-11-25"
+  },
+  {
+    "name": "resume18_target_watchdog_20261126.py",
+    "sha256": "3df1e440b83eb38a40087d3cd2baded1bccef90ff669e0fbd5002979de8f8d6a",
+    "material_date": "2026-11-25"
+  },
+  {
+    "name": "queue_resume_nov25_selected18_20261126.ps1",
+    "sha256": "c58e5e8e8ada324dca246fb6ccb0dde921fc68934da67a624ed2c4614a5ef05f",
+    "material_date": "2026-11-25"
+  },
+  {
+    "name": "start_resume_nov25_selected18_20261126.py",
+    "sha256": "fb538f7e89c5bde56f5f66f8192854dfb496f6b228938e0bf317ee20aa46f550",
+    "material_date": "2026-11-25"
+  },
+  {
+    "name": "resume18_target_watchdog_20261126.py",
+    "sha256": "cf75d4d5c62be4c7eab65915ab6e30ecf2cf3a84df020c6048c1fbe254f5819c",
+    "material_date": "2026-11-25"
+  },
+  {
+    "name": "start_resume_nov25_selected18_20261126.py",
+    "sha256": "9e68782eef7aa7d1004921de221e743e19786662043d3e04034540680fee7c2b",
+    "material_date": "2026-11-25"
+  },
+  {
+    "name": "publication_target_watchdog_20261124.py",
+    "sha256": "957922e3210cc0270eae8819b402191e59b2d2040a9c51790fd6087a1f1736ae",
+    "material_date": "2026-11-24"
+  },
+  {
+    "name": "queue_publish_guarded_nov24_20261124.ps1",
+    "sha256": "6d33fb7a2b7bfa550e6c79e42b1aa07eab0891dde7548ae801ed87412d5cb9ac",
+    "material_date": "2026-11-24"
+  },
+  {
+    "name": "publish_eligible60_real_20261124.py",
+    "sha256": "cf00ea499fc474b856e77123e190b7834c73cb14c826bd28585d390fa04bb932",
+    "material_date": "2026-11-24"
+  },
+  {
+    "name": "publication_target_watchdog_20261124.py",
+    "sha256": "70646d3d8b50e5df393d4d7068a8e99787ac24e0900b4ff6be27a46ceec57098",
+    "material_date": "2026-11-24"
+  },
+  {
+    "name": "start_publish_guarded_nov24_20261124.py",
+    "sha256": "4e4fe54847c6ad5ba9c983d27ebc4b9568fe52c83debacc2fae26cec63cb1b43",
+    "material_date": "2026-11-24"
+  },
+  {
+    "name": "publish_eligible60_real_20261123.py",
+    "sha256": "50b3cb7017669f075904dfe9b1c6eb3501b88368911940dea6c2ef5eddf4c35a",
+    "material_date": "2026-11-23"
+  },
+  {
+    "name": "queue_publish_eligible60_20261123.ps1",
+    "sha256": "7f13c7dcc907067a95507bd24b43b58b21c26a489fe07acae7af2d6280812e84",
+    "material_date": "2026-11-23"
+  },
+  {
+    "name": "repair_nov23_caption_fb09_20261124.py",
+    "sha256": "9c79188f0dc75d57f071941be899752d2bc8bcf64f66cdf46075b366155bb8b7",
+    "material_date": "2026-11-23"
+  },
+  {
+    "name": "publish_nov23_videos_only_20261124.py",
+    "sha256": "eed04dda285fe885970e294703ca060be723b4fd407999b133883f5194aabb59",
+    "material_date": "2026-11-23"
+  }
+]
