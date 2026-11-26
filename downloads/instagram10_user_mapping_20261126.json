@@ -1,0 +1,125 @@
+{
+  "schema": "instagram-user-confirmed-slot-mapping-v1",
+  "recorded_on_beijing": "2026-11-26",
+  "source": "user_supplied_ten_profile_urls_and_reported_login",
+  "root": "E:\\IG-AutoUpload",
+  "workflow": "logged_in_browser",
+  "reuse_facebook_videos": false,
+  "reuse_facebook_caption": true,
+  "automatic_first_comment": true,
+  "identity_verified_by_assistant": false,
+  "windows_mapping_applied": false,
+  "publication_started": false,
+  "accounts": [
+    {
+      "account": "ins01",
+      "expected_username": "ted47868",
+      "profile_url": "https://www.instagram.com/ted47868/",
+      "profile_dir": "profiles/ins01",
+      "inbox": "videos/ins01/inbox",
+      "user_reported_logged_in": true,
+      "identity_verified": false,
+      "publishing_enabled": false,
+      "account_type": null
+    },
+    {
+      "account": "ins02",
+      "expected_username": "jenniferriffin45",
+      "profile_url": "https://www.instagram.com/jenniferriffin45/",
+      "profile_dir": "profiles/ins02",
+      "inbox": "videos/ins02/inbox",
+      "user_reported_logged_in": true,
+      "identity_verified": false,
+      "publishing_enabled": false,
+      "account_type": null
+    },
+    {
+      "account": "ins03",
+      "expected_username": "ha.rper9090",
+      "profile_url": "https://www.instagram.com/ha.rper9090/",
+      "profile_dir": "profiles/ins03",
+      "inbox": "videos/ins03/inbox",
+      "user_reported_logged_in": true,
+      "identity_verified": false,
+      "publishing_enabled": false,
+      "account_type": null
+    },
+    {
+      "account": "ins04",
+      "expected_username": "ivy800550",
+      "profile_url": "https://www.instagram.com/ivy800550/",
+      "profile_dir": "profiles/ins04",
+      "inbox": "videos/ins04/inbox",
+      "user_reported_logged_in": true,
+      "identity_verified": false,
+      "publishing_enabled": false,
+      "account_type": null
+    },
+    {
+      "account": "ins05",
+      "expected_username": "sophia5095091",
+      "profile_url": "https://www.instagram.com/sophia5095091/",
+      "profile_dir": "profiles/ins05",
+      "inbox": "videos/ins05/inbox",
+      "user_reported_logged_in": true,
+      "identity_verified": false,
+      "publishing_enabled": false,
+      "account_type": null
+    },
+    {
+      "account": "ins06",
+      "expected_username": "daisybreeze8838",
+      "profile_url": "https://www.instagram.com/daisybreeze8838/",
+      "profile_dir": "profiles/ins06",
+      "inbox": "videos/ins06/inbox",
+      "user_reported_logged_in": true,
+      "identity_verified": false,
+      "publishing_enabled": false,
+      "account_type": null
+    },
+    {
+      "account": "ins07",
+      "expected_username": "ethan400560",
+      "profile_url": "https://www.instagram.com/ethan400560/",
+      "profile_dir": "profiles/ins07",
+      "inbox": "videos/ins07/inbox",
+      "user_reported_logged_in": true,
+      "identity_verified": false,
+      "publishing_enabled": false,
+      "account_type": null
+    },
+    {
+      "account": "ins08",
+      "expected_username": "dylan159851",
+      "profile_url": "https://www.instagram.com/dylan159851/",
+      "profile_dir": "profiles/ins08",
+      "inbox": "videos/ins08/inbox",
+      "user_reported_logged_in": true,
+      "identity_verified": false,
+      "publishing_enabled": false,
+      "account_type": null
+    },
+    {
+      "account": "ins09",
+      "expected_username": "zachary29692",
+      "profile_url": "https://www.instagram.com/zachary29692/",
+      "profile_dir": "profiles/ins09",
+      "inbox": "videos/ins09/inbox",
+      "user_reported_logged_in": true,
+      "identity_verified": false,
+      "publishing_enabled": false,
+      "account_type": null
+    },
+    {
+      "account": "ins10",
+      "expected_username": "alixla2762",
+      "profile_url": "https://www.instagram.com/alixla2762/",
+      "profile_dir": "profiles/ins10",
+      "inbox": "videos/ins10/inbox",
+      "user_reported_logged_in": true,
+      "identity_verified": false,
+      "publishing_enabled": false,
+      "account_type": null
+    }
+  ]
+}
