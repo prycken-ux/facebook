@@ -1,6 +1,6 @@
 import base64,hashlib,json,zlib
 from pathlib import Path
-NAMES=('resume_nov25_selected18_20261126.py','resume18_target_watchdog_20261126.py','queue_resume_nov25_selected18_20261126.ps1','set_login_abnormal_fb32_fb52_20261126.py','pending_video_comment_lookup_20261119.py','actual_reels_comment_lookup.py')
+NAMES=('resume_nov25_selected18_20261126.py','resume18_target_watchdog_20261126.py','queue_resume_nov25_selected18_20261126.ps1','set_login_abnormal_fb32_fb52_20261126.py','pending_video_comment_lookup_20261119.py','actual_reels_comment_lookup.py','release_windowless_resume18_profile_20261126.ps1')
 def build():
     root=Path(__file__).parent;files={n:(root/n).read_bytes() for n in NAMES}
     fp=hashlib.sha256(json.dumps({n:hashlib.sha256(b).hexdigest() for n,b in files.items()},sort_keys=True).encode()).hexdigest()

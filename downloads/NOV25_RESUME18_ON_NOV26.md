@@ -21,3 +21,11 @@ Progress: `logs/eligible60-2026-11-25-resume18-run.log`.
 Status: `logs/eligible60-2026-11-25-resume18-status.json`.
 Preflight: `logs/nov25-resume18-preflight.json`.
 Results: `logs/nov25-resume18-on-nov26-results.json`.
+
+## Windowless normal-Chrome repair after the user's closed-window confirmation
+
+The user confirmed closing the selected account windows, but the actual preflight still found fb01 PID17232 and fb02 PID30116. The old idle-release helper rejected any normal Chrome lacking `--headless`, even if its windows were closed. This explains a legitimate windowless background Chrome owner being retained; the screenshot alone does not prove there are no remaining visible/off-screen windows.
+
+The new scoped helper accepts a windowless normal Chrome only for the eight selected accounts and the explicit `user-closed-selected18-windows-20261126` packet. It requires no other project worker or preparing/posting account record, exact profile root, one old root browser, matching process creation/start time, no main window, and two successful EnumWindows visible-window checks (root plus its typed Chrome subprocess descendants) before terminating that one root. New browsers, recycled PIDs, other profile roots, any visible window or unverifiable ownership are preserved. It never uses screenshot PIDs as kill targets and never deletes profiles/login data. The original grant suffix is unchanged: this patch fixes preflight and does not issue additional video retries or clear ledgers.
+
+Validation is now42 checks, adding PowerShell execution simulations for exact windowless release, zero-main-handle visible windows, a window appearing immediately before kill, missing authorization, out-of-scope accounts, foreign workers/profiles, recycled/new processes, real family enumeration and C# compilation. The updated immutable runtime installation probe passes. Real Windows execution remains the user's next step.

@@ -50,7 +50,7 @@ def preflight(day,root,accounts):
             owners=profiles.profile_owners(root/'profiles'/account)
         if owners:blocked.append(dict(account=account,pids=[o['pid'] for o in owners],reason='账号资料仍被占用'))
     files.save(root/'logs/nov25-resume18-preflight.json',dict(accounts=sorted(accounts),blocked=blocked,at=datetime.now(timezone.utc).isoformat()))
-    if blocked:raise ValueError('续发前占用检查未通过，请正常关闭这些账号的Chrome窗口后重跑同一入口：'+','.join(r['account']+' PID '+','.join(map(str,r['pids'])) for r in blocked))
+    if blocked:raise ValueError('续发前占用检查未通过，请正常关闭这些账号的Chrome窗口后重跑同一入口：'+','.join(r['account']+' PID '+','.join(map(str,r['pids'])) +'（'+r['reason']+'）' for r in blocked))
     print('指定账号浏览器占用检查通过；将核对18条原文件及提交记录。',flush=True)
 
 def initialize_unstarted(day,root,selected,controller):

@@ -84,11 +84,11 @@ def release_idle(day,root,account):
     with patch.object(worker,'BOOTSTRAP',pattern):live,allowed=worker.classify_workers(rows,root,os.getpid(),Path(__file__).resolve())
     if live:raise RuntimeError('其他项目任务仍在运行，未关闭浏览器。')
     identities=[dict(pid=r['pid'],created=r['created'],command_sha=hashlib.sha256(r['command'].encode()).hexdigest()) for r in rows if r['pid'] in allowed]
-    packet=root/'logs'/('nov25-resume18-idle-profile-'+uuid.uuid4().hex+'.json');files.save(packet,dict(root=str(root),account=account,starter_pid=os.getpid(),allowed=identities))
-    result=subprocess.run(['powershell.exe','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',str(Path(__file__).with_name('release_idle_publication_profile_20261124.ps1')),'-InputFile',str(packet)],stdin=subprocess.DEVNULL,capture_output=True,timeout=40,creationflags=0x08000000)
+    packet=root/'logs'/('nov25-resume18-idle-profile-'+uuid.uuid4().hex+'.json');files.save(packet,dict(root=str(root),account=account,starter_pid=os.getpid(),allowed=identities,closed_windows_authorization='user-closed-selected18-windows-20261126'))
+    result=subprocess.run(['powershell.exe','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',str(Path(__file__).with_name('release_windowless_resume18_profile_20261126.ps1')),'-InputFile',str(packet)],stdin=subprocess.DEVNULL,capture_output=True,timeout=40,creationflags=0x08000000)
     output=(result.stdout+result.stderr).decode('utf-8-sig',errors='replace').strip()
     if output:print(output,flush=True)
-    if result.returncode:raise RuntimeError('原浏览器仍由其他任务或正常窗口占用，先跳过本目标。')
+    if result.returncode:raise RuntimeError('账号资料尚未释放：'+(output[-1000:] or '占用检查未通过'))
 
 @contextlib.contextmanager
 def guarded_worker(day,root,run,attempt,progress_path,operation_path):
