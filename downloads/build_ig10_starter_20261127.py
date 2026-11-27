@@ -52,7 +52,7 @@ def main(root):
   with c.lock(root,'publisher'):pass
  except RuntimeError:
   print('Existing IG publisher retained. Opening its progress log.',flush=True);viewer(root);return 0
- print('IG分配修复版：请选择素材总文件夹；会扫描子目录，统一分配10条，保留原件。',flush=True)
+ print('本批允许FB素材用于IG。请选择素材总文件夹；自动扫描子目录并分配10条，保留原件。',flush=True)
  path,batch=allocate.allocate(root)
  run=uuid.uuid4().hex;ack=root/'logs'/('ig-launch-'+run+'.json');launch=root/'logs'/('ig-launch-'+run+'.log')
  env=dict(os.environ,IG10_ROLE='coordinator',IG10_BATCH=str(path),IG10_RUN=run,PYTHONIOENCODING='utf-8');env.pop('IG10_KEY',None);env.pop('IG10_STARTED',None)

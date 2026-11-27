@@ -28,9 +28,9 @@ class AllocationTests(Fixture):
   (self.source/'copy.mp4').write_bytes((self.source/'1.mp4').read_bytes())
   with self.assertRaisesRegex(ValueError,'不足10'):self.plan()
   self.assertFalse(list((self.root/'videos').rglob('*.mp4')))
- def test_prior_fb_hash_is_not_allocated_to_ig(self):
+ def test_prior_fb_hash_is_allowed_for_this_ig_batch(self):
   fb=self.base/'FB-AutoUpload';p=dict(assignments=[dict(files=[dict(name='1.mp4',sha256=hashlib.sha256((self.source/'1.mp4').read_bytes()).hexdigest())])]);c.save(fb/'logs/material-distribution/fixture/2026-11-26-eligible58.json',dict(payload=p,sha256=c.digest(p)))
-  _,value=self.plan();self.assertEqual([j['source_name'] for j in value['payload']['jobs']],[f'{i}.mp4' for i in range(2,12)])
+  _,value=self.plan();self.assertEqual([j['source_name'] for j in value['payload']['jobs']],[f'{i}.mp4' for i in range(1,11)])
  def test_resume_never_refills_submitted_video_or_changes_source(self):
   path,value=self.plan();before=path.read_bytes();j=value['payload']['jobs'][0];c.update(self.root,j['key'],post_intent_at=c.stamp(),video_status='needs_review');(self.root/j['video']).unlink();allocation.allocate(self.root);self.assertFalse((self.root/j['video']).exists());self.assertEqual(path.read_bytes(),before)
   with self.assertRaisesRegex(ValueError,'不换源'):allocation.allocate(self.root,self.base/'other')

@@ -3,6 +3,7 @@ import hashlib,os,re,shutil,time,uuid,zipfile
 from pathlib import Path
 import ig10_common_20261127 as c
 POINTER='material-staging/ig10-20261127-pending.json'
+FB_REUSE_AUTH='user-authorized-this-ig-batch-reuse-fb-material-20261127'
 
 def natural(value):return tuple((0,int(p)) if p.isdecimal() else (1,p.casefold()) for p in re.split('(\\d+)',value))
 def choose():
@@ -28,28 +29,19 @@ def source_folder(root,path):
  if any(path.is_relative_to((root/n).resolve()) for n in ('profiles','logs','backups','material-staging','tools')):raise ValueError('请选择视频总目录，不选资料或日志目录')
  return path
 
-def prior_hashes_by_platform(root):
- hashes={'ig':set(),'fb':set()}
- for p in (root/'material-staging').glob('*/*/manifest.json'):
-  value=c.checked(c.safe(root,p));hashes['ig'].update(j['video_sha256'] for j in value['payload']['jobs'])
- # Read only immutable FB allocation fingerprints; preserve independent material.
- fb=root.parent/'FB-AutoUpload'
- for p in (fb/'logs/material-distribution').glob('*/*.json'):
-  if not re.fullmatch(r'\d{4}-\d{2}-\d{2}(?:-eligible\d+|-reserved50)?\.json',p.name):continue
-  value=c.checked(c.safe(fb,p))
-  for row in value['payload'].get('assignments',[]):
-   hashes['fb'].update(f['sha256'] for f in row.get('files',[]) if Path(f.get('name','')).suffix.lower() in c.EXT)
- return hashes
-
 def previous_hashes(root):
- values=prior_hashes_by_platform(root);return values['ig']|values['fb']
+ """IG allocation evidence only. This batch explicitly allows FB reuse."""
+ hashes=set()
+ for p in (root/'material-staging').glob('*/*/manifest.json'):
+  value=c.checked(c.safe(root,p));hashes.update(j['video_sha256'] for j in value['payload']['jobs'])
+ return hashes
 
 SKIP_DIRS={'profiles','logs','backups','material-staging','tools','shortcuts','published','review','failed','fb-autoupload','$recycle.bin','system volume information','.git'}
 OTHER_VIDEO={'.mkv','.webm','.avi','.wmv','.flv','.ts','.mts','.m2ts','.3gp','.mpeg','.mpg'}
 
 def scan_source(root,source):
  """Scan the chosen total folder recursively; no per-slot source requirement."""
- report=dict(source=str(source),date=c.DAY,scanned_at=c.stamp(),supported_extensions=sorted(c.EXT),files=[],skipped_directories=[],scan_errors=[])
+ report=dict(source=str(source),date=c.DAY,scanned_at=c.stamp(),supported_extensions=sorted(c.EXT),fb_history_filter_enabled=False,fb_material_reuse_authorization=FB_REUSE_AUTH,files=[],skipped_directories=[],scan_errors=[])
  print('正在扫描IG素材总目录及子目录：'+str(source),flush=True)
  candidates=[]
  def walk_error(error):report['scan_errors'].append(dict(path=str(error.filename),reason=str(error)))
@@ -66,7 +58,7 @@ def scan_source(root,source):
    p=base/name
    if p.suffix.lower() in c.EXT|OTHER_VIDEO:candidates.append(p)
  candidates.sort(key=lambda p:(natural(str(p.relative_to(source))),str(p.relative_to(source))))
- seen={};eligible=[];history=prior_hashes_by_platform(root)
+ seen={};eligible=[];history=previous_hashes(root)
  for index,p in enumerate(candidates,1):
   row=dict(path=str(p),relative_path=str(p.relative_to(source)),extension=p.suffix.lower());report['files'].append(row)
   if index==1 or index%10==0:print('正在核对IG素材：'+str(index)+' / '+str(len(candidates)),flush=True)
@@ -78,8 +70,7 @@ def scan_source(root,source):
    info=c.file_info(p)
   except (OSError,ValueError) as error:row.update(reason='unreadable_or_changing_file',detail=str(error));continue
   row.update(**info)
-  if info['sha256'] in history['ig']:row.update(reason='previous_ig_allocation');continue
-  if info['sha256'] in history['fb']:row.update(reason='previous_fb_allocation');continue
+  if info['sha256'] in history:row.update(reason='previous_ig_allocation');continue
   if info['sha256'] in seen:row.update(reason='duplicate_content',duplicate_of=seen[info['sha256']]);continue
   seen[info['sha256']]=str(p);row.update(reason='eligible')
   parts=[x.casefold() for x in p.relative_to(source).parts[:-1]]
@@ -96,7 +87,7 @@ def scan_source(root,source):
   match=next((v for v in eligible if v[1]['sha256'] not in taken),None)
   if match:reserved[a]=match;taken.add(match[1]['sha256'])
  report['proposed_assignments']=[dict(account=a,source_video=str(v[0]),video_sha256=v[1]['sha256']) for a,v in reserved.items()]
- summary='扫描视频 '+str(len(candidates))+' 个；可分配独立素材 '+str(len(eligible))+' 个；内容重复 '+str(counts['duplicate_content'])+'；IG历史 '+str(counts['previous_ig_allocation'])+'；FB历史 '+str(counts['previous_fb_allocation'])+'；格式不支持 '+str(counts['unsupported_format'])+'；读取异常 '+str(counts['unreadable_or_changing_file'])
+ summary='扫描视频 '+str(len(candidates))+' 个；可分配独立素材 '+str(len(eligible))+' 个；内容重复 '+str(counts['duplicate_content'])+'；IG历史 '+str(counts['previous_ig_allocation'])+'；本批允许FB素材复用'+'；格式不支持 '+str(counts['unsupported_format'])+'；读取异常 '+str(counts['unreadable_or_changing_file'])
  print(summary,flush=True)
  scan=root/'logs/ig-material-scan-20261127.json';c.save(scan,report)
  lines=['IG素材扫描（复制和发布之前）',str(source),summary,'跳过历史/系统目录 '+str(len(report['skipped_directories']))+' 个','目录读取异常 '+str(len(report['scan_errors']))+' 个']
@@ -112,6 +103,7 @@ def scan_source(root,source):
 
 def validate(root,path):
  value=c.checked(c.safe(root,path));p=value['payload'];jobs=p.get('jobs',[])
+ if 'fb_material_reuse' in p and p['fb_material_reuse']!={'allowed':True,'authorization':FB_REUSE_AUTH}:raise ValueError('本批FB素材复用授权不符')
  if p.get('schema')!='ig-ten-material-v1' or p.get('date')!=c.DAY or p.get('authorization')!=c.AUTH or p.get('ai_label') is not False or p.get('real_footage_confirmed') is not True or p.get('caption')!=c.CAPTION or p.get('comment')!=c.COMMENT or [j['account'] for j in jobs]!=list(c.MAPPING):raise ValueError('不是本次27号10账号原素材/原文案授权')
  for j in jobs:
   if j['username']!=c.MAPPING[j['account']]:raise ValueError('分配的账号对应关系不符')
@@ -142,7 +134,7 @@ def allocate(root,source=None):
      u=c.MAPPING[a];name=c.DAY.replace('-','')+'-'+token[:8]+'-'+a+'-'+file.name
      key=c.digest(dict(platform='instagram',account=a,username=u,video_sha256=info['sha256'],caption=c.CAPTION))
      selected.append(dict(account=a,username=u,key=key,source_video=str(file),source_name=file.name,video='videos/'+a+'/inbox/'+name,published_video='videos/'+a+'/published/'+name,video_sha256=info['sha256'],video_size=info['size']))
-    p=dict(schema='ig-ten-material-v1',date=c.DAY,source=str(source),source_id=token,authorization=c.AUTH,ai_label=False,real_footage_confirmed=True,caption=c.CAPTION,comment=c.COMMENT,fb_content_revision=c.FB_CONTENT_SHA,jobs=selected,copy_mode='retain-source',created_at=c.stamp())
+    p=dict(schema='ig-ten-material-v1',date=c.DAY,source=str(source),source_id=token,authorization=c.AUTH,ai_label=False,real_footage_confirmed=True,caption=c.CAPTION,comment=c.COMMENT,fb_content_revision=c.FB_CONTENT_SHA,jobs=selected,copy_mode='retain-source',fb_material_reuse=dict(allowed=True,authorization=FB_REUSE_AUTH),created_at=c.stamp())
     value=dict(payload=p,sha256=c.digest(p));c.save(path,value)
    c.save(pointer,dict(manifest=str(path.relative_to(root)),sha256=value['sha256'],complete=False))
   ledger=c.state(root)
