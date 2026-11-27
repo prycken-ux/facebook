@@ -10,7 +10,7 @@ import ig10_engine_20261127 as engine
 
 class BrowserTests(Fixture):
  def setUp(self):
-  super().setUp();self.path,self.batch=self.plan();self.job=self.batch['payload']['jobs'][0];self.user=self.job['username'];self.comments=[];self.shares=0;self.comment_sends=0;self.actual=self.user;self.ai_when_shared=None;self.api_available=True
+  super().setUp();self.path,self.batch=self.plan();self.job=self.batch['payload']['jobs'][0];self.user=self.job['username'];self.comments=[];self.shares=0;self.comment_sends=0;self.actual=self.user;self.ai_when_shared=None;self.api_available=True;self.chinese_portal=False
   self.pw=sync_playwright().start();self.addCleanup(self.pw.stop);self.browser=self.pw.chromium.launch(executable_path='/usr/bin/chromium',headless=True,args=['--no-sandbox']);self.addCleanup(self.browser.close);self.context=self.browser.new_context();self.context.route('**/*',self.route);self.page=self.context.new_page();self.page.set_default_timeout(2000)
  def route(self,r):
   p=urlparse(r.request.url)
@@ -34,7 +34,9 @@ class BrowserTests(Fixture):
    <div id="ai" role="switch" aria-label="AI label" aria-checked="true" onclick="this.setAttribute('aria-checked',this.getAttribute('aria-checked')==='true'?'false':'true')">AI</div>
    <div role="switch" aria-label="Turn off commenting" aria-checked="true" onclick="this.setAttribute('aria-checked',this.getAttribute('aria-checked')==='true'?'false':'true')">Comments</div>
    <button onclick="fetch('/api/v1/media/configure_to_clips/',{method:'POST',body:JSON.stringify({ai:document.getElementById('ai').getAttribute('aria-checked')})}).then(()=>document.body.insertAdjacentHTML('beforeend','<p>Your reel has been shared</p>'))">Share</button></div></div>'''.replace('ACTOR',self.actual)
-  r.fulfill(content_type='text/html',body='<html><body>'+body+'</body></html>')
+  if self.chinese_portal and p.path!='/reel/TRIALabc123/':
+   body=body.replace('>Create</button>','><svg aria-label="新帖子" width="24" height="24"><path d="M0 12h24M12 0v24"/></svg></button>').replace('role="dialog" id="modal"','id="modal"').replace('<div id="stage1">','<h2>创建新帖子</h2><button type="button">从电脑中选择</button><div id="stage1">')
+  r.fulfill(content_type='text/html; charset=utf-8',body='<html><body>'+body+'</body></html>')
  def upload(self):ui.prepare_and_share(self.page,self.context,self.root,self.job,time.monotonic())
  def test_real_chromium_upload_exact_actor_ai_off_comment_reload_and_no_duplicate(self):
   self.upload();self.assertEqual(self.shares,1);self.assertEqual(self.ai_when_shared,'false');self.assertEqual(c.state(self.root)[self.job['key']]['video_status'],'published')
@@ -65,5 +67,8 @@ class BrowserTests(Fixture):
   tree=ast.parse(Path(ui.__file__).read_text());snippets=[n.args[0].value for n in ast.walk(tree) if isinstance(n,ast.Call) and isinstance(n.func,ast.Attribute) and n.func.attr in {'evaluate','evaluate_all'} and n.args and isinstance(n.args[0],ast.Constant) and isinstance(n.args[0].value,str)]
   snippets.append(ui.OWN_PROFILE_NAV)
   for script in snippets:self.assertTrue(self.page.evaluate("(source)=>{ new Function('return ('+source+'\\n)'); return true; }",script.rstrip().rstrip(';')))
+
+ def test_chinese_icon_and_upload_portal_complete_video_comment_refresh(self):
+  self.api_available=False;self.chinese_portal=True;self.upload();ui.comment(self.page,self.context,self.root,self.job,time.monotonic());self.assertTrue(engine.verified(self.root,self.job));self.assertEqual(self.shares,1);self.assertEqual(self.comment_sends,1)
 
 if __name__=='__main__':unittest.main()

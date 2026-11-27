@@ -154,26 +154,87 @@ def recover(page,job,row,identity,start):
   detail(page,url,job,proof);return url,proof
  finally:page.remove_listener('requestfinished',capture.receive)
 
+CREATE_NAMES=re.compile(r'^(Create|New post|Create new post|New content|创建|创建新帖子|新建帖子|新帖子|新建内容|新内容|建立新貼文|建立|\+)$',re.I)
+UPLOAD_NAMES=re.compile(r'^(Select from computer|从电脑中选择|从电脑选择|從電腦選擇|從電腦中選擇)$',re.I)
+CREATE_TITLES=re.compile(r'^(Create new post|New post|创建新帖子|新建帖子|建立新貼文)$',re.I)
+FIRST_PHOTO=re.compile(r'^(Share your first photo|分享你的首张照片|分享您的首张照片|分享你的第一張相片|分享你的首張相片)$',re.I)
+CREATE_WAIT_SECONDS=30
+
+def named_control(scope,names):
+ for role in ('button','link'):
+  item=visible(scope.get_by_role(role,name=names))
+  if item is not None:return item
+ return None
+
+def creation_scope(page):
+ # A cookie/highlight dialog does not count as the photo/video upload dialog.
+ dialogs=page.get_by_role('dialog')
+ for index in range(dialogs.count()-1,-1,-1):
+  modal=dialogs.nth(index)
+  if not modal.is_visible():continue
+  if named_control(modal,UPLOAD_NAMES) is not None or modal.locator('input[type="file"][accept*="video" i]').count():return modal
+ # Some portal layouts omit role=dialog; require both the observed title and upload action.
+ if visible(page.get_by_text(CREATE_TITLES,exact=True)) is not None and (named_control(page,UPLOAD_NAMES) is not None or visible(page.get_by_text(UPLOAD_NAMES,exact=True)) is not None):return page
+ return None
+
+def creation_control(page,username):
+ item=named_control(page,CREATE_NAMES)
+ if item is not None:return item,'named_create'
+ # Generic New is accepted only in the left rail, never the central New Highlight.
+ for role in ('button','link'):
+  controls=page.get_by_role(role,name=re.compile(r'^(New|新建)$',re.I))
+  for index in range(controls.count()):
+   item=controls.nth(index);box=item.bounding_box()
+   if item.is_visible() and box and box['x']<140:return item,'sidebar_new'
+ icons=page.locator('svg[aria-label]')
+ for index in range(icons.count()):
+  icon=icons.nth(index)
+  if not icon.is_visible() or not CREATE_NAMES.fullmatch(icon.get_attribute('aria-label') or ''):continue
+  parent=icon.locator('xpath=ancestor::*[self::a or self::button or @role="button" or @role="link"][1]')
+  return (parent if parent.count() else icon),'sidebar_create_icon'
+ if page.url.rstrip('/')==BASE+'/'+username:
+  item=visible(page.get_by_text(FIRST_PHOTO,exact=True))
+  if item is not None:return item,'empty_profile_first_photo'
+ return None,None
+
+def open_creation(page,job,start,record=lambda **kw:None):
+ deadline=min(time.monotonic()+CREATE_WAIT_SECONDS,start+c.VIDEO_SECONDS-25);requested=False;menu_selected=False;went_home=False;origin=time.monotonic()
+ while time.monotonic()<deadline:
+  assert_session(page);scope=creation_scope(page)
+  if scope is not None:record(creation_dialog_verified_at=c.stamp());return scope
+  if requested and not menu_selected:
+   menu=visible(page.get_by_role('menu'))
+   item=visible(page.get_by_role('menuitem',name=re.compile(r'^(Post|帖子|貼文|Reel|连拍视频)$',re.I)))
+   if item is None and menu is not None:item=named_control(menu,re.compile(r'^(Post|帖子|貼文)$',re.I))
+   if item is not None:item.click(timeout=remaining(start,5000));menu_selected=True
+  if not requested:
+   item,method=creation_control(page,job['username'])
+   if item is not None:
+    item.click(timeout=remaining(start,5000));requested=True;record(creation_entry_method=method,creation_entry_clicked_at=c.stamp())
+   elif not went_home and time.monotonic()-origin>min(10,CREATE_WAIT_SECONDS/2):
+    # The user demonstrated the same plus entry from the authenticated home feed.
+    page.goto(BASE+'/',wait_until='domcontentloaded',timeout=remaining(start,12000));actor(page,job['username']);went_home=True;record(creation_home_fallback_at=c.stamp())
+  page.wait_for_timeout(200)
+ raise RuntimeError('Instagram创建入口或视频上传窗口未在限时内就绪，未选择视频')
+
+def creation_snapshot(page):
+ return page.locator('a,button,[role="button"],[role="link"],svg[aria-label],input[type="file"]').evaluate_all("""(xs)=>xs.filter(e=>{const r=e.getBoundingClientRect();return (r.width>0&&r.height>0)||e.type==='file';}).slice(0,100).map(e=>{const r=e.getBoundingClientRect();return {tag:e.tagName,role:e.getAttribute('role'),label:e.getAttribute('aria-label'),text:(e.innerText||'').slice(0,120),accept:e.type==='file'?e.accept:null,x:Math.round(r.x),y:Math.round(r.y)};})""")
+
 def prepare_and_share(page,context,root,job,start):
  page.goto(BASE+'/'+job['username']+'/',wait_until='domcontentloaded',timeout=25000)
  identity=actor(page,job['username']);base=links(page);upload_at=c.stamp()
  c.update(root,job['key'],identity=identity,identity_verified_at=c.stamp(),upload_started_at=upload_at,baseline_codes=sorted(base),video_status='preparing')
  capture=Capture(page,job,identity,datetime.fromisoformat(upload_at).timestamp(),base);capture.armed=False
  try:
-  if not click_named(page,re.compile(r'^(Create|创建|新建|建立)$',re.I),required=False):
-   icon=visible(page.locator('svg[aria-label="New post"],svg[aria-label="新建帖子"],svg[aria-label="Create"]'))
-   if icon is None:raise RuntimeError('未找到Instagram创建入口，未选择视频')
-   icon.locator('xpath=ancestor::*[self::a or self::button or @role="button"][1]').click(timeout=10000)
-  page.wait_for_timeout(700)
-  upload_scope=visible(page.get_by_role('dialog'))
-  inputs=upload_scope.locator('input[type="file"]') if upload_scope is not None else page.locator('input[type="file"][accept*="video" i]')
-  if inputs.count()==0:click_named(page,re.compile(r'^(Post|帖子|貼文|Reel|连拍视频)$',re.I),required=False)
-  upload_scope=visible(page.get_by_role('dialog'))
-  inputs=upload_scope.locator('input[type="file"]') if upload_scope is not None else page.locator('input[type="file"][accept*="video" i]')
-  if inputs.count()==0:
-   with page.expect_file_chooser(timeout=10000) as event:click_named(page,re.compile(r'^(Select from computer|从电脑中选择|從電腦選擇)$',re.I))
+  scope=open_creation(page,job,start,record=lambda **fields:c.update(root,job['key'],**fields))
+  inputs=scope.locator('input[type="file"][accept*="video" i]')
+  if inputs.count()==0 and scope is not page:inputs=scope.locator('input[type="file"]')
+  if inputs.count():inputs.last.set_input_files(str(root/job['video']),timeout=remaining(start,15000))
+  else:
+   button=named_control(scope,UPLOAD_NAMES) or visible(scope.get_by_text(UPLOAD_NAMES,exact=True))
+   if button is None:raise RuntimeError('创建新帖子窗口缺少从电脑中选择按钮，未选择视频')
+   with page.expect_file_chooser(timeout=remaining(start,10000)) as event:button.click(timeout=remaining(start,5000))
    event.value.set_files(str(root/job['video']))
-  else:inputs.last.set_input_files(str(root/job['video']),timeout=15000)
   c.update(root,job['key'],selected_file=job['video'],selected_video_sha256=job['video_sha256'])
   caption=None;scope=page
   for _ in range(5):

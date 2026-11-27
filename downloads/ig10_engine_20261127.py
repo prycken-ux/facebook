@@ -49,9 +49,10 @@ def diagnostic(root,job,kind,error,page=None):
  folder=c.safe(root,root/'logs/diagnostics'/(job['account']+'-'+kind+'-'+uuid.uuid4().hex[:8]));folder.mkdir(parents=True)
  value=dict(account=job['account'],username=job['username'],key=job['key'],kind=kind,error=str(error),at=c.stamp())
  row=c.state(root).get(job['key'],{})
- if page is not None and row.get('identity_verified_at'):
+ if page is not None and row.get('identity_verified_at') and row['identity_verified_at']>=row.get('video_attempt_started_at',''):
   try:
-   value.update(page_url=page.url.split('?')[0],visible_text=page.locator('body').inner_text(timeout=3000)[:6000]);page.screenshot(path=str(folder/'page.png'),timeout=5000)
+   import ig10_browser_20261127 as ui
+   value.update(page_url=page.url.split('?')[0],visible_text=page.locator('body').inner_text(timeout=3000)[:6000],creation_controls=ui.creation_snapshot(page));page.screenshot(path=str(folder/'page.png'),timeout=5000)
   except Exception:pass
  c.save(folder/'diagnostic.json',value)
  return str(folder.relative_to(root))
@@ -158,7 +159,7 @@ def export(root,batch):
    if p.is_file() and not p.is_symlink():archive.writestr(p.name,p.read_bytes()[-1_000_000:])
   for p in (root/'logs/diagnostics').rglob('*') if (root/'logs/diagnostics').is_dir() else []:
    if p.is_file() and not p.is_symlink():archive.write(p,str(p.relative_to(root/'logs')))
-  for p in (root/'logs/repairs').glob('ig-nav-syntax-*.json'):
+  for p in (root/'logs/repairs').glob('ig-*.json'):
    if p.is_file() and not p.is_symlink():archive.write(p,str(p.relative_to(root/'logs')))
  print('IG结果/页面诊断包：'+str(output),flush=True);return output
 
@@ -186,6 +187,33 @@ def recover_navigation_syntax_gate(root,batch,gate):
  print('已核对首条在提交前因导航脚本语法错误停止；原记录已备份，使用修复脚本重新验证首条。',flush=True)
  return updated
 
+def recover_create_entry_gate(root,batch,gate):
+ """Only the diagnosed, authenticated empty-profile failure before file choice."""
+ if not gate.get('blocked') or gate.get('create_entry_repair'):return gate
+ first=batch['payload']['jobs'][0];row=c.state(root).get(first['key'],{})
+ if gate.get('batch_sha256')!=batch['sha256'] or gate.get('job_key')!=first['key']:return gate
+ if any(row.get(k)!=v for k,v in dict(batch_sha256=batch['sha256'],account=first['account'],username=first['username'],video_sha256=first['video_sha256']).items()):return gate
+ if row.get('video_status')!='failed_before_post' or row.get('error')!='未找到Instagram创建入口，未选择视频' or c.submission(row):return gate
+ if any(row.get(k) for k in ['selected_file','selected_video_sha256','creation_entry_clicked_at','creation_dialog_verified_at','comment_send_intent_at','comment_verified_at','media_proof']):return gate
+ if not row.get('identity_verified_at') or row.get('identity',{}).get('username')!=first['username']:return gate
+ comments=c.read(root/'logs/ig-comment-state.json',{})
+ if any(v.get('video_job')==first['key'] for v in comments.values()):return gate
+ if not isinstance(row.get('diagnostic'),str):return gate
+ folder=c.safe(root,root/row['diagnostic'])
+ if not folder.is_relative_to(root/'logs/diagnostics'):return gate
+ evidence=c.read(folder/'diagnostic.json',required=True)
+ if any(evidence.get(k)!=v for k,v in dict(account=first['account'],username=first['username'],key=first['key'],kind='video',error=row['error']).items()):return gate
+ if evidence.get('page_url')!='https://www.instagram.com/'+first['username']+'/':return gate
+ text=evidence.get('visible_text','')
+ if first['username'] not in text or not any(x in text for x in ['分享你的首张照片','Share your first photo','分享你的首張相片']):return gate
+ audit=root/'logs/repairs'/('ig-create-entry-'+uuid.uuid4().hex+'.json')
+ payload=dict(schema='ig-pre-file-create-entry-repair-v1',batch_sha256=batch['sha256'],first_job=first['key'],gate_before=gate,row_before=row,diagnostic=evidence,at=c.stamp())
+ c.save(audit,dict(payload=payload,sha256=c.digest(payload)))
+ updated=dict(gate,blocked=False,passed=False,create_entry_repair=str(audit.relative_to(root)),repair_at=c.stamp())
+ c.save(root/'logs/ig-first-trial-20261127.json',updated)
+ print('已核对首条仅在创建入口识别前停止、未选文件或提交；保留原记录，按新入口重新验证。',flush=True)
+ return updated
+
 def coordinator(root,path,run,operation=run_operation):
  root=c.workspace(root);batch=allocation.validate(root,path)
  with c.lock(root,'publisher'):
@@ -197,6 +225,7 @@ def coordinator(root,path,run,operation=run_operation):
   first=batch['payload']['jobs'][0];gate_path=root/'logs/ig-first-trial-20261127.json';gate=c.read(gate_path,{})
   if gate and gate.get('batch_sha256')!=batch['sha256']:raise ValueError('原IG首条门禁清单不符')
   gate=recover_navigation_syntax_gate(root,batch,gate)
+  gate=recover_create_entry_gate(root,batch,gate)
   if gate.get('blocked'):
    reason='首条IG试发已保留待核实；未清除门禁或重发，请提供上次诊断包';report(root,batch,'review_required',reason);status('review_required',reason);export(root,batch);return 3
   for j in batch['payload']['jobs']:
@@ -213,7 +242,7 @@ def coordinator(root,path,run,operation=run_operation):
     src=c.safe(root,root/j['video']);dest=c.safe(root,root/j['published_video'])
     if src.exists() and c.file_info(src)==dict(size=j['video_size'],sha256=j['video_sha256']) and not dest.exists():dest.parent.mkdir(parents=True,exist_ok=True);src.replace(dest)
    if j['key']==first['key']:
-    ok=bool(verified(root,j));c.save(gate_path,dict(batch_sha256=batch['sha256'],job_key=j['key'],passed=ok,blocked=not ok,checked_at=c.stamp(),**({'navigation_syntax_repair':gate['navigation_syntax_repair']} if gate.get('navigation_syntax_repair') else {})))
+    ok=bool(verified(root,j));c.save(gate_path,dict(batch_sha256=batch['sha256'],job_key=j['key'],passed=ok,blocked=not ok,checked_at=c.stamp(),**{k:gate[k] for k in ['navigation_syntax_repair','create_entry_repair'] if gate.get(k)}))
     if not ok:
      reason='首条IG视频/评论未完整通过，保留其余9个账号，不重复点击发布';report(root,batch,'review_required',reason);status('review_required',reason);export(root,batch);return 3
     print('ins01视频及首评刷新核验通过；继续其余9个IG账号。',flush=True)
