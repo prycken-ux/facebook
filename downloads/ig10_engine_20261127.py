@@ -1,0 +1,205 @@
+"""IG-only coordinator: allocate once, trial gate, contained 180s operations."""
+import contextlib,hashlib,json,os,re,shutil,socket,subprocess,sys,time,urllib.request,uuid,zipfile
+from pathlib import Path
+import ig10_common_20261127 as c
+import ig10_allocate_20261127 as allocation
+from ig_windows_job import WindowsJobChild
+LOG='logs/ig-2026-11-27-run.log';STATUS='logs/ig-2026-11-27-status.json'
+
+class Tee:
+ def __init__(self,*streams):self.streams=streams
+ def write(self,text):
+  for s in self.streams:s.write(text);s.flush()
+  return len(text)
+ def flush(self):
+  for s in self.streams:s.flush()
+
+def chrome():
+ for key in ('PROGRAMFILES','PROGRAMFILES(X86)','LOCALAPPDATA'):
+  if os.environ.get(key):
+   p=Path(os.environ[key])/'Google/Chrome/Application/chrome.exe'
+   if p.is_file():return p
+ found=shutil.which('chrome.exe')
+ if found:return Path(found)
+ raise RuntimeError('没有找到已登录资料使用的Google Chrome')
+
+def launch(pw,root,job,started):
+ with socket.socket() as sock:sock.bind(('127.0.0.1',0));port=sock.getsockname()[1]
+ endpoint='http://127.0.0.1:'+str(port);profile=c.safe(root,root/'profiles'/job['account'])
+ args=[str(chrome()),'--user-data-dir='+str(profile),'--profile-directory=Default','--remote-debugging-address=127.0.0.1','--remote-debugging-port='+str(port),'--no-first-run','--no-default-browser-check','--hide-crash-restore-bubble','--disable-session-crashed-bubble','--new-window','https://www.instagram.com/']
+ proc=subprocess.Popen(args,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+ opener=urllib.request.build_opener(urllib.request.ProxyHandler({}));until=time.monotonic()+30
+ while time.monotonic()<until:
+  try:
+   with opener.open(endpoint+'/json/version',timeout=1) as r:version=json.load(r)
+   if str(version.get('webSocketDebuggerUrl','')).startswith('ws://127.0.0.1:'):break
+  except (OSError,ValueError):pass
+  if proc.poll() not in {None,0}:raise RuntimeError('IG Chrome启动失败')
+  time.sleep(.2)
+ else:raise RuntimeError('IG Chrome调试入口30秒内未就绪，未选择视频')
+ browser=pw.chromium.connect_over_cdp(endpoint,timeout=15000)
+ if not browser.contexts:browser.close();raise RuntimeError('IG原资料浏览器上下文缺失')
+ context=browser.contexts[0];page=next((p for p in reversed(context.pages) if 'instagram.com' in p.url),None) or context.new_page();page.set_default_timeout(10000)
+ return browser,context,page
+
+def diagnostic(root,job,kind,error,page=None):
+ folder=c.safe(root,root/'logs/diagnostics'/(job['account']+'-'+kind+'-'+uuid.uuid4().hex[:8]));folder.mkdir(parents=True)
+ value=dict(account=job['account'],username=job['username'],key=job['key'],kind=kind,error=str(error),at=c.stamp())
+ row=c.state(root).get(job['key'],{})
+ if page is not None and row.get('identity_verified_at'):
+  try:
+   value.update(page_url=page.url.split('?')[0],visible_text=page.locator('body').inner_text(timeout=3000)[:6000]);page.screenshot(path=str(folder/'page.png'),timeout=5000)
+  except Exception:pass
+ c.save(folder/'diagnostic.json',value)
+ return str(folder.relative_to(root))
+
+def worker(root,batch_path,key,kind,started):
+ import ig10_browser_20261127 as ui
+ from playwright.sync_api import sync_playwright
+ batch=allocation.validate(root,batch_path);job=next((j for j in batch['payload']['jobs'] if j['key']==key),None)
+ if not job or kind not in {'video','comment'}:raise ValueError('IG操作不属于当前冻结清单')
+ row=c.state(root).get(key,{})
+ if kind=='video' and c.submission(row):print('已有IG视频提交记录，未重复上传：'+job['account'],flush=True);return 0
+ info=c.file_info(c.safe(root,root/job['video'])) if kind=='video' else None
+ if kind=='video' and info!=dict(size=job['video_size'],sha256=job['video_sha256']):raise ValueError('本次IG视频指纹变化，未选择其他素材')
+ browser=None;page=None
+ try:
+  with sync_playwright() as pw:
+   try:
+    browser,context,page=launch(pw,root,job,started)
+    if kind=='video':ui.prepare_and_share(page,context,root,job,started)
+    else:ui.comment(page,context,root,job,started)
+    return 0
+   except Exception as error:
+    row=c.state(root).get(key,{})
+    if kind=='video':
+     assumed=isinstance(error,ui.ReceiptPending) and bool(row.get('submit_click_returned_at')) and row.get('failure_stage')=='wait_receipt'
+     c.update(root,key,video_status='needs_review' if c.submission(row) else 'failed_before_post',assumed_published=assumed,publication_confirmation_source='user_requested_FB_rules_post_click_timeout' if assumed else row.get('publication_confirmation_source',''),error=str(error),diagnostic=diagnostic(root,job,kind,error,page))
+    else:c.update(root,key,comment_status='needs_review' if row.get('comment_send_intent_at') else 'failed_before_send',comment_error=str(error),diagnostic=diagnostic(root,job,kind,error,page))
+    print('IG操作保留结果：'+job['account']+' '+kind+' '+str(error),flush=True);return 3
+   finally:
+    if browser is not None:
+     try:browser.close()
+     except Exception:pass
+ except Exception as error:
+  row=c.state(root).get(key,{})
+  c.update(root,key,**({'video_status':'needs_review' if c.submission(row) else 'failed_before_post','error':str(error)} if kind=='video' else {'comment_status':'needs_review' if row.get('comment_send_intent_at') else 'failed_before_send','comment_error':str(error)}));return 3
+
+def release_profile(root,job,run,started,status):
+ packet=root/'logs'/('ig-release-'+uuid.uuid4().hex+'.json')
+ c.save(packet,dict(root=str(root),accounts=[job['account']],caller_pid=os.getpid(),authorization='ig10-publication-normal-close-20261127'))
+ log=root/'logs'/('ig-release-'+uuid.uuid4().hex+'.log')
+ with log.open('ab') as out:
+  p=subprocess.Popen(['powershell.exe','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',str(Path(__file__).with_name('ig10_profile_release.ps1')),'-Packet',str(packet)],stdin=subprocess.DEVNULL,stdout=out,stderr=subprocess.STDOUT,creationflags=0x08000000)
+  last=time.monotonic()
+  while p.poll() is None:
+   if time.monotonic()-started>35:p.kill();p.wait();raise RuntimeError('IG窗口释放超过35秒，尚未选择或提交视频；诊断：'+str(log))
+   if time.monotonic()-last>=5:status('running','正在释放'+job['account']+'资料占用',account=job['account'],kind='profile_check');last=time.monotonic()
+   time.sleep(.2)
+ if p.returncode:raise RuntimeError('IG资料未释放，未上传：'+log.read_text(encoding='utf-8-sig',errors='replace')[-1800:])
+
+def run_operation(root,path,job,kind,run,status,child_factory=WindowsJobChild):
+ started=time.monotonic();limit=c.VIDEO_SECONDS if kind=='video' else c.COMMENT_SECONDS;status('running',job['account']+' '+kind+' 开始，独立上限'+str(limit)+'秒',account=job['account'],kind=kind,elapsed_seconds=0)
+ try:release_profile(root,job,run,started,status)
+ except Exception as error:
+  row=c.state(root).get(job['key'],{})
+  c.update(root,job['key'],**({'video_status':'needs_review' if c.submission(row) else 'failed_before_post','error':str(error)} if kind=='video' else {'comment_status':'needs_review' if row.get('comment_send_intent_at') else 'failed_before_send','comment_error':str(error)}));return 3
+ output=root/'logs'/('ig-worker-'+job['account']+'-'+kind+'-'+uuid.uuid4().hex[:8]+'.log')
+ env=dict(os.environ,IG10_ROLE=kind,IG10_BATCH=str(path),IG10_KEY=job['key'],IG10_STARTED=str(started),PYTHONIOENCODING='utf-8')
+ with output.open('ab') as stream:
+  try:child=child_factory([sys.executable,'-u',str(Path(__file__).resolve()),str(root)],env,root,stream)
+  except Exception as error:
+   row=c.state(root).get(job['key'],{})
+   c.update(root,job['key'],**({'video_status':'needs_review' if c.submission(row) else 'failed_before_post','error':'IG工作进程未能建立：'+str(error)} if kind=='video' else {'comment_status':'needs_review' if row.get('comment_send_intent_at') else 'failed_before_send','comment_error':'IG工作进程未能建立：'+str(error)}));return 3
+  last=time.monotonic()
+  try:
+   while child.poll() is None:
+    now=time.monotonic()
+    if now-started>=limit:
+     child.stop();row=c.state(root).get(job['key'],{})
+     if kind=='video' and row.get('video_status')!='published':c.update(root,job['key'],video_status='needs_review' if c.submission(row) else 'failed_before_post',error='本视频操作已达180秒，保留原提交记录，不重复上传')
+     if kind=='comment' and row.get('comment_verification')!='own_comment_seen_after_reload':c.update(root,job['key'],comment_status='needs_review' if row.get('comment_send_intent_at') else 'failed_before_send',comment_error='本评论操作已达180秒，保留可能发送记录')
+     return 3
+    if now-last>=15:status('running',job['account']+' '+kind+' 已用'+str(int(now-started))+'秒',account=job['account'],kind=kind,elapsed_seconds=int(now-started));last=now
+    time.sleep(.25)
+   code=child.poll()
+   if code not in {0,3}:
+    row=c.state(root).get(job['key'],{});c.update(root,job['key'],**({'video_status':'needs_review' if c.submission(row) else 'failed_before_post','error':'IG工作进程退出：'+str(code)+'，诊断：'+str(output)} if kind=='video' else {'comment_status':'needs_review' if row.get('comment_send_intent_at') else 'failed_before_send','comment_error':'IG工作进程退出：'+str(code)}))
+   return code
+  finally:child.close()
+
+def verified(root,job):
+ row=c.state(root).get(job['key'],{});key=c.digest(dict(video_job=job['key'],text=c.COMMENT));item=c.read(root/'logs/ig-comment-state.json',{}).get(key,{})
+ return (row.get('video_status')=='published' and not row.get('assumed_published') and bool(c.canonical(row.get('permalink',''))) and item.get('video_job')==job['key'] and item.get('username')==job['username'] and item.get('text_sha256')==c.digest(c.COMMENT) and item.get('verification')=='own_comment_seen_after_reload' and item.get('verified_at') and c.shortcode(item.get('permalink',''))==c.shortcode(row['permalink']))
+
+def report(root,batch,phase,reason=''):
+ ledger=c.state(root);rows=[]
+ for j in batch['payload']['jobs']:
+  r=ledger.get(j['key'],{});rows.append(dict(account=j['account'],username=j['username'],source_name=j['source_name'],video_status=r.get('video_status','not_started'),assumed_published=r.get('assumed_published',False),permalink=r.get('permalink'),comment_status=r.get('comment_status','not_started'),comment_verified=bool(verified(root,j)),error=r.get('comment_error') or r.get('error','')))
+ value=dict(batch_sha256=batch['sha256'],material_date=c.DAY,phase=phase,reason=reason,confirmed_videos=sum(r['video_status']=='published' and not r['assumed_published'] for r in rows),assumed_videos=sum(bool(r['assumed_published']) for r in rows),verified_comments=sum(r['comment_verified'] for r in rows),rows=rows,updated_at=c.stamp())
+ c.save(root/'logs/ig-2026-11-27-results.json',value)
+ text=['IG本批：确认视频 '+str(value['confirmed_videos'])+'；规则视成功 '+str(value['assumed_videos'])+'；评论刷新核验 '+str(value['verified_comments'])+'；'+reason]
+ text += [r['account']+'/'+r['username']+' 视频='+r['video_status']+' 评论='+r['comment_status']+' '+r['error'] for r in rows]
+ (root/'logs/ig-2026-11-27-results.txt').write_text('\n'.join(text),encoding='utf-8-sig');print(text[0],flush=True);return value
+
+def export(root,batch):
+ desktop=Path(os.environ.get('USERPROFILE',str(root)))/'Desktop'
+ if not desktop.is_dir():desktop=root/'logs'
+ output=desktop/('IG-publish-check-'+c.DAY.replace('-','')+'-'+uuid.uuid4().hex[:8]+'.zip')
+ with zipfile.ZipFile(output,'x',zipfile.ZIP_DEFLATED) as archive:
+  for name in ['ig-2026-11-27-results.json','ig-2026-11-27-results.txt','ig-2026-11-27-status.json','ig-publication-state.json','ig-comment-state.json','ig-first-trial-20261127.json']:
+   p=root/'logs'/name
+   if p.is_file():archive.write(p,p.name)
+  for p in (root/'logs').glob('ig-*.log'):
+   if p.is_file() and not p.is_symlink():archive.writestr(p.name,p.read_bytes()[-1_000_000:])
+  for p in (root/'logs/diagnostics').rglob('*') if (root/'logs/diagnostics').is_dir() else []:
+   if p.is_file() and not p.is_symlink():archive.write(p,str(p.relative_to(root/'logs')))
+ print('IG结果/页面诊断包：'+str(output),flush=True);return output
+
+def coordinator(root,path,run,operation=run_operation):
+ root=c.workspace(root);batch=allocation.validate(root,path)
+ with c.lock(root,'publisher'):
+  c.state(root)
+  def status(phase,message,**more):
+   value=dict(phase=phase,message=message,run_id=run,batch_sha256=batch['sha256'],material_date=c.DAY,pid=os.getpid(),updated_at=c.stamp(),**more);c.save(root/STATUS,value);print(message,flush=True)
+  status('preparing','IG监控已建立，先试发ins01并核验首评')
+  c.save(root/'logs'/('ig-launch-'+run+'.json'),dict(phase='started',pid=os.getpid(),run_id=run))
+  first=batch['payload']['jobs'][0];gate_path=root/'logs/ig-first-trial-20261127.json';gate=c.read(gate_path,{})
+  if gate and gate.get('batch_sha256')!=batch['sha256']:raise ValueError('原IG首条门禁清单不符')
+  if gate.get('blocked'):
+   reason='首条IG试发已保留待核实；未清除门禁或重发，请提供上次诊断包';report(root,batch,'review_required',reason);status('review_required',reason);export(root,batch);return 3
+  for j in batch['payload']['jobs']:
+   row=c.state(root).get(j['key'],{})
+   c.update(root,j['key'],account=j['account'],username=j['username'],video_sha256=j['video_sha256'],batch_sha256=batch['sha256'])
+   if not c.submission(row):
+    operation(root,path,j,'video',run,status)
+    row=c.state(root).get(j['key'],{})
+    if row.get('video_status')=='failed_before_post' and not row.get('video_retry_used') and re.search('net::ERR_|Timeout|browser.*closed',row.get('error',''),re.I):
+     c.update(root,j['key'],video_retry_used=True,video_retry_claimed_at=c.stamp());operation(root,path,j,'video',run,status)
+   row=c.state(root).get(j['key'],{})
+   if c.submission(row) and not verified(root,j):operation(root,path,j,'comment',run,status)
+   if verified(root,j):
+    src=c.safe(root,root/j['video']);dest=c.safe(root,root/j['published_video'])
+    if src.exists() and c.file_info(src)==dict(size=j['video_size'],sha256=j['video_sha256']) and not dest.exists():dest.parent.mkdir(parents=True,exist_ok=True);src.replace(dest)
+   if j['key']==first['key']:
+    ok=bool(verified(root,j));c.save(gate_path,dict(batch_sha256=batch['sha256'],job_key=j['key'],passed=ok,blocked=not ok,checked_at=c.stamp()))
+    if not ok:
+     reason='首条IG视频/评论未完整通过，保留其余9个账号，不重复点击发布';report(root,batch,'review_required',reason);status('review_required',reason);export(root,batch);return 3
+    print('ins01视频及首评刷新核验通过；继续其余9个IG账号。',flush=True)
+   report(root,batch,'running')
+  result=report(root,batch,'finished');phase='finished' if result['verified_comments']==10 else 'review_required';status(phase,'IG本轮结束；视频和评论结果分别见报告');export(root,batch);return 0 if phase=='finished' else 3
+
+def main(root):
+ root=Path(root).resolve();role=os.environ.get('IG10_ROLE','coordinator');run=os.environ.get('IG10_RUN','')
+ with (root/LOG).open('a',encoding='utf-8') as out,contextlib.redirect_stdout(Tee(sys.stdout,out)),contextlib.redirect_stderr(Tee(sys.stderr,out)):
+  if role in {'video','comment'}:return worker(root,Path(os.environ['IG10_BATCH']),os.environ['IG10_KEY'],role,float(os.environ['IG10_STARTED']))
+  try:return coordinator(root,Path(os.environ['IG10_BATCH']),run)
+  except Exception as error:
+   busy='已有IG任务' in str(error)
+   c.save(root/'logs'/('ig-launch-'+run+'.json'),dict(phase='already_running' if busy else 'failed',message=str(error),run_id=run))
+   if not busy:c.save(root/STATUS,dict(phase='failed',message=str(error),run_id=run,material_date=c.DAY,pid=os.getpid(),updated_at=c.stamp()))
+   print('STOP：'+str(error),flush=True);return 1
+
+if __name__=='__main__':
+ sys.stdout.reconfigure(encoding='utf-8',line_buffering=True)
+ raise SystemExit(main(Path(sys.argv[1])))
