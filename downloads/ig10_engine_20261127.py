@@ -83,6 +83,7 @@ def worker(root,batch_path,key,kind,started):
     return 0
    except Exception as error:
     row=c.state(root).get(key,{})
+    if getattr(error,'identity_evidence',None):c.update(root,key,identity_failure_evidence=error.identity_evidence)
     if kind=='video':
      assumed=isinstance(error,ui.ReceiptPending) and not isinstance(error,ui.UploadPending) and bool(row.get('submit_click_returned_at')) and row.get('failure_stage')=='wait_receipt'
      c.update(root,key,video_status='needs_review' if c.submission(row) else 'failed_before_post',assumed_published=assumed,publication_confirmation_source='user_requested_FB_rules_post_click_timeout' if assumed else row.get('publication_confirmation_source',''),error=str(error),diagnostic=diagnostic(root,job,kind,error,page))
@@ -145,14 +146,15 @@ def verified(root,job):
  return (row.get('video_status')=='published' and not row.get('assumed_published') and bool(c.canonical(row.get('permalink',''))) and item.get('video_job')==job['key'] and item.get('username')==job['username'] and item.get('text_sha256')==c.digest(c.COMMENT) and item.get('verification')=='own_comment_seen_after_reload' and item.get('verified_at') and c.shortcode(item.get('permalink',''))==c.shortcode(row['permalink']))
 
 def report(root,batch,phase,reason=''):
- ledger=c.state(root);rows=[]
+ ledger=c.state(root);rows=[];fallback=absence.fallback(root,batch)
  for original in batch['payload']['jobs']:
   j=absence.job(root,batch,original)
   r=ledger.get(j['key'],{});rows.append(dict(account=j['account'],username=j['username'],source_name=j['source_name'],video_status=r.get('video_status','not_started'),assumed_published=r.get('assumed_published',False),permalink=r.get('permalink'),comment_status=r.get('comment_status','not_started'),comment_verified=bool(verified(root,j)),error=r.get('comment_error') or r.get('error','')))
   if j.get('retry_of'):rows[-1].update(retry_of=j['retry_of'],effective_job_key=j['key'],prior_submitted_attempt_preserved=True,prior_assumed_published=bool(ledger.get(j['retry_of'],{}).get('assumed_published')))
- value=dict(batch_sha256=batch['sha256'],material_date=c.DAY,phase=phase,reason=reason,confirmed_videos=sum(r['video_status']=='published' and not r['assumed_published'] for r in rows),assumed_videos=sum(bool(r['assumed_published']) for r in rows),verified_comments=sum(r['comment_verified'] for r in rows),rows=rows,updated_at=c.stamp())
+  if fallback and j['account']=='ins01':rows[-1].update(skipped_by_user=True,skip_reason='user_requested_try_ins02_after_ins01_identity_failure')
+ value=dict(batch_sha256=batch['sha256'],material_date=c.DAY,phase=phase,reason=reason,confirmed_videos=sum(r['video_status']=='published' and not r['assumed_published'] for r in rows),assumed_videos=sum(bool(r['assumed_published']) for r in rows),verified_comments=sum(r['comment_verified'] for r in rows),skipped_targets=sum(bool(r.get('skipped_by_user')) for r in rows),rows=rows,updated_at=c.stamp())
  c.save(root/'logs/ig-2026-11-27-results.json',value)
- text=['IG本批：确认视频 '+str(value['confirmed_videos'])+'；规则视成功 '+str(value['assumed_videos'])+'；评论刷新核验 '+str(value['verified_comments'])+'；'+reason]
+ text=['IG本批：确认视频 '+str(value['confirmed_videos'])+'；规则视成功 '+str(value['assumed_videos'])+'；评论刷新核验 '+str(value['verified_comments'])+'；用户跳过 '+str(value['skipped_targets'])+'；'+reason]
  text += [r['account']+'/'+r['username']+' 视频='+r['video_status']+' 评论='+r['comment_status']+' '+r['error'] for r in rows]
  (root/'logs/ig-2026-11-27-results.txt').write_text('\n'.join(text),encoding='utf-8-sig');print(text[0],flush=True);return value
 
@@ -160,7 +162,7 @@ def export(root,batch):
  desktop=c.desktop_path(root)
  output=desktop/('IG-publish-check-'+c.DAY.replace('-','')+'-'+uuid.uuid4().hex[:8]+'.zip')
  with zipfile.ZipFile(output,'x',zipfile.ZIP_DEFLATED) as archive:
-  for name in ['ig-2026-11-27-results.json','ig-2026-11-27-results.txt','ig-2026-11-27-status.json','ig-publication-state.json','ig-comment-state.json','ig-first-trial-20261127.json','ig-confirmed-absence-retry-20261127.json']:
+  for name in ['ig-2026-11-27-results.json','ig-2026-11-27-results.txt','ig-2026-11-27-status.json','ig-publication-state.json','ig-comment-state.json','ig-first-trial-20261127.json','ig-confirmed-absence-retry-20261127.json','ig-trial-fallback-ins02-20261127.json','ig-first-trial-ins02-20261127.json']:
    p=root/'logs'/name
    if p.is_file():archive.write(p,p.name)
   for p in (root/'logs').glob('ig-*.log'):
@@ -295,7 +297,7 @@ def coordinator(root,path,run,operation=run_operation):
   c.state(root)
   def status(phase,message,**more):
    value=dict(phase=phase,message=message,run_id=run,batch_sha256=batch['sha256'],material_date=c.DAY,browser_mode='headless',pid=os.getpid(),updated_at=c.stamp(),**more);c.save(root/STATUS,value);print(message,flush=True)
-  status('preparing','IG监控已建立，先试发ins01并核验首评')
+  status('preparing','IG监控已建立，正在核对试发账号和现有记录')
   c.save(root/'logs'/('ig-launch-'+run+'.json'),dict(phase='started',pid=os.getpid(),run_id=run))
   first=batch['payload']['jobs'][0];gate_path=root/'logs/ig-first-trial-20261127.json';gate=c.read(gate_path,{})
   if gate and gate.get('batch_sha256')!=batch['sha256']:raise ValueError('原IG首条门禁清单不符')
@@ -305,11 +307,16 @@ def coordinator(root,path,run,operation=run_operation):
   gate=recover_local_file_gate(root,batch,gate)
   gate=recover_recorded_crop_gate(root,batch,gate)
   permit=absence.plan(root,batch,gate=gate,create=True)
+  fallback=absence.fallback(root,batch,gate=gate,create=True);active_jobs=batch['payload']['jobs'][1:] if fallback else batch['payload']['jobs']
+  if fallback:
+   first=active_jobs[0];gate_path=root/'logs/ig-first-trial-ins02-20261127.json';gate=c.read(gate_path,{})
+   if gate and (gate.get('batch_sha256')!=batch['sha256'] or gate.get('job_key')!=first['key'] or gate.get('trial_fallback_authorization')!=fallback['sha256']):raise ValueError('ins02试发门禁与原清单不符，保留待核实')
+   status('preparing','已按用户要求跳过ins01；先试发ins02并核验首评，其余8个等待')
   first_effective=absence.job(root,batch,first);retry_row=c.state(root).get(first_effective['key'],{})
-  retry_allowed=bool(permit and (not retry_row.get('retry_claimed_at') or c.submission(retry_row)))
+  retry_allowed=bool(permit and first_effective.get('retry_of') and (not retry_row.get('retry_claimed_at') or c.submission(retry_row)))
   if gate.get('blocked') and not retry_allowed:
-   reason='首条IG试发已保留待核实；未清除门禁或重发，请提供上次诊断包';report(root,batch,'review_required',reason);status('review_required',reason);export(root,batch);return 3
-  for original in batch['payload']['jobs']:
+   reason=first['account']+'试发已保留待核实；未清除门禁或重发，请提供上次诊断包';report(root,batch,'review_required',reason);status('review_required',reason);export(root,batch);return 3
+  for original in active_jobs:
    j=absence.job(root,batch,original)
    row=c.state(root).get(j['key'],{})
    c.update(root,j['key'],account=j['account'],username=j['username'],video_sha256=j['video_sha256'],batch_sha256=batch['sha256'])
@@ -328,12 +335,12 @@ def coordinator(root,path,run,operation=run_operation):
     src=c.safe(root,root/j['video']);dest=c.safe(root,root/j['published_video'])
     if src.exists() and c.file_info(src)==dict(size=j['video_size'],sha256=j['video_sha256']) and not dest.exists():dest.parent.mkdir(parents=True,exist_ok=True);src.replace(dest)
    if original['key']==first['key']:
-    ok=bool(verified(root,j));c.save(gate_path,dict(batch_sha256=batch['sha256'],job_key=first['key'],effective_job_key=j['key'],absence_retry_authorization=permit['sha256'] if permit else None,passed=ok,blocked=not ok,checked_at=c.stamp(),**{k:gate[k] for k in ['navigation_syntax_repair','create_entry_repair','recorded_editor_repair','local_file_repair','recorded_crop_repair'] if gate.get(k)}))
+    ok=bool(verified(root,j));c.save(gate_path,dict(batch_sha256=batch['sha256'],job_key=first['key'],effective_job_key=j['key'],absence_retry_authorization=permit['sha256'] if permit and j.get('retry_of') else None,trial_fallback_authorization=fallback['sha256'] if fallback else None,passed=ok,blocked=not ok,checked_at=c.stamp(),**{k:gate[k] for k in ['navigation_syntax_repair','create_entry_repair','recorded_editor_repair','local_file_repair','recorded_crop_repair'] if gate.get(k)}))
     if not ok:
-     reason='首条IG视频/评论未完整通过，保留其余9个账号，不重复点击发布';report(root,batch,'review_required',reason);status('review_required',reason);export(root,batch);return 3
-    print('ins01视频及首评刷新核验通过；继续其余9个IG账号。',flush=True)
+     reason=first['account']+'视频/评论未完整通过，保留其余'+str(len(active_jobs)-1)+'个账号，不重复点击发布';report(root,batch,'review_required',reason);status('review_required',reason);export(root,batch);return 3
+    print(first['account']+'视频及首评刷新核验通过；继续其余'+str(len(active_jobs)-1)+'个IG账号。',flush=True)
    report(root,batch,'running')
-  result=report(root,batch,'finished');phase='finished' if result['verified_comments']==10 else 'review_required';status(phase,'IG本轮结束；视频和评论结果分别见报告');export(root,batch);return 0 if phase=='finished' else 3
+  result=report(root,batch,'finished');phase=('finished_with_skipped' if fallback else 'finished') if result['verified_comments']==len(active_jobs) else 'review_required';status(phase,'IG本轮结束；视频和评论结果分别见报告');export(root,batch);return 0 if phase in {'finished','finished_with_skipped'} else 3
 
 def main(root):
  root=Path(root).resolve();role=os.environ.get('IG10_ROLE','coordinator');run=os.environ.get('IG10_RUN','')

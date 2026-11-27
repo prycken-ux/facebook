@@ -13,12 +13,13 @@ OWN_PROFILE_NAV=r'''() => {
   return r.width > 0 && r.height > 0 && r.x < 230 &&
    (a.querySelector('img') || own.test(a.innerText.trim()) || own.test(a.getAttribute('aria-label') || ''));
  }).map(a => {
-  try { const m = new URL(a.href).pathname.match(/^\/([A-Za-z0-9._]+)\/$/); return m ? m[1] : null; }
+  try { const m = new URL(a.href).pathname.match(/^\/([A-Za-z0-9._]+)\/?$/); return m ? m[1] : null; }
   catch (e) { return null; }
  }).filter(name => name && !reserved.has(name));
  return Array.from(new Set(names));
 }'''
-class SessionProblem(RuntimeError):pass
+class SessionProblem(RuntimeError):
+ def __init__(self,message,evidence=None):super().__init__(message);self.identity_evidence=evidence or {}
 class ReceiptPending(RuntimeError):pass
 class UploadPending(ReceiptPending):pass
 
@@ -81,14 +82,21 @@ def assert_session(page):
  for label in [r'^Only allow essential cookies$',r'^Decline optional cookies$',r'^仅允许必要.*',r'^只允許必要.*']:
   click_named(page,re.compile(label,re.I),required=False,timeout=3000)
 
+IDENTITY_NAV_WAIT_SECONDS=15
+
 def actor(page,expected):
  assert_session(page)
- result=page.evaluate('''async () => {const a=new AbortController();const t=setTimeout(()=>a.abort(),8000);try{const r=await fetch('/api/v1/accounts/current_user/?edit=true',{credentials:'same-origin',headers:{'X-IG-App-ID':'936619743392459'},signal:a.signal});if(!r.ok)return null;const d=await r.json();if(d.status==='ok'&&d.user)return {username:d.user.username,pk:String(d.user.pk||d.user.id||''),is_private:d.user.is_private};return null;}catch(e){return null;}finally{clearTimeout(t);}}''')
+ response=page.evaluate('''async () => {const a=new AbortController();const t=setTimeout(()=>a.abort(),8000);try{const r=await fetch('/api/v1/accounts/current_user/?edit=true',{credentials:'same-origin',headers:{'X-IG-App-ID':'936619743392459'},signal:a.signal});if(!r.ok)return {user:null,http_status:r.status,outcome:'http_error'};const d=await r.json();return {user:d.status==='ok'&&d.user?{username:d.user.username,pk:String(d.user.pk||d.user.id||''),is_private:d.user.is_private}:null,http_status:r.status,outcome:d.status==='ok'&&d.user?'ok':'no_current_user'};}catch(e){return {user:null,http_status:null,outcome:e.name==='AbortError'?'timeout':'network_or_response_error'};}finally{clearTimeout(t);}}''')
+ result=response.get('user') if isinstance(response,dict) else None;evidence=dict(api_status=response.get('http_status') if isinstance(response,dict) else None,api_outcome=response.get('outcome') if isinstance(response,dict) else 'no_response',navigation_candidates=[])
  if not result or not result.get('username'):
-  names=page.evaluate(OWN_PROFILE_NAV)
-  if len(names)!=1:raise SessionProblem('无法唯一核对当前登录账号，未用个人主页网址代替登录证据')
-  result=dict(username=names[0],pk=None,is_private=None)
- if result['username'].casefold()!=expected.casefold():raise SessionProblem('窗口账号不匹配：实际 '+result['username']+'，预期 '+expected)
+  origin=time.monotonic();until=origin+IDENTITY_NAV_WAIT_SECONDS
+  while True:
+   assert_session(page);names=page.evaluate(OWN_PROFILE_NAV);evidence.update(navigation_candidates=names[:10],navigation_wait_seconds=round(time.monotonic()-origin,2))
+   if len(names)==1:result=dict(username=names[0],pk=None,is_private=None,verification_source='own_profile_navigation');break
+   if time.monotonic()>=until:raise SessionProblem('无法唯一核对当前登录账号，未用个人主页网址代替登录证据',evidence)
+   page.wait_for_timeout(250)
+ else:result=dict(result,verification_source='authenticated_current_user_api')
+ if result['username'].casefold()!=expected.casefold():raise SessionProblem('窗口账号不匹配：实际 '+result['username']+'，预期 '+expected,evidence)
  return result
 
 def media_nodes(payload):

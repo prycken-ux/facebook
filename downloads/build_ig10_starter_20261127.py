@@ -3,7 +3,7 @@ import base64,hashlib,json,zlib
 from pathlib import Path
 HERE=Path(__file__).resolve().parent
 NAMES=['ig10_common_20261127.py','ig10_allocate_20261127.py','ig10_browser_20261127.py','ig10_engine_20261127.py','ig10_confirmed_absence_20261127.py','ig10_profile_release.ps1','ig_state_io.py','ig_windows_job.py']
-TEMPLATE='''"""Nov27 Instagram10: runtime folder choice, exact accounts, ins01 publication/comment trial."""
+TEMPLATE='''"""Nov27 Instagram10: exact accounts and a selected-account publication/comment trial."""
 import base64,hashlib,importlib,json,os,subprocess,sys,time,uuid,zlib
 from pathlib import Path
 FILES=__FILES__
@@ -64,7 +64,7 @@ def main(root):
   if ack.exists():
    state=c.read(ack,required=True)
    if state.get('phase') in {'started','already_running'}:
-    print('IG background monitor acknowledged. Trial ins01 video and refreshed own comment first; other nine follow only after proof.',flush=True)
+    print('IG background monitor acknowledged. The selected trial video and refreshed own comment must pass before the remaining accounts continue.',flush=True)
     print('State: '+str(root/'logs/ig-2026-11-27-status.json'),flush=True);print('Log: '+str(root/'logs/ig-2026-11-27-run.log'),flush=True);progress_paths(root);return 0
    raise RuntimeError('IG monitor failed: '+state.get('message','')+'; '+str(launch))
   if child.poll() is not None:raise RuntimeError('IG monitor exited before acknowledgement; '+str(launch)+'; '+launch.read_text(encoding='utf-8-sig',errors='replace')[-2000:])
