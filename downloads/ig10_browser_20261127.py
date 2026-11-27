@@ -1,5 +1,5 @@
 """Conservative browser trial: exact logged-in actor, exact media and verified comment."""
-import json,os,re,socket,subprocess,time
+import json,os,re,socket,subprocess,time,uuid
 from datetime import datetime,timezone
 from pathlib import Path
 import ig10_common_20261127 as c
@@ -319,7 +319,46 @@ def prepare_caption_settings(page,scope,caption,start):
   evidence='visible_control_verified_off'
  return evidence,comments
 
-def prepare_and_share(page,context,root,job,start):
+def set_video_file(page,context,target,root,job,start,local_browser=False):
+ """Use Chrome's own local path setter only for a verified loopback attachment."""
+ if c.MAPPING.get(job['account'])!=job['username']:raise ValueError('视频输入账号不符')
+ file=c.safe(root,root/job['video'])
+ if file.parent!=root/'videos'/job['account']/'inbox':raise ValueError('只选择本账号原分配inbox视频')
+ info=c.file_info(file)
+ if info!=dict(size=job['video_size'],sha256=job['video_sha256']):raise ValueError('原视频指纹变化，未选择文件')
+ owned=hasattr(target,'element_handle');handle=target.element_handle(timeout=remaining(start,5000)) if owned else target
+ if handle is None:raise RuntimeError('原视频输入框已消失，未选择其他文件')
+ session=None;marker=uuid.uuid4().hex;old=None;marked=False
+ try:
+  if handle.evaluate('(e)=>e.tagName!=="INPUT"||e.type!=="file"'):raise ValueError('目标不是视频文件输入框')
+  # Capture before the app can clear or detach its input in a change handler.
+  handle.evaluate('''(e,key)=>{const state={files:null};state.onChange=event=>{if(event.target===e)state.files=Array.from(e.files||[]).map(f=>({name:f.name,size:f.size}));};e[key]=state;window.addEventListener('change',state.onChange,true);}''',marker)
+  if local_browser:
+   old=handle.get_attribute('data-ig-local-upload');handle.evaluate('(e,key)=>e.setAttribute("data-ig-local-upload",key)',marker);marked=True
+   session=context.new_cdp_session(page);document=session.send('DOM.getDocument',dict(depth=0));node=session.send('DOM.querySelector',dict(nodeId=document['root']['nodeId'],selector='input[data-ig-local-upload="'+marker+'"]'))
+   if not node.get('nodeId'):raise RuntimeError('本机Chrome未唯一定位原视频输入框')
+   # No byte/base64 transfer: the owned local Chrome opens this verified local file.
+   session.send('DOM.setFileInputFiles',dict(nodeId=node['nodeId'],files=[str(file)]));transport='local_chrome_cdp_path'
+  else:
+   if job['video_size']>50*1024*1024:raise RuntimeError('大视频要求本机Chrome路径选择，未向远程附件接口传输视频')
+   handle.set_input_files(str(file),timeout=remaining(start,15000));transport='playwright_file_input'
+  selected=handle.evaluate('(e,key)=>e[key]?.files??Array.from(e.files||[]).map(f=>({name:f.name,size:f.size}))',marker)
+  if selected!=[dict(name=file.name,size=job['video_size'])]:raise RuntimeError('浏览器选中文件与原分配视频不符，未点击分享')
+  return dict(video_file_transport=transport,browser_selected_name=selected[0]['name'],browser_selected_size=selected[0]['size'],browser_file_verified_at=c.stamp())
+ finally:
+  try:handle.evaluate('(e,key)=>{if(e[key]){window.removeEventListener("change",e[key].onChange,true);delete e[key];}}',marker)
+  except Exception:pass
+  if marked:
+   try:handle.evaluate('(e,old)=>{if(old===null)e.removeAttribute("data-ig-local-upload");else e.setAttribute("data-ig-local-upload",old);}',old)
+   except Exception:pass
+  if session is not None:
+   try:session.detach()
+   except Exception:pass
+  if owned:
+   try:handle.dispose()
+   except Exception:pass
+
+def prepare_and_share(page,context,root,job,start,local_browser=False):
  page.goto(BASE+'/'+job['username']+'/',wait_until='domcontentloaded',timeout=25000)
  identity=actor(page,job['username']);base=links(page);upload_at=c.stamp()
  c.update(root,job['key'],identity=identity,identity_verified_at=c.stamp(),upload_started_at=upload_at,baseline_codes=sorted(base),video_status='preparing')
@@ -328,13 +367,13 @@ def prepare_and_share(page,context,root,job,start):
   scope=open_creation(page,job,start,record=lambda **fields:c.update(root,job['key'],**fields))
   inputs=scope.locator('input[type="file"][accept*="video" i]')
   if inputs.count()==0 and scope is not page:inputs=scope.locator('input[type="file"]')
-  if inputs.count():inputs.last.set_input_files(str(root/job['video']),timeout=remaining(start,15000))
+  if inputs.count():file_evidence=set_video_file(page,context,inputs.last,root,job,start,local_browser=local_browser)
   else:
    button=named_control(scope,UPLOAD_NAMES) or visible(scope.get_by_text(UPLOAD_NAMES,exact=True))
    if button is None:raise RuntimeError('创建新帖子窗口缺少从电脑中选择按钮，未选择视频')
    with page.expect_file_chooser(timeout=remaining(start,10000)) as event:button.click(timeout=remaining(start,5000))
-   event.value.set_files(str(root/job['video']))
-  c.update(root,job['key'],selected_file=job['video'],selected_video_sha256=job['video_sha256'])
+   file_evidence=set_video_file(page,context,event.value.element,root,job,start,local_browser=local_browser)
+  c.update(root,job['key'],selected_file=job['video'],selected_video_sha256=job['video_sha256'],**file_evidence)
   scope,caption=advance_to_caption(page,start,record=lambda **fields:c.update(root,job['key'],**fields))
   ai_evidence,comment_evidence=prepare_caption_settings(page,scope,caption,start)
   actor(page,job['username'])

@@ -72,7 +72,7 @@ def worker(root,batch_path,key,kind,started):
   with sync_playwright() as pw:
    try:
     browser,context,page=launch(pw,root,job,started)
-    if kind=='video':ui.prepare_and_share(page,context,root,job,started)
+    if kind=='video':ui.prepare_and_share(page,context,root,job,started,local_browser=True)
     else:ui.comment(page,context,root,job,started)
     return 0
    except Exception as error:
@@ -234,6 +234,29 @@ def recover_recorded_editor_gate(root,batch,gate):
  updated=dict(gate,blocked=False,passed=False,recorded_editor_repair=str(audit.relative_to(root)),repair_at=c.stamp());c.save(root/'logs/ig-first-trial-20261127.json',updated)
  print('已核对仅在继续按钮识别前停止、未提交；保留原记录，按实际录制流程重新验证首条。',flush=True);return updated
 
+def recover_local_file_gate(root,batch,gate):
+ """One audited retry for Playwright's known pre-transfer 50 MiB attachment guard."""
+ if not gate.get('blocked') or gate.get('local_file_repair'):return gate
+ first=batch['payload']['jobs'][0];row=c.state(root).get(first['key'],{})
+ if gate.get('batch_sha256')!=batch['sha256'] or gate.get('job_key')!=first['key']:return gate
+ if any(row.get(k)!=v for k,v in dict(batch_sha256=batch['sha256'],account=first['account'],username=first['username'],video_sha256=first['video_sha256']).items()):return gate
+ if row.get('video_status')!='failed_before_post' or c.submission(row) or first.get('video_size',0)<=50*1024*1024:return gate
+ if not row.get('creation_dialog_verified_at') or not row.get('identity_verified_at') or row.get('identity',{}).get('username')!=first['username']:return gate
+ error=row.get('error','')
+ if 'Cannot transfer files larger than 50Mb to a browser not co-located with the server' not in error or not re.match(r'^(Locator|ElementHandle)\.set_input_files:|^FileChooser\.set_files:',error):return gate
+ if any(row.get(k) for k in ['selected_file','selected_video_sha256','browser_file_verified_at','media_proof','comment_send_intent_at','comment_verified_at']):return gate
+ if any(v.get('video_job')==first['key'] for v in c.read(root/'logs/ig-comment-state.json',{}).values()):return gate
+ if not isinstance(row.get('diagnostic'),str):return gate
+ folder=c.safe(root,root/row['diagnostic'])
+ if not folder.is_relative_to(root/'logs/diagnostics'):return gate
+ evidence=c.read(folder/'diagnostic.json',required=True)
+ if any(evidence.get(k)!=v for k,v in dict(account=first['account'],username=first['username'],key=first['key'],kind='video',error=error).items()):return gate
+ text=evidence.get('visible_text','')
+ if evidence.get('page_url') not in {'https://www.instagram.com/','https://www.instagram.com/'+first['username']+'/'} or '创建新帖子' not in text or '从电脑中选择' not in text:return gate
+ audit=root/'logs/repairs'/('ig-local-file-'+uuid.uuid4().hex+'.json');payload=dict(schema='ig-local-file-pre-transfer-repair-v1',batch_sha256=batch['sha256'],first_job=first['key'],video_size=first['video_size'],gate_before=gate,row_before=row,diagnostic=evidence,at=c.stamp());c.save(audit,dict(payload=payload,sha256=c.digest(payload)))
+ updated=dict(gate,blocked=False,passed=False,local_file_repair=str(audit.relative_to(root)),repair_at=c.stamp());c.save(root/'logs/ig-first-trial-20261127.json',updated)
+ print('已核对大文件在附件传输前被50 MiB限制拒绝、未提交；保留原记录，改用本机Chrome路径重新验证首条。',flush=True);return updated
+
 def coordinator(root,path,run,operation=run_operation):
  root=c.workspace(root);batch=allocation.validate(root,path)
  with c.lock(root,'publisher'):
@@ -247,6 +270,7 @@ def coordinator(root,path,run,operation=run_operation):
   gate=recover_navigation_syntax_gate(root,batch,gate)
   gate=recover_create_entry_gate(root,batch,gate)
   gate=recover_recorded_editor_gate(root,batch,gate)
+  gate=recover_local_file_gate(root,batch,gate)
   if gate.get('blocked'):
    reason='首条IG试发已保留待核实；未清除门禁或重发，请提供上次诊断包';report(root,batch,'review_required',reason);status('review_required',reason);export(root,batch);return 3
   for j in batch['payload']['jobs']:
@@ -263,7 +287,7 @@ def coordinator(root,path,run,operation=run_operation):
     src=c.safe(root,root/j['video']);dest=c.safe(root,root/j['published_video'])
     if src.exists() and c.file_info(src)==dict(size=j['video_size'],sha256=j['video_sha256']) and not dest.exists():dest.parent.mkdir(parents=True,exist_ok=True);src.replace(dest)
    if j['key']==first['key']:
-    ok=bool(verified(root,j));c.save(gate_path,dict(batch_sha256=batch['sha256'],job_key=j['key'],passed=ok,blocked=not ok,checked_at=c.stamp(),**{k:gate[k] for k in ['navigation_syntax_repair','create_entry_repair','recorded_editor_repair'] if gate.get(k)}))
+    ok=bool(verified(root,j));c.save(gate_path,dict(batch_sha256=batch['sha256'],job_key=j['key'],passed=ok,blocked=not ok,checked_at=c.stamp(),**{k:gate[k] for k in ['navigation_syntax_repair','create_entry_repair','recorded_editor_repair','local_file_repair'] if gate.get(k)}))
     if not ok:
      reason='首条IG视频/评论未完整通过，保留其余9个账号，不重复点击发布';report(root,batch,'review_required',reason);status('review_required',reason);export(root,batch);return 3
     print('ins01视频及首评刷新核验通过；继续其余9个IG账号。',flush=True)
