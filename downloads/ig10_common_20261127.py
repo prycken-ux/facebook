@@ -3,7 +3,7 @@ import contextlib,hashlib,json,os,re,tempfile,time
 from datetime import datetime,timedelta,timezone
 from pathlib import Path
 import ig_state_io
-DAY='2026-11-27';BJ=timezone(timedelta(hours=8));VIDEO_SECONDS=180;COMMENT_SECONDS=180
+DAY='2026-11-27';BJ=timezone(timedelta(hours=8));VIDEO_SECONDS=1800;COMMENT_SECONDS=180
 USERS=('ted47868','jenniferriffin45','ha.rper9090','ivy800550','sophia5095091','daisybreeze8838','ethan400560','dylan159851','zachary29692','alixla2762')
 MAPPING={f'ins{i:02d}':u for i,u in enumerate(USERS,1)}
 CAPTION='If this book speaks to you, you can find the same one from the video here.Get your copy here:https://www.amazon.com/gp/product/B0GYJ55PH6?maas=maas_adg_2C08551FB464224E2CDB58F74A72570A_afap_abs&ref_=aa_maas&tag=maas Shop on shopify: https://prycken.com/'

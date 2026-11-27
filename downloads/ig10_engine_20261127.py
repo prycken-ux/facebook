@@ -3,6 +3,7 @@ import contextlib,hashlib,json,os,re,shutil,socket,subprocess,sys,time,urllib.re
 from pathlib import Path
 import ig10_common_20261127 as c
 import ig10_allocate_20261127 as allocation
+import ig10_confirmed_absence_20261127 as absence
 from ig_windows_job import WindowsJobChild
 LOG='logs/ig-2026-11-27-run.log';STATUS='logs/ig-2026-11-27-status.json'
 
@@ -60,10 +61,13 @@ def diagnostic(root,job,kind,error,page=None):
 def worker(root,batch_path,key,kind,started):
  import ig10_browser_20261127 as ui
  from playwright.sync_api import sync_playwright
- batch=allocation.validate(root,batch_path);job=next((j for j in batch['payload']['jobs'] if j['key']==key),None)
+ batch=allocation.validate(root,batch_path);job=next((j for original in batch['payload']['jobs'] if (j:=absence.job(root,batch,original))['key']==key),None)
  if not job or kind not in {'video','comment'}:raise ValueError('IG操作不属于当前冻结清单')
  row=c.state(root).get(key,{})
  if kind=='video' and c.submission(row):print('已有IG视频提交记录，未重复上传：'+job['account'],flush=True);return 0
+ if kind=='video' and job.get('retry_of'):
+  if not row.get('retry_claimed_at') or row.get('retry_run_id')!=os.environ.get('IG10_RUN') or row.get('retry_worker_started_at'):raise ValueError('IG单次补发许可已消耗或未由本轮监控领取，未重复上传')
+  c.update(root,key,retry_worker_started_at=c.stamp(),retry_of=job['retry_of'])
  info=c.file_info(c.safe(root,root/job['video'])) if kind=='video' else None
  if kind=='video' and info!=dict(size=job['video_size'],sha256=job['video_sha256']):raise ValueError('本次IG视频指纹变化，未选择其他素材')
  if kind=='video':c.update(root,key,error='',browser_mode='headless',video_attempt_started_at=c.stamp())
@@ -72,13 +76,15 @@ def worker(root,batch_path,key,kind,started):
   with sync_playwright() as pw:
    try:
     browser,context,page=launch(pw,root,job,started)
-    if kind=='video':ui.prepare_and_share(page,context,root,job,started,local_browser=True)
+    if kind=='video':
+     if job.get('retry_of'):ui.verify_confirmed_absence(page,root,job,started)
+     ui.prepare_and_share(page,context,root,job,started,local_browser=True)
     else:ui.comment(page,context,root,job,started)
     return 0
    except Exception as error:
     row=c.state(root).get(key,{})
     if kind=='video':
-     assumed=isinstance(error,ui.ReceiptPending) and bool(row.get('submit_click_returned_at')) and row.get('failure_stage')=='wait_receipt'
+     assumed=isinstance(error,ui.ReceiptPending) and not isinstance(error,ui.UploadPending) and bool(row.get('submit_click_returned_at')) and row.get('failure_stage')=='wait_receipt'
      c.update(root,key,video_status='needs_review' if c.submission(row) else 'failed_before_post',assumed_published=assumed,publication_confirmation_source='user_requested_FB_rules_post_click_timeout' if assumed else row.get('publication_confirmation_source',''),error=str(error),diagnostic=diagnostic(root,job,kind,error,page))
     else:c.update(root,key,comment_status='needs_review' if row.get('comment_send_intent_at') else 'failed_before_send',comment_error=str(error),diagnostic=diagnostic(root,job,kind,error,page))
     print('IG操作保留结果：'+job['account']+' '+kind+' '+str(error),flush=True);return 3
@@ -122,10 +128,11 @@ def run_operation(root,path,job,kind,run,status,child_factory=WindowsJobChild):
     now=time.monotonic()
     if now-started>=limit:
      child.stop();row=c.state(root).get(job['key'],{})
-     if kind=='video' and row.get('video_status')!='published':c.update(root,job['key'],video_status='needs_review' if c.submission(row) else 'failed_before_post',error='本视频操作已达180秒，保留原提交记录，不重复上传')
+     if kind=='video' and row.get('video_status')!='published':c.update(root,job['key'],video_status='needs_review' if c.submission(row) else 'failed_before_post',error='本视频操作已达'+str(limit)+'秒，保留原提交记录，不重复上传')
      if kind=='comment' and row.get('comment_verification')!='own_comment_seen_after_reload':c.update(root,job['key'],comment_status='needs_review' if row.get('comment_send_intent_at') else 'failed_before_send',comment_error='本评论操作已达180秒，保留可能发送记录')
      return 3
-    if now-last>=15:status('running',job['account']+' '+kind+' 已用'+str(int(now-started))+'秒',account=job['account'],kind=kind,elapsed_seconds=int(now-started));last=now
+    if now-last>=15:
+     progress=c.state(root).get(job['key'],{});stage=progress.get('sharing_ui_state','');label='；Instagram仍在上传/处理' if stage=='sharing_in_progress' else '';status('running',job['account']+' '+kind+' 已用'+str(int(now-started))+'秒'+label,account=job['account'],kind=kind,elapsed_seconds=int(now-started),sharing_ui_state=stage,upload_transport=progress.get('upload_transport_summary'));last=now
     time.sleep(.25)
    code=child.poll()
    if code not in {0,3}:
@@ -139,8 +146,10 @@ def verified(root,job):
 
 def report(root,batch,phase,reason=''):
  ledger=c.state(root);rows=[]
- for j in batch['payload']['jobs']:
+ for original in batch['payload']['jobs']:
+  j=absence.job(root,batch,original)
   r=ledger.get(j['key'],{});rows.append(dict(account=j['account'],username=j['username'],source_name=j['source_name'],video_status=r.get('video_status','not_started'),assumed_published=r.get('assumed_published',False),permalink=r.get('permalink'),comment_status=r.get('comment_status','not_started'),comment_verified=bool(verified(root,j)),error=r.get('comment_error') or r.get('error','')))
+  if j.get('retry_of'):rows[-1].update(retry_of=j['retry_of'],effective_job_key=j['key'],prior_submitted_attempt_preserved=True,prior_assumed_published=bool(ledger.get(j['retry_of'],{}).get('assumed_published')))
  value=dict(batch_sha256=batch['sha256'],material_date=c.DAY,phase=phase,reason=reason,confirmed_videos=sum(r['video_status']=='published' and not r['assumed_published'] for r in rows),assumed_videos=sum(bool(r['assumed_published']) for r in rows),verified_comments=sum(r['comment_verified'] for r in rows),rows=rows,updated_at=c.stamp())
  c.save(root/'logs/ig-2026-11-27-results.json',value)
  text=['IG本批：确认视频 '+str(value['confirmed_videos'])+'；规则视成功 '+str(value['assumed_videos'])+'；评论刷新核验 '+str(value['verified_comments'])+'；'+reason]
@@ -151,7 +160,7 @@ def export(root,batch):
  desktop=c.desktop_path(root)
  output=desktop/('IG-publish-check-'+c.DAY.replace('-','')+'-'+uuid.uuid4().hex[:8]+'.zip')
  with zipfile.ZipFile(output,'x',zipfile.ZIP_DEFLATED) as archive:
-  for name in ['ig-2026-11-27-results.json','ig-2026-11-27-results.txt','ig-2026-11-27-status.json','ig-publication-state.json','ig-comment-state.json','ig-first-trial-20261127.json']:
+  for name in ['ig-2026-11-27-results.json','ig-2026-11-27-results.txt','ig-2026-11-27-status.json','ig-publication-state.json','ig-comment-state.json','ig-first-trial-20261127.json','ig-confirmed-absence-retry-20261127.json']:
    p=root/'logs'/name
    if p.is_file():archive.write(p,p.name)
   for p in (root/'logs').glob('ig-*.log'):
@@ -295,23 +304,31 @@ def coordinator(root,path,run,operation=run_operation):
   gate=recover_recorded_editor_gate(root,batch,gate)
   gate=recover_local_file_gate(root,batch,gate)
   gate=recover_recorded_crop_gate(root,batch,gate)
-  if gate.get('blocked'):
+  permit=absence.plan(root,batch,gate=gate,create=True)
+  first_effective=absence.job(root,batch,first);retry_row=c.state(root).get(first_effective['key'],{})
+  retry_allowed=bool(permit and (not retry_row.get('retry_claimed_at') or c.submission(retry_row)))
+  if gate.get('blocked') and not retry_allowed:
    reason='首条IG试发已保留待核实；未清除门禁或重发，请提供上次诊断包';report(root,batch,'review_required',reason);status('review_required',reason);export(root,batch);return 3
-  for j in batch['payload']['jobs']:
+  for original in batch['payload']['jobs']:
+   j=absence.job(root,batch,original)
    row=c.state(root).get(j['key'],{})
    c.update(root,j['key'],account=j['account'],username=j['username'],video_sha256=j['video_sha256'],batch_sha256=batch['sha256'])
    if not c.submission(row):
+    if j.get('retry_of'):
+     if row.get('retry_claimed_at'):
+      reason='ins01唯一补发机会已使用且未取得提交证明，保留原记录；未再次上传';report(root,batch,'review_required',reason);status('review_required',reason);export(root,batch);return 3
+     c.update(root,j['key'],retry_of=j['retry_of'],retry_authorization=j['retry_authorization'],retry_claimed_at=c.stamp(),retry_run_id=run)
     operation(root,path,j,'video',run,status)
     row=c.state(root).get(j['key'],{})
-    if row.get('video_status')=='failed_before_post' and not row.get('video_retry_used') and re.search('net::ERR_|Timeout|browser.*closed',row.get('error',''),re.I):
+    if not j.get('retry_of') and row.get('video_status')=='failed_before_post' and not row.get('video_retry_used') and re.search('net::ERR_|Timeout|browser.*closed',row.get('error',''),re.I):
      c.update(root,j['key'],video_retry_used=True,video_retry_claimed_at=c.stamp());operation(root,path,j,'video',run,status)
    row=c.state(root).get(j['key'],{})
    if c.submission(row) and not verified(root,j):operation(root,path,j,'comment',run,status)
    if verified(root,j):
     src=c.safe(root,root/j['video']);dest=c.safe(root,root/j['published_video'])
     if src.exists() and c.file_info(src)==dict(size=j['video_size'],sha256=j['video_sha256']) and not dest.exists():dest.parent.mkdir(parents=True,exist_ok=True);src.replace(dest)
-   if j['key']==first['key']:
-    ok=bool(verified(root,j));c.save(gate_path,dict(batch_sha256=batch['sha256'],job_key=j['key'],passed=ok,blocked=not ok,checked_at=c.stamp(),**{k:gate[k] for k in ['navigation_syntax_repair','create_entry_repair','recorded_editor_repair','local_file_repair','recorded_crop_repair'] if gate.get(k)}))
+   if original['key']==first['key']:
+    ok=bool(verified(root,j));c.save(gate_path,dict(batch_sha256=batch['sha256'],job_key=first['key'],effective_job_key=j['key'],absence_retry_authorization=permit['sha256'] if permit else None,passed=ok,blocked=not ok,checked_at=c.stamp(),**{k:gate[k] for k in ['navigation_syntax_repair','create_entry_repair','recorded_editor_repair','local_file_repair','recorded_crop_repair'] if gate.get(k)}))
     if not ok:
      reason='首条IG视频/评论未完整通过，保留其余9个账号，不重复点击发布';report(root,batch,'review_required',reason);status('review_required',reason);export(root,batch);return 3
     print('ins01视频及首评刷新核验通过；继续其余9个IG账号。',flush=True)

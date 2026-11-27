@@ -2,7 +2,7 @@
 import base64,hashlib,json,zlib
 from pathlib import Path
 HERE=Path(__file__).resolve().parent
-NAMES=['ig10_common_20261127.py','ig10_allocate_20261127.py','ig10_browser_20261127.py','ig10_engine_20261127.py','ig10_profile_release.ps1','ig_state_io.py','ig_windows_job.py']
+NAMES=['ig10_common_20261127.py','ig10_allocate_20261127.py','ig10_browser_20261127.py','ig10_engine_20261127.py','ig10_confirmed_absence_20261127.py','ig10_profile_release.ps1','ig_state_io.py','ig_windows_job.py']
 TEMPLATE='''"""Nov27 Instagram10: runtime folder choice, exact accounts, ins01 publication/comment trial."""
 import base64,hashlib,importlib,json,os,subprocess,sys,time,uuid,zlib
 from pathlib import Path
@@ -43,7 +43,7 @@ def main(root):
  import ig10_allocate_20261127 as allocate
  from playwright.sync_api import sync_playwright
  c.workspace(root)
- if os.environ.get('IG10_PROBE_ONLY')=='1':print('IG10 VERIFIED: exact10 mappings; original caption/comment; real footage; AI OFF; 180s; no browser opened.');return 0
+ if os.environ.get('IG10_PROBE_ONLY')=='1':print('IG10 VERIFIED: exact10 mappings; original caption/comment; real footage; AI OFF; video 1800s/comment 180s; no browser opened.');return 0
  if os.name!='nt':raise ValueError('The publication entry runs on the original Windows computer')
  # An already running publisher owns the immutable batch. Never create another uploader.
  try:

@@ -20,6 +20,40 @@ OWN_PROFILE_NAV=r'''() => {
 }'''
 class SessionProblem(RuntimeError):pass
 class ReceiptPending(RuntimeError):pass
+class UploadPending(ReceiptPending):pass
+
+class TransferSummary:
+ """Transport counts only: never inspect upload bodies, tokens, cookies or HAR."""
+ def __init__(self,page):
+  self.page=page;self.started=0;self.completed=0;self.failed=0;self.statuses=[]
+  page.on('request',self.begin);page.on('requestfinished',self.finish);page.on('requestfailed',self.fail)
+ def accepts(self,request):
+  from urllib.parse import urlparse
+  p=urlparse(request.url);host=p.hostname or ''
+  return (host=='instagram.com' or host.endswith('.instagram.com') or host=='facebook.com' or host.endswith('.facebook.com')) and bool(re.search(r'/rupload_igvideo/|/rupload/|/video_upload/',p.path))
+ def begin(self,request):
+  if self.accepts(request):self.started+=1
+ def finish(self,request):
+  if self.accepts(request):
+   self.completed+=1;response=request.response()
+   if response is not None:self.statuses=(self.statuses+[response.status])[-12:]
+ def fail(self,request):
+  if self.accepts(request):self.failed+=1
+ def snapshot(self):return dict(started=self.started,finished=self.completed,transport_failed=self.failed,http_statuses=self.statuses)
+ def close(self):
+  for event,callback in [('request',self.begin),('requestfinished',self.finish),('requestfailed',self.fail)]:self.page.remove_listener(event,callback)
+
+def verify_confirmed_absence(page,root,job,start):
+ """Require a fresh empty own profile/Reels before consuming the one retry."""
+ observations=[]
+ for suffix in ['', 'reels/', '']:
+  page.goto(BASE+'/'+job['username']+'/'+suffix,wait_until='domcontentloaded',timeout=remaining(start,25000));identity=actor(page,job['username']);page.wait_for_timeout(1500)
+  if page.url.split('?')[0].rstrip('/') not in {BASE+'/'+job['username'],BASE+'/'+job['username']+'/reels'}:raise RuntimeError('补发前个人主页跳转异常，未重复上传')
+  text=page.locator('body').inner_text(timeout=remaining(start,5000));codes=links(page)
+  empty=bool(re.search(r'(?<!\d)0\s*(?:帖子|貼文|posts)(?!\w)',text,re.I))
+  if codes or not empty:raise RuntimeError('补发前发现视频链接或主页不再明确为空，已停止重传；请提供原视频链接')
+  observations.append(dict(path='reels' if suffix else 'profile',username=identity['username'],visible_post_count=0,video_links=0,checked_at=c.stamp()))
+ c.update(root,job['key'],retry_absence_observations=observations,retry_absence_verified_at=c.stamp())
 
 
 def remaining(start,limit=15000):return max(1,min(limit,int((c.VIDEO_SECONDS-(time.monotonic()-start)-8)*1000)))
@@ -148,7 +182,7 @@ def recover(page,job,row,identity,start):
   for url in pending[:8]:
    if time.monotonic()-start>140:break
    page.goto(url,wait_until='domcontentloaded',timeout=20000);page.wait_for_timeout(800);collect_embedded(page,capture)
-  capture.drain();values=[n for n in capture.found.values() if n['taken_at']<=post+600]
+  capture.drain();values=[n for n in capture.found.values() if n['taken_at']<=post+c.VIDEO_SECONDS+120]
   if len(values)!=1:raise RuntimeError('未取得唯一原视频的作者/正文/时间/视频ID证明，未猜选或评论')
   proof=values[0];url='https://www.instagram.com/reel/'+proof['code']+'/'
   detail(page,url,job,proof);return url,proof
@@ -357,6 +391,7 @@ def prepare_and_share(page,context,root,job,start,local_browser=False):
  identity=actor(page,job['username']);base=links(page);upload_at=c.stamp()
  c.update(root,job['key'],identity=identity,identity_verified_at=c.stamp(),upload_started_at=upload_at,baseline_codes=sorted(base),video_status='preparing')
  capture=Capture(page,job,identity,datetime.fromisoformat(upload_at).timestamp(),base);capture.armed=False
+ transfer=TransferSummary(page)
  try:
   scope=open_creation(page,job,start,record=lambda **fields:c.update(root,job['key'],**fields))
   inputs=scope.locator('input[type="file"][accept*="video" i]')
@@ -374,15 +409,16 @@ def prepare_and_share(page,context,root,job,start,local_browser=False):
   c.update(root,job['key'],ai_label_requested=False,ai_control_evidence=ai_evidence,comment_control_evidence=comment_evidence,post_intent_at=c.stamp(),failure_stage='click_share',video_status='posting')
   capture.armed=True
   click_named(scope,SHARE_NAMES,timeout=remaining(start,12000))
-  c.update(root,job['key'],submit_click_returned_at=c.stamp(),failure_stage='wait_receipt')
+  c.update(root,job['key'],submit_click_returned_at=c.stamp(),failure_stage='wait_receipt',sharing_ui_state='share_clicked_awaiting_receipt',upload_transport_summary=transfer.snapshot())
   page.wait_for_timeout(500)
-  while time.monotonic()-start<170:
+  last_progress=0
+  while time.monotonic()-start<c.VIDEO_SECONDS-10:
    assert_session(page);proof=capture.single()
    if proof:
     c.update(root,job['key'],media_proof=proof)
     url='https://www.instagram.com/reel/'+proof['code']+'/'
     detail(page,url,job,proof)
-    c.update(root,job['key'],video_status='published',assumed_published=False,permalink=url,confirmed_at=c.stamp(),publication_confirmation_source='exact_owner_caption_time_media_id_and_detail')
+    c.update(root,job['key'],video_status='published',assumed_published=False,permalink=url,confirmed_at=c.stamp(),publication_confirmation_source='exact_owner_caption_time_media_id_and_detail',sharing_ui_state='published',upload_transport_summary=transfer.snapshot())
     return
    # The share notice alone never invents a media ID/link. Try own-profile metadata once.
    notice=visible(page.get_by_text(re.compile(r'(Your (?:post|reel) has been shared|已分享你的|已分享您的|帖子已分享|连拍视频已分享)',re.I)))
@@ -390,10 +426,14 @@ def prepare_and_share(page,context,root,job,start,local_browser=False):
     page.wait_for_timeout(500)
     if capture.single():continue
     row=c.state(root)[job['key']];url,proof=recover(page,job,row,identity,start)
-    c.update(root,job['key'],video_status='published',assumed_published=False,media_proof=proof,permalink=url,confirmed_at=c.stamp(),publication_confirmation_source='exact_owner_caption_time_media_id_and_detail');return
+    c.update(root,job['key'],video_status='published',assumed_published=False,media_proof=proof,permalink=url,confirmed_at=c.stamp(),publication_confirmation_source='exact_owner_caption_time_media_id_and_detail',sharing_ui_state='published',upload_transport_summary=transfer.snapshot());return
+   if time.monotonic()-last_progress>=10:
+    sharing=visible(page.get_by_text(re.compile(r'^(正在分享|正在发布|正在發佈|Sharing(?:\.\.\.|…)?|Sharing your (?:post|reel))$',re.I))) is not None
+    c.update(root,job['key'],sharing_ui_state='sharing_in_progress' if sharing else 'awaiting_receipt',sharing_checked_at=c.stamp(),upload_transport_summary=transfer.snapshot());last_progress=time.monotonic()
    page.wait_for_timeout(1000)
+  if c.state(root)[job['key']].get('sharing_ui_state')=='sharing_in_progress':raise UploadPending('Instagram仍显示正在分享，尚未确认完成；已保留提交和传输统计，不重复上传')
   raise ReceiptPending('已点击Share，但未取得确切视频回执；按用户规则保留视为成功的出处，不重复上传')
- finally:page.remove_listener('requestfinished',capture.receive)
+ finally:page.remove_listener('requestfinished',capture.receive);transfer.close()
 
 def own_comment(article,username,text):
  rows=article.evaluate('''(root)=>[...root.querySelectorAll('ul li')].filter(li=>!li.querySelector('li')).map(li=>({author:li.querySelector('h3 a[href],h2 a[href]')?.getAttribute('href')||'',text:li.innerText}));''')
