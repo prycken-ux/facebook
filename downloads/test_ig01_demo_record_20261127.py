@@ -87,4 +87,12 @@ class BrowserRecordTests(Fixture):
   self.page.evaluate("()=>{const e=document.createElement('div');e.setAttribute('role','switch');e.setAttribute('aria-label','AI label');e.setAttribute('aria-checked','false');e.textContent='AI';e.onclick=()=>e.setAttribute('aria-checked','true');document.body.append(e);}")
   self.page.get_by_role('switch',name='AI label').click();self.page.wait_for_timeout(150);self.rec.drain();self.rec.capture('AI设置');snapshot=c.read(self.rec.folder/self.rec.frames[-1]['controls']);switch=next(x for x in snapshot['controls'] if x.get('role')=='switch');self.assertEqual(switch['checked'],'true');self.assertTrue(any(x.get('target',{}).get('role')=='switch' for x in self.rec.events))
 
+ def test_completed_overlay_updates_and_export_is_idempotent(self):
+  self.rec.capture('final');path=self.rec.export('test');self.assertIn('记录已完成',self.page.locator('#ig-demo-note').inner_text());self.assertIn(path.name,self.page.locator('#ig-demo-note').inner_text());self.assertEqual(self.rec.export('again'),path);self.assertTrue(self.rec.ended)
+ def test_write_failure_keeps_raw_steps_and_can_retry(self):
+  self.page.locator('#next').click();self.page.wait_for_timeout(100);self.rec.drain();self.assertTrue((self.rec.folder/'events.json').exists());self.rec.capture('stage');self.assertTrue((self.rec.folder/'progress.json').exists())
+  with patch.object(rec.zipfile,'ZipFile',side_effect=OSError('fixture destination failure')):
+   with self.assertRaises(OSError):self.rec.export('failure')
+  self.assertFalse(self.rec.ended);self.assertTrue((self.rec.folder/'recording.json').exists());path=self.rec.export('retry');self.assertTrue(path.is_file());self.assertTrue(self.rec.ended)
+
 if __name__=='__main__':unittest.main()

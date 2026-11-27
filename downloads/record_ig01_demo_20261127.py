@@ -107,7 +107,7 @@ def launch(pw,root,job):
 class Recorder:
  def __init__(self,root,job,batch):
   self.root=root;self.job=job;self.batch=batch;self.id=uuid.uuid4().hex;self.folder=c.safe(root,root/'logs/demo-recordings'/self.id);self.folder.mkdir(parents=True)
-  self.events=[];self.frames=[];self.pending=collections.deque();self.active=False;self.ended=False;self.due=None;self.start=time.monotonic();self.page=None;self.before=fingerprints(root);self.warnings=[]
+  self.events=[];self.frames=[];self.pending=collections.deque();self.active=False;self.ended=False;self.due=None;self.start=time.monotonic();self.page=None;self.archive=None;self.before=fingerprints(root);self.warnings=[]
  def event(self,source,data):
   if not self.active or self.ended or source.get('page') is not self.page or source.get('frame') is not self.page.main_frame:return
   try:safe_url(self.page.url)
@@ -135,27 +135,39 @@ class Recorder:
   n=len(self.frames)+1;name=f'{n:03d}-{label}';controls=self.page.evaluate(CONTROLS)
   c.save(self.folder/(name+'.json'),dict(url=url,at=c.stamp(),controls=controls));self.page.screenshot(path=str(self.folder/(name+'.png')),timeout=5000)
   self.frames.append(dict(step=n,label=label,url=url,controls=name+'.json',screenshot=name+'.png',at=c.stamp()))
+  c.save(self.folder/'progress.json',dict(recording_id=self.id,account='ins01',username=self.job['username'],frames=self.frames,at=c.stamp()))
  def drain(self):
-  finish=False
+  finish=False;changed=False
   while self.pending:
-   event=self.pending.popleft()
+   event=self.pending.popleft();changed=True
    if len(self.events)<800:self.events.append(event)
    if event['kind']=='finish':finish=True
    else:self.due=time.monotonic()+.35
+  if changed:c.save(self.folder/'events.json',dict(recording_id=self.id,account='ins01',username=self.job['username'],events=self.events,at=c.stamp()))
   return finish
  def export(self,reason):
+  if self.archive is not None and self.archive.is_file():return self.archive
   if not self.ended:self.drain()
-  self.ended=True;self.active=False;after=fingerprints(self.root)
+  self.active=False;after=fingerprints(self.root)
   value=dict(schema='ig01-manual-demo-v1',account='ins01',username=self.job['username'],batch_sha256=self.batch['sha256'],assigned_video=self.job['video'],video_sha256=self.job['video_sha256'],recording_id=self.id,reason=reason,at=c.stamp(),events=self.events,frames=self.frames,warnings=self.warnings,ledger_before=self.before,ledger_after=after,publication_ledgers_unchanged=after==self.before,automatic_publication_invoked=False)
   c.save(self.folder/'recording.json',value)
   text=['IG ins01人工演示记录','账号：'+self.job['username'],'原分配视频：'+self.job['video'],'结束原因：'+reason,'发布/评论账本保持：'+str(after==self.before),'操作记录 '+str(len(self.events))+'；截图 '+str(len(self.frames)),'本工具拦截最终分享；没有调用自动发布入口。']
   text += [str(i+1)+'. '+x['kind']+' '+str(x.get('target',{}).get('label') or x.get('target',{}).get('text') or x.get('path','')) for i,x in enumerate(self.events)]
   (self.folder/'步骤说明.txt').write_text('\n'.join(text),encoding='utf-8-sig')
   path=desktop(self.root)/('IG-demo-record-20261127-'+self.id[:8]+'.zip')
-  with zipfile.ZipFile(path,'x',zipfile.ZIP_DEFLATED) as z:
-   for p in sorted(self.folder.iterdir()):
-    if p.is_file() and p.suffix.lower() in {'.json','.txt','.png'} and not p.is_symlink():z.write(p,p.name)
-  print('记录包已保存：'+str(path),flush=True);print('请上传这个zip。请取消编辑/舍弃演示草稿并关闭ins01窗口；浏览器关闭后工具退出。',flush=True)
+  temporary=path.with_suffix('.'+uuid.uuid4().hex[:8]+'.partial')
+  try:
+   with zipfile.ZipFile(temporary,'x',zipfile.ZIP_DEFLATED) as z:
+    for p in sorted(self.folder.iterdir()):
+     if p.is_file() and p.suffix.lower() in {'.json','.txt','.png'} and not p.is_symlink():z.write(p,p.name)
+   temporary.replace(path)
+  finally:temporary.unlink(missing_ok=True)
+  self.archive=path;self.ended=True
+  print('记录已打包完成：'+str(path),flush=True);print('请上传这个zip。当前仅等待你取消编辑/舍弃草稿并关闭ins01窗口。',flush=True)
+  if self.page is not None and not self.page.is_closed():
+   try:
+    self.page.locator('#ig-demo-note').evaluate("(el,name)=>{el.textContent='记录已完成：'+name+' 已保存。请取消编辑并关闭本账号窗口。';const b=el.parentElement.querySelector('button');if(b){b.textContent='已完成';b.disabled=true;}}",path.name,timeout=1500)
+   except Exception:pass
   return path
 
 def run(root):
