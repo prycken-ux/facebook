@@ -111,6 +111,20 @@ def workspace(root):
  (root/'logs').mkdir(exist_ok=True)
  return root
 
+def desktop_hint():
+ if os.name!='nt':return None
+ import ctypes
+ buf=ctypes.create_unicode_buffer(260);shell=ctypes.WinDLL('shell32',use_last_error=True);fn=shell.SHGetFolderPathW
+ fn.argtypes=[ctypes.c_void_p,ctypes.c_int,ctypes.c_void_p,ctypes.c_uint32,ctypes.c_wchar_p];fn.restype=ctypes.c_long
+ return Path(buf.value) if fn(None,0x10,None,0,buf)==0 and buf.value else None
+
+def desktop_path(root):
+ try:hint=desktop_hint()
+ except (OSError,AttributeError):hint=None
+ if hint is not None and hint.is_dir():return hint
+ candidate=Path(os.environ.get('USERPROFILE',str(root)))/'Desktop'
+ return candidate if candidate.is_dir() else root/'logs'
+
 def checked(path):
  value=read(path,required=True)
  if value.get('sha256')!=digest(value.get('payload',{})):raise ValueError('IG清单指纹异常')

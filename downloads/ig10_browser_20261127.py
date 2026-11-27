@@ -220,6 +220,105 @@ def open_creation(page,job,start,record=lambda **kw:None):
 def creation_snapshot(page):
  return page.locator('a,button,[role="button"],[role="link"],svg[aria-label],input[type="file"]').evaluate_all("""(xs)=>xs.filter(e=>{const r=e.getBoundingClientRect();return (r.width>0&&r.height>0)||e.type==='file';}).slice(0,100).map(e=>{const r=e.getBoundingClientRect();return {tag:e.tagName,role:e.getAttribute('role'),label:e.getAttribute('aria-label'),text:(e.innerText||'').slice(0,120),accept:e.type==='file'?e.accept:null,x:Math.round(r.x),y:Math.round(r.y)};})""")
 
+NEXT_NAMES=re.compile(r'^(Continue|继续|繼續|Next|下一步)$',re.I)
+SHARE_NAMES=re.compile(r'^(Share|分享|共享)$',re.I)
+PHASE_NAMES=re.compile(r'^(Crop|裁剪|Edit|编辑|編輯|New Reels|新\s*Reels|Create new post|创建新帖子)$',re.I)
+CAPTION_BOX='[contenteditable="true"][role="textbox"],textarea[aria-label*="caption" i],textarea[aria-label*="配文"],textarea[aria-label*="说明"],textarea[aria-label*="說明"]'
+CROP_NAMES=re.compile(r'Select crop|选择.*裁剪|選擇.*裁切',re.I)
+ORIGINAL_NAMES=re.compile(r'^(Original|原图|原始比例|原始|原始大小)$',re.I)
+
+def editor_scope(page):
+ dialogs=page.get_by_role('dialog')
+ for i in range(dialogs.count()-1,-1,-1):
+  modal=dialogs.nth(i)
+  if modal.is_visible() and (named_control(modal,NEXT_NAMES) is not None or named_control(modal,SHARE_NAMES) is not None or visible(modal.locator(CAPTION_BOX)) is not None):return modal
+ titles=page.get_by_text(PHASE_NAMES,exact=True)
+ for i in range(titles.count()):
+  heading=titles.nth(i)
+  if not heading.is_visible():continue
+  parent=heading
+  for _ in range(7):
+   parent=parent.locator('xpath=..')
+   if not parent.count() or parent.evaluate('(e)=>e.tagName') in {'BODY','HTML'}:break
+   has_media=parent.locator('video,canvas,input[type="file"]').count() or visible(parent.locator(CAPTION_BOX)) is not None
+   if has_media and (named_control(parent,NEXT_NAMES) is not None or named_control(parent,SHARE_NAMES) is not None):return parent
+ return None
+
+def advance_to_caption(page,start,record=lambda **kw:None):
+ deadline=min(time.monotonic()+50,start+c.VIDEO_SECONDS-20);last=None;advances=0;crop_done=False
+ while time.monotonic()<deadline:
+  assert_session(page);scope=editor_scope(page)
+  if scope is None:page.wait_for_timeout(150);continue
+  caption=visible(scope.locator(CAPTION_BOX))
+  if caption is not None:record(caption_editor_ready_at=c.stamp(),edit_advances=advances);return scope,caption
+  crop=visible(scope.get_by_role('button',name=CROP_NAMES))
+  if crop is not None and not crop_done:
+   crop.click(timeout=remaining(start,5000));until=min(deadline,time.monotonic()+4);original=None
+   while time.monotonic()<until:
+    original=visible(page.get_by_text(ORIGINAL_NAMES,exact=True))
+    if original is not None:break
+    page.wait_for_timeout(100)
+   if original is None:raise RuntimeError('未找到原始比例，未擅自裁剪上传视频')
+   original.click(timeout=remaining(start,5000));crop_done=True;record(original_ratio_selected_at=c.stamp())
+  titles=scope.get_by_text(PHASE_NAMES,exact=True);phase=tuple(titles.nth(i).inner_text() for i in range(titles.count()) if titles.nth(i).is_visible())
+  fingerprint=(phase,crop is not None,scope.locator('input[type="file"]').count())
+  control=named_control(scope,NEXT_NAMES)
+  if control is not None and fingerprint!=last:
+   if advances>=5:raise RuntimeError('视频编辑步骤超过预期，未点击分享')
+   control.click(timeout=remaining(start,8000));last=fingerprint;advances+=1;record(last_edit_advance_at=c.stamp(),edit_advances=advances)
+  page.wait_for_timeout(200)
+ raise RuntimeError('视频编辑或添加配文页面未在限时内就绪，未点击分享')
+
+def setting_toggle(scope,names,labels):
+ for role in ['switch','checkbox']:
+  matches=scope.get_by_role(role,name=names);items=[matches.nth(i) for i in range(matches.count()) if matches.nth(i).is_visible()]
+  if len(items)>1:raise RuntimeError('设置开关匹配不唯一，未点击分享')
+  if items:return items[0]
+ loc=scope.get_by_text(labels,exact=True);seen=False
+ for i in range(loc.count()):
+  label=loc.nth(i)
+  if not label.is_visible():continue
+  seen=True;parent=label
+  for _ in range(6):
+   parent=parent.locator('xpath=..')
+   if not parent.count() or parent.evaluate('(e)=>e.tagName') in {'BODY','HTML'}:break
+   candidates=parent.locator('input[type="checkbox"],[role="switch"],[role="checkbox"]');controls=[candidates.nth(k) for k in range(candidates.count()) if candidates.nth(k).is_visible()]
+   if len(controls)==1:return controls[0]
+ if seen:raise RuntimeError('已找到设置文字，但无法唯一核对对应开关，未点击分享')
+ return None
+
+def prepare_caption_settings(page,scope,caption,start):
+ caption.fill(c.CAPTION,timeout=remaining(start,10000))
+ ai_names=re.compile('AI label|AI info|AI.*标签|AI.*標籤|人工智能',re.I)
+ ai_labels=re.compile(r'^(添加\s*AI\s*标签|Add AI label|AI label|AI info|添加\s*AI\s*標籤)$',re.I)
+ ai=setting_toggle(scope,ai_names,ai_labels);evidence='not_exposed_no_self_label_added'
+ if ai is not None:
+  if checked(ai):ai.click(timeout=remaining(start,3000))
+  if checked(ai):raise RuntimeError('AI标签未关闭，未发布')
+  evidence='visible_control_verified_off'
+ off_names=re.compile('Turn off commenting|关闭评论|關閉留言',re.I)
+ off_labels=re.compile(r'^(Turn off commenting|关闭评论|關閉留言)$',re.I)
+ off=setting_toggle(scope,off_names,off_labels);advanced=named_control(scope,re.compile(r'^(Advanced settings|高级设置|進階設定)$',re.I))
+ if off is None and advanced is not None and advanced.get_attribute('aria-expanded')!='true':
+  advanced.click(timeout=remaining(start,3000));until=min(time.monotonic()+3,start+c.VIDEO_SECONDS-15)
+  while time.monotonic()<until:
+   off=setting_toggle(scope,off_names,off_labels)
+   if off is not None:break
+   page.wait_for_timeout(100)
+ comments='not_exposed_no_disable_added'
+ if off is not None:
+  if checked(off):off.click(timeout=remaining(start,3000))
+  if checked(off):raise RuntimeError('评论仍被关闭，未发布')
+  comments='visible_control_verified_enabled'
+ current=caption.input_value() if caption.evaluate('(e)=>e.tagName') in {'TEXTAREA','INPUT'} else caption.inner_text()
+ if c.norm(current)!=c.norm(c.CAPTION):raise RuntimeError('原正文未完整填写，未发布')
+ ai=setting_toggle(scope,ai_names,ai_labels)
+ if ai is not None:
+  if checked(ai):ai.click(timeout=remaining(start,3000))
+  if checked(ai):raise RuntimeError('设置变化后AI标签未保持关闭，未发布')
+  evidence='visible_control_verified_off'
+ return evidence,comments
+
 def prepare_and_share(page,context,root,job,start):
  page.goto(BASE+'/'+job['username']+'/',wait_until='domcontentloaded',timeout=25000)
  identity=actor(page,job['username']);base=links(page);upload_at=c.stamp()
@@ -236,37 +335,12 @@ def prepare_and_share(page,context,root,job,start):
    with page.expect_file_chooser(timeout=remaining(start,10000)) as event:button.click(timeout=remaining(start,5000))
    event.value.set_files(str(root/job['video']))
   c.update(root,job['key'],selected_file=job['video'],selected_video_sha256=job['video_sha256'])
-  caption=None;scope=page
-  for _ in range(5):
-   modal=visible(page.get_by_role('dialog'));scope=modal or page
-   caption=visible(scope.locator('[contenteditable="true"][role="textbox"],textarea[aria-label*="caption" i],textarea[aria-label*="说明"],textarea[aria-label*="說明"]'))
-   if caption is not None:break
-   crop=visible(scope.get_by_role('button',name=re.compile('Select crop|选择裁剪|選擇裁切',re.I)))
-   if crop is not None:
-    crop.click();original=visible(page.get_by_text(re.compile(r'^(Original|原图|原始比例|原始)$',re.I)))
-    if original is None:raise RuntimeError('未找到原始比例，未擅自裁剪上传视频')
-    original.click()
-   click_named(scope,re.compile(r'^(Next|下一步)$',re.I),timeout=remaining(start,45000));page.wait_for_timeout(700)
-  if caption is None:raise RuntimeError('未找到Instagram正文编辑框，未点击发布')
-  caption.fill(c.CAPTION,timeout=10000)
-  current=caption.input_value() if caption.evaluate('(e)=>e.tagName') in {'TEXTAREA','INPUT'} else caption.inner_text()
-  if c.norm(current)!=c.norm(c.CAPTION):raise RuntimeError('原正文未完整填写，未发布')
-  click_named(scope,re.compile(r'^(Advanced settings|高级设置|進階設定)$',re.I),required=False,timeout=3000)
-  ai=visible(scope.get_by_role('switch',name=re.compile('AI label|AI info|AI.*标签|AI.*標籤|人工智能',re.I)))
-  if ai is None:ai=visible(scope.get_by_role('checkbox',name=re.compile('AI label|AI.*标签|AI.*標籤',re.I)))
-  ai_evidence='not_exposed_no_self_label_added'
-  if ai is not None:
-   if checked(ai):ai.click(timeout=3000)
-   if checked(ai):raise RuntimeError('AI标签未关闭，未发布')
-   ai_evidence='visible_control_verified_off'
-  off=visible(scope.get_by_role('switch',name=re.compile('Turn off commenting|关闭评论|關閉留言',re.I)))
-  if off is not None:
-   if checked(off):off.click(timeout=3000)
-   if checked(off):raise RuntimeError('评论仍被关闭，未发布')
+  scope,caption=advance_to_caption(page,start,record=lambda **fields:c.update(root,job['key'],**fields))
+  ai_evidence,comment_evidence=prepare_caption_settings(page,scope,caption,start)
   actor(page,job['username'])
-  c.update(root,job['key'],ai_label_requested=False,ai_control_evidence=ai_evidence,post_intent_at=c.stamp(),failure_stage='click_share',video_status='posting')
+  c.update(root,job['key'],ai_label_requested=False,ai_control_evidence=ai_evidence,comment_control_evidence=comment_evidence,post_intent_at=c.stamp(),failure_stage='click_share',video_status='posting')
   capture.armed=True
-  click_named(scope,re.compile(r'^(Share|分享|共享)$',re.I),timeout=remaining(start,12000))
+  click_named(scope,SHARE_NAMES,timeout=remaining(start,12000))
   c.update(root,job['key'],submit_click_returned_at=c.stamp(),failure_stage='wait_receipt')
   page.wait_for_timeout(500)
   while time.monotonic()-start<170:

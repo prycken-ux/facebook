@@ -94,8 +94,7 @@ def scan_source(root,source):
  lines += [r['reason']+' | '+r['relative_path']+(' | '+r.get('detail','') if r.get('detail') else '') for r in report['files']]
  text=root/'logs/ig-material-scan-20261127.txt';text.write_text('\n'.join(lines),encoding='utf-8-sig')
  if len(reserved)<10:
-  desktop=Path(os.environ.get('USERPROFILE',str(root)))/'Desktop'
-  if not desktop.is_dir():desktop=root/'logs'
+  desktop=c.desktop_path(root)
   archive=desktop/('IG-material-scan-20261127-'+uuid.uuid4().hex[:8]+'.zip')
   with zipfile.ZipFile(archive,'x',zipfile.ZIP_DEFLATED) as z:z.write(scan,scan.name);z.write(text,text.name)
   raise ValueError('扫描后可分配素材不足10条（当前 '+str(len(eligible))+' 条），正式目录未复制，未启动发布。'+summary+'。扫描报告：'+str(archive))
