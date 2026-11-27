@@ -23,11 +23,14 @@ def chrome():
  if found:return Path(found)
  raise RuntimeError('没有找到已登录资料使用的Google Chrome')
 
+def browser_args(root,job,port):
+ profile=c.safe(root,root/'profiles'/job['account'])
+ return [str(chrome()),'--user-data-dir='+str(profile),'--profile-directory=Default','--remote-debugging-address=127.0.0.1','--remote-debugging-port='+str(port),'--headless=new','--window-size=1440,1000','--mute-audio','--no-first-run','--no-default-browser-check','--hide-crash-restore-bubble','--disable-session-crashed-bubble','about:blank']
+
 def launch(pw,root,job,started):
  with socket.socket() as sock:sock.bind(('127.0.0.1',0));port=sock.getsockname()[1]
- endpoint='http://127.0.0.1:'+str(port);profile=c.safe(root,root/'profiles'/job['account'])
- args=[str(chrome()),'--user-data-dir='+str(profile),'--profile-directory=Default','--remote-debugging-address=127.0.0.1','--remote-debugging-port='+str(port),'--no-first-run','--no-default-browser-check','--hide-crash-restore-bubble','--disable-session-crashed-bubble','--new-window','https://www.instagram.com/']
- proc=subprocess.Popen(args,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+ endpoint='http://127.0.0.1:'+str(port);args=browser_args(root,job,port)
+ proc=subprocess.Popen(args,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,creationflags=0x08000000 if os.name=='nt' else 0)
  opener=urllib.request.build_opener(urllib.request.ProxyHandler({}));until=time.monotonic()+30
  while time.monotonic()<until:
   try:
@@ -39,7 +42,7 @@ def launch(pw,root,job,started):
  else:raise RuntimeError('IG Chrome调试入口30秒内未就绪，未选择视频')
  browser=pw.chromium.connect_over_cdp(endpoint,timeout=15000)
  if not browser.contexts:browser.close();raise RuntimeError('IG原资料浏览器上下文缺失')
- context=browser.contexts[0];page=next((p for p in reversed(context.pages) if 'instagram.com' in p.url),None) or context.new_page();page.set_default_timeout(10000)
+ context=browser.contexts[0];page=next((p for p in reversed(context.pages) if 'instagram.com' in p.url),None) or (context.pages[0] if context.pages else context.new_page());page.set_default_timeout(10000)
  return browser,context,page
 
 def diagnostic(root,job,kind,error,page=None):
@@ -62,6 +65,7 @@ def worker(root,batch_path,key,kind,started):
  if kind=='video' and c.submission(row):print('已有IG视频提交记录，未重复上传：'+job['account'],flush=True);return 0
  info=c.file_info(c.safe(root,root/job['video'])) if kind=='video' else None
  if kind=='video' and info!=dict(size=job['video_size'],sha256=job['video_sha256']):raise ValueError('本次IG视频指纹变化，未选择其他素材')
+ if kind=='video':c.update(root,key,error='',browser_mode='headless',video_attempt_started_at=c.stamp())
  browser=None;page=None
  try:
   with sync_playwright() as pw:
@@ -154,18 +158,45 @@ def export(root,batch):
    if p.is_file() and not p.is_symlink():archive.writestr(p.name,p.read_bytes()[-1_000_000:])
   for p in (root/'logs/diagnostics').rglob('*') if (root/'logs/diagnostics').is_dir() else []:
    if p.is_file() and not p.is_symlink():archive.write(p,str(p.relative_to(root/'logs')))
+  for p in (root/'logs/repairs').glob('ig-nav-syntax-*.json'):
+   if p.is_file() and not p.is_symlink():archive.write(p,str(p.relative_to(root/'logs')))
  print('IG结果/页面诊断包：'+str(output),flush=True);return output
+
+def recover_navigation_syntax_gate(root,batch,gate):
+ """One audited retry only for the proven, pre-identity navigation syntax bug."""
+ if not gate.get('blocked') or gate.get('navigation_syntax_repair'):return gate
+ first=batch['payload']['jobs'][0];row=c.state(root).get(first['key'],{})
+ if gate.get('batch_sha256')!=batch['sha256'] or gate.get('job_key')!=first['key']:return gate
+ if (row.get('batch_sha256')!=batch['sha256'] or row.get('account')!=first['account'] or row.get('username')!=first['username'] or row.get('video_sha256')!=first['video_sha256']):return gate
+ if row.get('video_status')!='failed_before_post' or c.submission(row):return gate
+ if any(row.get(k) for k in ['identity_verified_at','upload_started_at','selected_file','comment_send_intent_at','comment_verified_at','media_proof']):return gate
+ if "Page.evaluate: SyntaxError: Unexpected token '}'" not in row.get('error',''):return gate
+ comments=c.read(root/'logs/ig-comment-state.json',{})
+ if any(v.get('video_job')==first['key'] for v in comments.values()):return gate
+ if not isinstance(row.get('diagnostic'),str):return gate
+ folder=c.safe(root,root/row['diagnostic'])
+ if not folder.is_relative_to(root/'logs/diagnostics'):return gate
+ evidence=c.read(folder/'diagnostic.json',required=True)
+ if any(evidence.get(k)!=v for k,v in dict(account=first['account'],username=first['username'],key=first['key'],kind='video',error=row['error']).items()):return gate
+ audit=root/'logs/repairs'/('ig-nav-syntax-'+uuid.uuid4().hex+'.json')
+ payload=dict(schema='ig-pre-post-navigation-syntax-repair-v1',batch_sha256=batch['sha256'],first_job=first['key'],gate_before=gate,row_before=row,diagnostic=evidence,at=c.stamp())
+ c.save(audit,dict(payload=payload,sha256=c.digest(payload)))
+ updated=dict(gate,blocked=False,passed=False,navigation_syntax_repair=str(audit.relative_to(root)),repair_at=c.stamp())
+ c.save(root/'logs/ig-first-trial-20261127.json',updated)
+ print('已核对首条在提交前因导航脚本语法错误停止；原记录已备份，使用修复脚本重新验证首条。',flush=True)
+ return updated
 
 def coordinator(root,path,run,operation=run_operation):
  root=c.workspace(root);batch=allocation.validate(root,path)
  with c.lock(root,'publisher'):
   c.state(root)
   def status(phase,message,**more):
-   value=dict(phase=phase,message=message,run_id=run,batch_sha256=batch['sha256'],material_date=c.DAY,pid=os.getpid(),updated_at=c.stamp(),**more);c.save(root/STATUS,value);print(message,flush=True)
+   value=dict(phase=phase,message=message,run_id=run,batch_sha256=batch['sha256'],material_date=c.DAY,browser_mode='headless',pid=os.getpid(),updated_at=c.stamp(),**more);c.save(root/STATUS,value);print(message,flush=True)
   status('preparing','IG监控已建立，先试发ins01并核验首评')
   c.save(root/'logs'/('ig-launch-'+run+'.json'),dict(phase='started',pid=os.getpid(),run_id=run))
   first=batch['payload']['jobs'][0];gate_path=root/'logs/ig-first-trial-20261127.json';gate=c.read(gate_path,{})
   if gate and gate.get('batch_sha256')!=batch['sha256']:raise ValueError('原IG首条门禁清单不符')
+  gate=recover_navigation_syntax_gate(root,batch,gate)
   if gate.get('blocked'):
    reason='首条IG试发已保留待核实；未清除门禁或重发，请提供上次诊断包';report(root,batch,'review_required',reason);status('review_required',reason);export(root,batch);return 3
   for j in batch['payload']['jobs']:
@@ -182,7 +213,7 @@ def coordinator(root,path,run,operation=run_operation):
     src=c.safe(root,root/j['video']);dest=c.safe(root,root/j['published_video'])
     if src.exists() and c.file_info(src)==dict(size=j['video_size'],sha256=j['video_sha256']) and not dest.exists():dest.parent.mkdir(parents=True,exist_ok=True);src.replace(dest)
    if j['key']==first['key']:
-    ok=bool(verified(root,j));c.save(gate_path,dict(batch_sha256=batch['sha256'],job_key=j['key'],passed=ok,blocked=not ok,checked_at=c.stamp()))
+    ok=bool(verified(root,j));c.save(gate_path,dict(batch_sha256=batch['sha256'],job_key=j['key'],passed=ok,blocked=not ok,checked_at=c.stamp(),**({'navigation_syntax_repair':gate['navigation_syntax_repair']} if gate.get('navigation_syntax_repair') else {})))
     if not ok:
      reason='首条IG视频/评论未完整通过，保留其余9个账号，不重复点击发布';report(root,batch,'review_required',reason);status('review_required',reason);export(root,batch);return 3
     print('ins01视频及首评刷新核验通过；继续其余9个IG账号。',flush=True)

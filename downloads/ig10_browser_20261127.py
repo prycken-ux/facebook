@@ -4,6 +4,20 @@ from datetime import datetime,timezone
 from pathlib import Path
 import ig10_common_20261127 as c
 BASE='https://www.instagram.com'
+OWN_PROFILE_NAV=r'''() => {
+ const reserved = new Set(['accounts','explore','reels','direct','stories','create']);
+ const anchors = Array.from(document.querySelectorAll('a[href]'));
+ const names = anchors.filter(a => {
+  const r = a.getBoundingClientRect();
+  const own = /^(Profile|个人主页|個人檔案)$/i;
+  return r.width > 0 && r.height > 0 && r.x < 230 &&
+   (a.querySelector('img') || own.test(a.innerText.trim()) || own.test(a.getAttribute('aria-label') || ''));
+ }).map(a => {
+  try { const m = new URL(a.href).pathname.match(/^\/([A-Za-z0-9._]+)\/$/); return m ? m[1] : null; }
+  catch (e) { return null; }
+ }).filter(name => name && !reserved.has(name));
+ return Array.from(new Set(names));
+}'''
 class SessionProblem(RuntimeError):pass
 class ReceiptPending(RuntimeError):pass
 
@@ -37,7 +51,7 @@ def actor(page,expected):
  assert_session(page)
  result=page.evaluate('''async () => {const a=new AbortController();const t=setTimeout(()=>a.abort(),8000);try{const r=await fetch('/api/v1/accounts/current_user/?edit=true',{credentials:'same-origin',headers:{'X-IG-App-ID':'936619743392459'},signal:a.signal});if(!r.ok)return null;const d=await r.json();if(d.status==='ok'&&d.user)return {username:d.user.username,pk:String(d.user.pk||d.user.id||''),is_private:d.user.is_private};return null;}catch(e){return null;}finally{clearTimeout(t);}}''')
  if not result or not result.get('username'):
-  names=page.evaluate('''() => [...new Set([...document.querySelectorAll('a[href]')].filter(a=>{const r=a.getBoundingClientRect();return r.width>0&&r.height>0&&r.x<230&&(a.querySelector('img')||/^(Profile|个人主页|個人檔案)$/i.test(a.innerText.trim())||/^(Profile|个人主页|個人檔案)$/i.test(a.getAttribute('aria-label')||''));}).map(a=>{try{return new URL(a.href).pathname.match(/^\\/([A-Za-z0-9._]+)\\/$/)?.[1]}catch(e){return null;}}).filter(x=>x&&!['accounts','explore','reels','direct','stories','create'].includes(x)))];}''')
+  names=page.evaluate(OWN_PROFILE_NAV)
   if len(names)!=1:raise SessionProblem('无法唯一核对当前登录账号，未用个人主页网址代替登录证据')
   result=dict(username=names[0],pk=None,is_private=None)
  if result['username'].casefold()!=expected.casefold():raise SessionProblem('窗口账号不匹配：实际 '+result['username']+'，预期 '+expected)

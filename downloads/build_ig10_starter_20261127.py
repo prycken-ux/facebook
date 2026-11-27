@@ -29,12 +29,10 @@ def unpack(root):
    finally:temp.unlink(missing_ok=True)
  return cache
 
-def viewer(root):
- log=str(root/'logs/ig-2026-11-27-run.log').replace("'","''")
- code="[Console]::OutputEncoding=New-Object Text.UTF8Encoding($false); $Host.UI.RawUI.WindowTitle='IG 11-27 publication progress'; Get-Content -LiteralPath '"+log+"' -Encoding UTF8 -Tail 15 -Wait"
- encoded=base64.b64encode(code.encode('utf-16le')).decode()
- try:subprocess.Popen(['powershell.exe','-NoProfile','-NoExit','-EncodedCommand',encoded],creationflags=0x00000010)
- except OSError as e:print('Live log window could not open; read the run log: '+str(e),flush=True)
+def progress_paths(root):
+ print('IG后台运行；不会自动弹出浏览器或日志查看窗口。',flush=True)
+ print('进度：'+str(root/'logs/ig-2026-11-27-status.json'),flush=True)
+ print('日志：'+str(root/'logs/ig-2026-11-27-run.log'),flush=True)
 
 def main(root):
  if root.name.casefold()!='ig-autoupload' or not root.is_dir():raise ValueError('Use the existing E:\\\\IG-AutoUpload workspace')
@@ -51,7 +49,10 @@ def main(root):
  try:
   with c.lock(root,'publisher'):pass
  except RuntimeError:
-  print('Existing IG publisher retained. Opening its progress log.',flush=True);viewer(root);return 0
+  print('已有IG任务在运行，已保留，未并行重启。',flush=True)
+  state=c.read(root/'logs/ig-2026-11-27-status.json',{})
+  if state.get('browser_mode')=='headless':progress_paths(root);return 0
+  raise RuntimeError('旧版IG任务仍在运行，尚未切换后台；请提供最新状态，避免中断可能已提交的视频')
  print('本批允许FB素材用于IG。请选择素材总文件夹；自动扫描子目录并分配10条，保留原件。',flush=True)
  path,batch=allocate.allocate(root)
  run=uuid.uuid4().hex;ack=root/'logs'/('ig-launch-'+run+'.json');launch=root/'logs'/('ig-launch-'+run+'.log')
@@ -64,7 +65,7 @@ def main(root):
    state=c.read(ack,required=True)
    if state.get('phase') in {'started','already_running'}:
     print('IG background monitor acknowledged. Trial ins01 video and refreshed own comment first; other nine follow only after proof.',flush=True)
-    print('State: '+str(root/'logs/ig-2026-11-27-status.json'),flush=True);print('Log: '+str(root/'logs/ig-2026-11-27-run.log'),flush=True);viewer(root);return 0
+    print('State: '+str(root/'logs/ig-2026-11-27-status.json'),flush=True);print('Log: '+str(root/'logs/ig-2026-11-27-run.log'),flush=True);progress_paths(root);return 0
    raise RuntimeError('IG monitor failed: '+state.get('message','')+'; '+str(launch))
   if child.poll() is not None:raise RuntimeError('IG monitor exited before acknowledgement; '+str(launch)+'; '+launch.read_text(encoding='utf-8-sig',errors='replace')[-2000:])
   time.sleep(.2)

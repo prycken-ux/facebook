@@ -10,12 +10,13 @@ import ig10_engine_20261127 as engine
 
 class BrowserTests(Fixture):
  def setUp(self):
-  super().setUp();self.path,self.batch=self.plan();self.job=self.batch['payload']['jobs'][0];self.user=self.job['username'];self.comments=[];self.shares=0;self.comment_sends=0;self.actual=self.user;self.ai_when_shared=None
+  super().setUp();self.path,self.batch=self.plan();self.job=self.batch['payload']['jobs'][0];self.user=self.job['username'];self.comments=[];self.shares=0;self.comment_sends=0;self.actual=self.user;self.ai_when_shared=None;self.api_available=True
   self.pw=sync_playwright().start();self.addCleanup(self.pw.stop);self.browser=self.pw.chromium.launch(executable_path='/usr/bin/chromium',headless=True,args=['--no-sandbox']);self.addCleanup(self.browser.close);self.context=self.browser.new_context();self.context.route('**/*',self.route);self.page=self.context.new_page();self.page.set_default_timeout(2000)
  def route(self,r):
   p=urlparse(r.request.url)
   if p.hostname!='www.instagram.com':return r.abort()
   if p.path.startswith('/api/v1/accounts/current_user/'):
+   if not self.api_available:return r.fulfill(status=403,json={'status':'fail'})
    return r.fulfill(json=dict(status='ok',user=dict(username=self.actual,pk='123',is_private=False)))
   if p.path.startswith('/api/v1/media/configure'):
    self.shares+=1;data=r.request.post_data_json;self.ai_when_shared=data['ai'];return r.fulfill(json=dict(status='ok',media=dict(code='TRIALabc123',user=dict(username=self.user,pk='123'),caption=dict(text=c.CAPTION),taken_at=time.time(),media_type=2)))
@@ -23,7 +24,7 @@ class BrowserTests(Fixture):
    self.comment_sends+=1;self.comments.append(r.request.post_data_json['text']);return r.fulfill(json={'ok':True})
   if p.path=='/reel/TRIALabc123/':
    comments=''.join('<li><h3><a href="/'+self.user+'/">'+self.user+'</a></h3><span>'+html.escape(t)+'</span></li>' for t in self.comments)
-   body='<article><header><a href="/'+self.user+'/">'+self.user+'</a></header><p>'+html.escape(c.CAPTION)+'</p><video></video><ul>'+comments+'</ul><form onsubmit="event.preventDefault();fetch(\'/fixture-comment\',{method:\'POST\',body:JSON.stringify({text:this.querySelector(\'textarea\').value})})"><textarea aria-label="Add a comment"></textarea><button>Post</button></form></article>'
+   body='<a href="/'+self.user+'/" aria-label="Profile">Profile</a><article><header><a href="/'+self.user+'/">'+self.user+'</a></header><p>'+html.escape(c.CAPTION)+'</p><video></video><ul>'+comments+'</ul><form onsubmit="event.preventDefault();fetch(\'/fixture-comment\',{method:\'POST\',body:JSON.stringify({text:this.querySelector(\'textarea\').value})})"><textarea aria-label="Add a comment"></textarea><button>Post</button></form></article>'
   else:
    body='''<a href="/ACTOR/" aria-label="Profile">Profile</a><button onclick="document.getElementById('modal').style.display='block'">Create</button>
    <input type="file" accept="image/*" id="avatar"><div role="dialog" id="modal" style="display:none">
@@ -51,5 +52,18 @@ class BrowserTests(Fixture):
   node=dict(code='TRIALabc123',owner=self.user,owner_id='123',caption=c.CAPTION,taken_at=time.time(),blocked=False);ident=dict(pk='123');self.assertTrue(ui.matches(node,self.job,ident,time.time(),time.time()))
   for changes in [dict(caption='wrong'),dict(owner='another',owner_id='456'),dict(taken_at=time.time()-3600),dict(blocked=True)]:self.assertFalse(ui.matches(dict(node,**changes),self.job,ident,time.time(),time.time()))
   self.assertFalse(ui.matches(node,self.job,ident,time.time(),time.time(),[node['code']]))
+
+ def test_api_unavailable_uses_fixed_own_navigation_for_video_and_comment(self):
+  self.api_available=False;self.upload();ui.comment(self.page,self.context,self.root,self.job,time.monotonic());self.assertTrue(engine.verified(self.root,self.job));self.assertEqual(self.shares,1);self.assertEqual(self.comment_sends,1)
+ def test_api_unavailable_wrong_navigation_actor_never_shares(self):
+  self.api_available=False;self.actual='other_account'
+  with self.assertRaisesRegex(ui.SessionProblem,'账号不匹配'):self.upload()
+  self.assertEqual(self.shares,0)
+ def test_all_constant_page_evaluate_functions_compile_in_chromium(self):
+  import ast
+  from pathlib import Path
+  tree=ast.parse(Path(ui.__file__).read_text());snippets=[n.args[0].value for n in ast.walk(tree) if isinstance(n,ast.Call) and isinstance(n.func,ast.Attribute) and n.func.attr in {'evaluate','evaluate_all'} and n.args and isinstance(n.args[0],ast.Constant) and isinstance(n.args[0].value,str)]
+  snippets.append(ui.OWN_PROFILE_NAV)
+  for script in snippets:self.assertTrue(self.page.evaluate("(source)=>{ new Function('return ('+source+'\\n)'); return true; }",script.rstrip().rstrip(';')))
 
 if __name__=='__main__':unittest.main()
