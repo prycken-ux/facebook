@@ -1,5 +1,6 @@
 """Independent Nov26 watchdog: bounded video and exact-comment target operations."""
 import contextlib,copy,hashlib,json,os,re,subprocess,sys,time,uuid
+import publication_state_io_20261127 as state_io
 from datetime import datetime,timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -29,8 +30,7 @@ ENTRY='publication_target_watchdog_20261126.py'
 MAX_BYTES=4_000_000
 
 def read(path,default=None):
-    try:return json.loads(Path(path).read_text(encoding='utf-8-sig'))
-    except FileNotFoundError:return default
+    return state_io.read(path,default)
 
 def inspect_workers(day,root):
     pattern=re.compile(day.BOOTSTRAP.pattern.replace('start_publish_eligible58_real_20261126','start_publish_guarded_nov26_20261126').replace('verified-real-eligible58-nov26-publication','verified-nov26-guarded-publication'))
@@ -210,22 +210,39 @@ def supervisor(day,root,run,child_factory=WindowsJobChild):
             with patch.object(day,'inspect_workers',side_effect=lambda p:inspect_workers(day,p)),day.authorized_context():
                 if inspect_workers(day,root):raise ValueError('仍有其他发布/分配任务，未停止原任务或并发发布。')
                 _,source,journal,material=day.allocation(root)
+                import resume_nov26_after_state_error_20261127 as resume
+                resume_proof,resume_jobs=resume.audit(day,root)
                 import nov26_publication_preflight as preflight
-                preflight.require_profiles_free(root,{r['account'] for r in material['payload']['assignments']} - day.app.read_live_pauses(root))
+                preflight.require_profiles_free(root,({resume_jobs[k]['account'] for k in resume_proof['remaining_unsubmitted_keys']}|{p[0] for p in resume_proof.get('remaining_unfrozen_pairs',[])}) - day.app.read_live_pauses(root))
                 day.app.browser.staged.lock_recovery.recover_locks(root)
                 with day.first.locked():req=day.app.request(root,source,journal,material)
-            progress=progress_new(run,req['sha256']);progress_path=root/'logs'/('nov26-progress-'+run+'.json');files.save(progress_path,progress)
+            progress=progress_new(run,req['sha256'])
+            gate=read(root/'logs'/('nov26-comment-gate-'+req['sha256'][:12]+'.json'),None)
+            if gate:
+                if gate.get('request_sha256')!=req['sha256'] or gate.get('material_date')!=DAY:raise ValueError('原首条评论门禁来源不符，未重置')
+                progress['comment_gate']=gate
+            progress_path=root/'logs'/('nov26-progress-'+run+'.json');files.save(progress_path,progress)
             for iteration in range(121):
                 attempt=uuid.uuid4().hex;operation_path=root/'logs'/('nov26-operation-'+attempt+'.json');output_path=root/'logs'/('nov26-worker-'+attempt+'.log')
                 env=dict(os.environ,FB_NOV26_ROLE='worker',FB_NOV26_RUN=run,FB_NOV26_BOOT_ATTEMPT=attempt,FB_PUBLISH_LAUNCH_ID=attempt,FB_PUBLISH_ISOLATED_BACKGROUND='1',FB_PUBLISH_FILE_LOG_ONLY='1',PYTHONIOENCODING='utf-8')
-                failure=None;last_notice=time.monotonic();idle_started=last_notice
+                failure=None;last_notice=time.monotonic();idle_started=last_notice;last_operation={};read_failure_since=None
                 with output_path.open('ab') as output:
                     child=child_factory([str(root/'.venv/Scripts/python.exe'),'-u',str(Path(__file__).resolve()),str(root)],env,root,output)
                     try:
                         status('running','26号发布、评论及安全补发已启动；卡住目标会限时跳过。',worker_pid=child.pid,progress=str(progress_path))
                         while True:
                             progress=progress_read(progress_path,run,req['sha256'])
-                            operation=read(operation_path,{})
+                            try:
+                                operation=read(operation_path,{})
+                                if operation:last_operation=operation
+                                elif last_operation:operation=last_operation
+                                read_failure_since=None
+                            except OSError as error:
+                                if not state_io.retryable(error):raise
+                                now=time.monotonic();read_failure_since=read_failure_since or now
+                                operation=last_operation
+                                if not operation or now-read_failure_since>=10:raise RuntimeError('状态文件持续拒绝访问，原记录保留：'+str(operation_path)) from error
+                                if now-last_notice>=2:emit('状态文件暂时无法读取，沿用上次已核验操作的原始计时，不重置180秒上限。')
                             if operation.get('run_id')==run and operation.get('attempt')==attempt:progress['completed']=sorted(set(progress['completed'])|set(operation.get('completed',[])))
                             code=child.poll();now=time.monotonic()
                             active=operation.get('state')=='started'
@@ -269,7 +286,8 @@ def main(root):
     day._BACKGROUND_GUARD=day.isolate_background_interrupts()
     if os.environ.get('FB_NOV26_ROLE')=='worker':
         attempt=os.environ['FB_PUBLISH_LAUNCH_ID']
-        with guarded_worker(day,root,run,attempt,root/'logs'/('nov26-progress-'+run+'.json'),root/'logs'/('nov26-operation-'+attempt+'.json')),patch.object(day,'inspect_workers',side_effect=lambda p:inspect_workers(day,p)):return day.main(root)
+        import resume_nov26_after_state_error_20261127 as resume
+        with guarded_worker(day,root,run,attempt,root/'logs'/('nov26-progress-'+run+'.json'),root/'logs'/('nov26-operation-'+attempt+'.json')),resume.installed(day,root),patch.object(day,'inspect_workers',side_effect=lambda p:inspect_workers(day,p)):return day.main(root)
     if os.environ.get('FB_NOV26_ROLE')!='supervisor':raise ValueError('请使用校验过的启动入口。')
     return supervisor(day,root,run)
 

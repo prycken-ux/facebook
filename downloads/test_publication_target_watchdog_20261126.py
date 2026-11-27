@@ -114,9 +114,16 @@ if i==0:time.sleep(60)
                     def stop(self):self.stopped=True;os.killpg(self.pid,signal.SIGKILL);self.p.wait(timeout=3)
                     def close(self):
                         if self.poll() is None:self.stop()
-                with patch('nov26_publication_preflight.require_profiles_free'),patch('nov26_comment_gate.save_result',return_value=dict(verified=False,blocked=True)),patch.object(w,'mutex',lambda p:contextlib.nullcontext()),patch.object(w,'inspect_workers',return_value=[]),patch.object(w,'VIDEO_SECONDS',.35),patch.object(w,'COMMENT_SECONDS',.35):
+                native_read=w.read;seen=set();denied=[]
+                def intermittent(path,default=None):
+                    value=native_read(path,default)
+                    if 'operation-' in Path(path).name and isinstance(value,dict) and value.get('state')=='started':
+                        if str(path) in seen and not denied:denied.append(1);raise PermissionError(13,'temporary operation file lock')
+                        seen.add(str(path))
+                    return value
+                with patch.object(w,'read',side_effect=intermittent),patch('resume_nov26_after_state_error_20261127.audit',return_value=(dict(remaining_unsubmitted_keys=[]),{})),patch('nov26_publication_preflight.require_profiles_free'),patch('nov26_comment_gate.save_result',return_value=dict(verified=False,blocked=True)),patch.object(w,'mutex',lambda p:contextlib.nullcontext()),patch.object(w,'inspect_workers',return_value=[]),patch.object(w,'VIDEO_SECONDS',.35),patch.object(w,'COMMENT_SECONDS',.35):
                     self.assertEqual(w.supervisor(day,root,'run',child_factory=Child),3 if kind=='comment' else 0)
-                self.assertEqual(len(children),2);self.assertTrue(children[0].stopped)
+                self.assertEqual(denied,[1]);self.assertEqual(len(children),2);self.assertTrue(children[0].stopped)
                 progress=w.read(root/'logs/nov26-progress-run.json');slot='skipped_video' if kind=='video' else 'skipped_comments';self.assertIn('bad',progress[slot])
                 descendant=int((root/'descendant.pid').read_text());stat=Path('/proc')/str(descendant)/'stat';self.assertTrue(not stat.exists() or stat.read_text().split()[2]=='Z')
 
