@@ -257,6 +257,29 @@ def recover_local_file_gate(root,batch,gate):
  updated=dict(gate,blocked=False,passed=False,local_file_repair=str(audit.relative_to(root)),repair_at=c.stamp());c.save(root/'logs/ig-first-trial-20261127.json',updated)
  print('已核对大文件在附件传输前被50 MiB限制拒绝、未提交；保留原记录，改用本机Chrome路径重新验证首条。',flush=True);return updated
 
+def recover_recorded_crop_gate(root,batch,gate):
+ """One reviewed retry for the unnecessary ratio step absent from the demo."""
+ if not gate.get('blocked') or gate.get('recorded_crop_repair'):return gate
+ first=batch['payload']['jobs'][0];row=c.state(root).get(first['key'],{})
+ if gate.get('batch_sha256')!=batch['sha256'] or gate.get('job_key')!=first['key']:return gate
+ expected=dict(batch_sha256=batch['sha256'],account=first['account'],username=first['username'],video_sha256=first['video_sha256'],selected_file=first['video'],selected_video_sha256=first['video_sha256'],browser_selected_size=first['video_size'],browser_selected_name=Path(first['video']).name,video_file_transport='local_chrome_cdp_path')
+ if any(row.get(k)!=v for k,v in expected.items()):return gate
+ error='未找到原始比例，未擅自裁剪上传视频'
+ if row.get('video_status')!='failed_before_post' or row.get('error')!=error or c.submission(row):return gate
+ if not row.get('browser_file_verified_at') or not row.get('identity_verified_at') or row.get('identity',{}).get('username')!=first['username']:return gate
+ if any(row.get(k) for k in ['media_proof','comment_send_intent_at','comment_verified_at','original_ratio_selected_at']):return gate
+ if any(v.get('video_job')==first['key'] for v in c.read(root/'logs/ig-comment-state.json',{}).values()):return gate
+ if not isinstance(row.get('diagnostic'),str):return gate
+ folder=c.safe(root,root/row['diagnostic'])
+ if not folder.is_relative_to(root/'logs/diagnostics'):return gate
+ evidence=c.read(folder/'diagnostic.json',required=True)
+ if any(evidence.get(k)!=v for k,v in dict(account=first['account'],username=first['username'],key=first['key'],kind='video',error=error).items()):return gate
+ text=evidence.get('visible_text','')
+ if evidence.get('page_url') not in {'https://www.instagram.com/','https://www.instagram.com/'+first['username']+'/'} or '裁剪' not in text or '继续' not in text:return gate
+ audit=root/'logs/repairs'/('ig-recorded-crop-'+uuid.uuid4().hex+'.json');payload=dict(schema='ig-recorded-default-crop-pre-share-repair-v1',batch_sha256=batch['sha256'],first_job=first['key'],gate_before=gate,row_before=row,diagnostic=evidence,at=c.stamp());c.save(audit,dict(payload=payload,sha256=c.digest(payload)))
+ updated=dict(gate,blocked=False,passed=False,recorded_crop_repair=str(audit.relative_to(root)),repair_at=c.stamp());c.save(root/'logs/ig-first-trial-20261127.json',updated)
+ print('已核对仅在原始比例查找时停止、未提交；保留原记录，按录制的默认画面直接继续验证首条。',flush=True);return updated
+
 def coordinator(root,path,run,operation=run_operation):
  root=c.workspace(root);batch=allocation.validate(root,path)
  with c.lock(root,'publisher'):
@@ -271,6 +294,7 @@ def coordinator(root,path,run,operation=run_operation):
   gate=recover_create_entry_gate(root,batch,gate)
   gate=recover_recorded_editor_gate(root,batch,gate)
   gate=recover_local_file_gate(root,batch,gate)
+  gate=recover_recorded_crop_gate(root,batch,gate)
   if gate.get('blocked'):
    reason='首条IG试发已保留待核实；未清除门禁或重发，请提供上次诊断包';report(root,batch,'review_required',reason);status('review_required',reason);export(root,batch);return 3
   for j in batch['payload']['jobs']:
@@ -287,7 +311,7 @@ def coordinator(root,path,run,operation=run_operation):
     src=c.safe(root,root/j['video']);dest=c.safe(root,root/j['published_video'])
     if src.exists() and c.file_info(src)==dict(size=j['video_size'],sha256=j['video_sha256']) and not dest.exists():dest.parent.mkdir(parents=True,exist_ok=True);src.replace(dest)
    if j['key']==first['key']:
-    ok=bool(verified(root,j));c.save(gate_path,dict(batch_sha256=batch['sha256'],job_key=j['key'],passed=ok,blocked=not ok,checked_at=c.stamp(),**{k:gate[k] for k in ['navigation_syntax_repair','create_entry_repair','recorded_editor_repair','local_file_repair'] if gate.get(k)}))
+    ok=bool(verified(root,j));c.save(gate_path,dict(batch_sha256=batch['sha256'],job_key=j['key'],passed=ok,blocked=not ok,checked_at=c.stamp(),**{k:gate[k] for k in ['navigation_syntax_repair','create_entry_repair','recorded_editor_repair','local_file_repair','recorded_crop_repair'] if gate.get(k)}))
     if not ok:
      reason='首条IG视频/评论未完整通过，保留其余9个账号，不重复点击发布';report(root,batch,'review_required',reason);status('review_required',reason);export(root,batch);return 3
     print('ins01视频及首评刷新核验通过；继续其余9个IG账号。',flush=True)

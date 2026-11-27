@@ -29,7 +29,7 @@ class LocalFileTests(Fixture):
   with patch.object(engine,'chrome',return_value=Path('/usr/bin/chromium')),patch.object(engine,'browser_args',side_effect=args),patch.object(engine.subprocess,'Popen',side_effect=popen):
    self.browser,self.context,self.page=engine.launch(self.pw,self.root,self.job,time.monotonic())
   self.addCleanup(self.browser.close)
-  self.flow=recorded.RecordedFlowTests('runTest');self.flow.user=self.job['username'];self.flow.actual=self.job['username'];self.flow.comments=[];self.flow.shares=0;self.flow.comment_sends=0;self.flow.ai_when_shared=None;self.flow.api_available=True;self.flow.chinese_portal=False;self.flow.ai_initial=True;self.flow.ambiguous_ai=False;self.flow.portal=False;self.flow.delayed=False;self.flow.payloads=[]
+  self.flow=recorded.RecordedFlowTests('runTest');self.flow.user=self.job['username'];self.flow.actual=self.job['username'];self.flow.comments=[];self.flow.shares=0;self.flow.comment_sends=0;self.flow.ai_when_shared=None;self.flow.api_available=True;self.flow.chinese_portal=False;self.flow.ai_initial=True;self.flow.ambiguous_ai=False;self.flow.portal=False;self.flow.delayed=False;self.flow.payloads=[];self.flow.no_original_option=True
   self.context.route('**/*',self.flow.route)
  def select(self,target=None,local=True):return ui.set_video_file(self.page,self.context,target or self.page.locator('#video'),self.root,self.job,time.monotonic(),local_browser=local)
  def test_actual_cdp_reproduces_guard_then_local_path_selects_full_original(self):
@@ -63,7 +63,7 @@ class LocalFileTests(Fixture):
   self.assertFalse(self.flow.shares)
  def test_full_recorded_flow_large_local_file_exact_caption_ai_off_comment_reload_dedup(self):
   ui.prepare_and_share(self.page,self.context,self.root,self.job,time.monotonic(),local_browser=True)
-  row=c.state(self.root)[self.job['key']];self.assertEqual(row['video_status'],'published');self.assertEqual(row['video_file_transport'],'local_chrome_cdp_path');self.assertEqual(row['browser_selected_size'],SIZE);self.assertEqual(row['edit_advances'],2);self.assertEqual(self.flow.shares,1);payload=self.flow.payloads[0];self.assertEqual(payload['caption'],c.CAPTION);self.assertEqual(payload['ai'],'false');self.assertTrue(payload['audio']);self.assertFalse(payload['comments_disabled']);self.assertTrue(payload['original']);self.assertEqual(payload['backgroundNext'],0)
+  row=c.state(self.root)[self.job['key']];self.assertEqual(row['video_status'],'published');self.assertEqual(row['video_file_transport'],'local_chrome_cdp_path');self.assertEqual(row['browser_selected_size'],SIZE);self.assertEqual(row['edit_advances'],2);self.assertEqual(self.flow.shares,1);payload=self.flow.payloads[0];self.assertEqual(payload['caption'],c.CAPTION);self.assertEqual(payload['ai'],'false');self.assertTrue(payload['audio']);self.assertFalse(payload['comments_disabled']);self.assertFalse(payload['original']);self.assertEqual(payload['backgroundNext'],0);self.assertFalse(row['crop_controls_changed'])
   ui.comment(self.page,self.context,self.root,self.job,time.monotonic());self.assertTrue(engine.verified(self.root,self.job));ui.comment(self.page,self.context,self.root,self.job,time.monotonic());self.assertEqual(self.flow.comment_sends,1);self.assertEqual(self.flow.shares,1)
 
 class LocalFileGateTests(Fixture):

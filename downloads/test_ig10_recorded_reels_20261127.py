@@ -9,7 +9,7 @@ import ig10_engine_20261127 as engine
 
 class RecordedFlowTests(BrowserFixture):
  def setUp(self):
-  self.ai_initial=True;self.ambiguous_ai=False;self.portal=False;self.delayed=False;self.payloads=[];super().setUp()
+  self.ai_initial=True;self.ambiguous_ai=False;self.portal=False;self.delayed=False;self.payloads=[];self.no_original_option=False;super().setUp()
  def route(self,r):
   path=urlparse(r.request.url).path
   if path.startswith('/api/') or path in {'/fixture-comment','/reel/TRIALabc123/'}:
@@ -17,23 +17,27 @@ class RecordedFlowTests(BrowserFixture):
    return super().route(r)
   body='''<a aria-label="Profile" href="/ACTOR/">Profile</a><button onclick="window.backgroundNext=(window.backgroundNext||0)+1">下一步</button>
   <a href="#" role="link" onclick="document.getElementById('composer').style.display='block'">创建<svg aria-label="新帖子" width="24" height="24"></svg></a><input id="avatar" type="file" accept="image/*">
-  <script>window.continues=0;window.original=false;window.backgroundNext=0;
+  <script>window.continues=0;window.original=false;window.backgroundNext=0;window.cropClicks=0;
   function show(n){document.querySelectorAll('[data-stage]').forEach(x=>x.style.display=x.dataset.stage==n?'block':'none');document.getElementById('phase').textContent=['创建新帖子','裁剪','编辑','新 Reels'][n];document.getElementById('continue').style.display=(n==1||n==2)?'block':'none';document.getElementById('share').style.display=n==3?'block':'none';if(n==3&&DELAY){document.getElementById('caption').style.display='none';setTimeout(()=>document.getElementById('caption').style.display='block',1000);}}
   function next(){window.continues++;const n=document.getElementById('phase').textContent==='裁剪'?2:3;if(DELAY)setTimeout(()=>show(n),400);else show(n);}
   </script>
   <div DIALOG id="composer" style="display:none"><header><div id="phase">创建新帖子</div><div role="button" id="continue" style="display:none" onclick="next()">继续</div><div role="button" id="share" style="display:none" onclick="fetch('/api/v1/media/configure_to_clips/',{method:'POST',body:JSON.stringify({ai:String(document.getElementById('ai').checked),caption:document.getElementById('caption').innerText,audio:document.getElementById('audio').checked,comments_disabled:document.getElementById('off').checked,original:window.original,continues:window.continues,backgroundNext:window.backgroundNext})})">分享</div></header><video></video>
   <section data-stage="0"><p>把照片和视频拖放到这里</p><button>从电脑中选择</button><input id="video" type="file" accept="video/*" onchange="show(1)"></section>
-  <section data-stage="1" style="display:none"><button aria-label="选择“裁剪”" onclick="document.getElementById('cropmenu').style.display='block'"><svg aria-label="选择“裁剪”"></svg></button></section>
+  <section data-stage="1" style="display:none"><button aria-label="选择“裁剪”" onclick="window.cropClicks++;document.getElementById('cropmenu').style.display='block'"><svg aria-label="选择“裁剪”"></svg></button></section>
   <section data-stage="2" style="display:none"><p>打开声音</p><input id="audio" type="checkbox" role="switch" aria-checked="true" checked></section>
   <section data-stage="3" style="display:none"><div id="caption" contenteditable="true" role="textbox" aria-label="添加配文...">演示文字必须被正式文案替换</div><div><span>添加 AI 标签</span><input id="ai" type="checkbox" role="switch" AI></div>
   <div role="button" aria-expanded="false" onclick="document.getElementById('settings').style.display='block';this.setAttribute('aria-expanded','true')">高级设置</div><div id="settings" style="display:none"><div><span>关闭评论</span><input id="off" type="checkbox" role="switch" checked></div></div></section></div>
   <div id="cropmenu" style="display:none"><button onclick="window.original=true;document.getElementById('cropmenu').style.display='none'">原图</button></div>'''
   body=body.replace('ACTOR',self.actual).replace('DIALOG','' if self.portal else 'role="dialog"').replace('DELAY','true' if self.delayed else 'false').replace('AI>','checked>' if self.ai_initial else '>')
+  if self.no_original_option:body=body.replace('>原图</button>','>9:16</button>')
+  body=body.replace('backgroundNext:window.backgroundNext}', 'backgroundNext:window.backgroundNext,cropClicks:window.cropClicks}')
   if self.ambiguous_ai:body=body.replace('<input id="ai" type="checkbox" role="switch" checked>','<input id="ai" type="checkbox" role="switch" checked><input type="checkbox" role="switch" checked>')
   r.fulfill(content_type='text/html; charset=utf-8',body='<html><body>'+body+'</body></html>')
  def assert_recorded_flow(self):
-  self.upload();self.assertEqual(len(self.payloads),1);p=self.payloads[0];self.assertEqual(p['caption'],c.CAPTION);self.assertEqual(p['ai'],'false');self.assertTrue(p['audio']);self.assertFalse(p['comments_disabled']);self.assertTrue(p['original']);self.assertEqual(p['continues'],2);self.assertEqual(p['backgroundNext'],0)
+  self.upload();self.assertEqual(len(self.payloads),1);p=self.payloads[0];self.assertEqual(p['caption'],c.CAPTION);self.assertEqual(p['ai'],'false');self.assertTrue(p['audio']);self.assertFalse(p['comments_disabled']);self.assertFalse(p['original']);self.assertEqual(p['continues'],2);self.assertEqual(p['backgroundNext'],0);self.assertEqual(p['cropClicks'],0)
   row=c.state(self.root)[self.job['key']];self.assertEqual(row['ai_control_evidence'],'visible_control_verified_off');self.assertEqual(row['comment_control_evidence'],'visible_control_verified_enabled');self.assertEqual(row['edit_advances'],2);ui.comment(self.page,self.context,self.root,self.job,time.monotonic());self.assertTrue(engine.verified(self.root,self.job));self.assertEqual(self.comment_sends,1)
+  self.assertEqual(row['crop_policy'],'keep_imported_default_as_recorded');self.assertFalse(row['crop_controls_changed']);self.assertNotIn('original_ratio_selected_at',row)
+ def test_crop_menu_without_original_option_is_never_opened_and_does_not_block_publish(self):self.no_original_option=True;self.assert_recorded_flow()
  def test_recorded_continue_caption_unnamed_ai_comments_and_unchanged_audio(self):self.assert_recorded_flow()
  def test_recorded_ai_already_off_stays_off(self):self.ai_initial=False;self.assert_recorded_flow()
  def test_delayed_step_change_and_caption_never_click_continue_twice(self):self.delayed=True;self.assert_recorded_flow()

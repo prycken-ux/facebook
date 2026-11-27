@@ -225,7 +225,6 @@ SHARE_NAMES=re.compile(r'^(Share|分享|共享)$',re.I)
 PHASE_NAMES=re.compile(r'^(Crop|裁剪|Edit|编辑|編輯|New Reels|新\s*Reels|Create new post|创建新帖子)$',re.I)
 CAPTION_BOX='[contenteditable="true"][role="textbox"],textarea[aria-label*="caption" i],textarea[aria-label*="配文"],textarea[aria-label*="说明"],textarea[aria-label*="說明"]'
 CROP_NAMES=re.compile(r'Select crop|选择.*裁剪|選擇.*裁切',re.I)
-ORIGINAL_NAMES=re.compile(r'^(Original|原图|原始比例|原始|原始大小)$',re.I)
 
 def editor_scope(page):
  dialogs=page.get_by_role('dialog')
@@ -245,21 +244,16 @@ def editor_scope(page):
  return None
 
 def advance_to_caption(page,start,record=lambda **kw:None):
- deadline=min(time.monotonic()+50,start+c.VIDEO_SECONDS-20);last=None;advances=0;crop_done=False
+ deadline=min(time.monotonic()+50,start+c.VIDEO_SECONDS-20);last=None;advances=0
+ # The recovered demonstration goes straight through Crop -> Continue. Preserve
+ # the imported default; do not open a ratio menu or claim Original was selected.
+ record(crop_policy='keep_imported_default_as_recorded',crop_controls_changed=False)
  while time.monotonic()<deadline:
   assert_session(page);scope=editor_scope(page)
   if scope is None:page.wait_for_timeout(150);continue
   caption=visible(scope.locator(CAPTION_BOX))
   if caption is not None:record(caption_editor_ready_at=c.stamp(),edit_advances=advances);return scope,caption
   crop=visible(scope.get_by_role('button',name=CROP_NAMES))
-  if crop is not None and not crop_done:
-   crop.click(timeout=remaining(start,5000));until=min(deadline,time.monotonic()+4);original=None
-   while time.monotonic()<until:
-    original=visible(page.get_by_text(ORIGINAL_NAMES,exact=True))
-    if original is not None:break
-    page.wait_for_timeout(100)
-   if original is None:raise RuntimeError('未找到原始比例，未擅自裁剪上传视频')
-   original.click(timeout=remaining(start,5000));crop_done=True;record(original_ratio_selected_at=c.stamp())
   titles=scope.get_by_text(PHASE_NAMES,exact=True);phase=tuple(titles.nth(i).inner_text() for i in range(titles.count()) if titles.nth(i).is_visible())
   fingerprint=(phase,crop is not None,scope.locator('input[type="file"]').count())
   control=named_control(scope,NEXT_NAMES)
