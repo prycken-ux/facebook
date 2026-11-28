@@ -37,6 +37,18 @@ class RecordedFlowTests(BrowserFixture):
   self.upload();self.assertEqual(len(self.payloads),1);p=self.payloads[0];self.assertEqual(p['caption'],c.CAPTION);self.assertEqual(p['ai'],'false');self.assertTrue(p['audio']);self.assertFalse(p['comments_disabled']);self.assertFalse(p['original']);self.assertEqual(p['continues'],2);self.assertEqual(p['backgroundNext'],0);self.assertEqual(p['cropClicks'],0)
   row=c.state(self.root)[self.job['key']];self.assertEqual(row['ai_control_evidence'],'visible_control_verified_off');self.assertEqual(row['comment_control_evidence'],'visible_control_verified_enabled');self.assertEqual(row['edit_advances'],2);ui.comment(self.page,self.context,self.root,self.job,time.monotonic());self.assertTrue(engine.verified(self.root,self.job));self.assertEqual(self.comment_sends,1)
   self.assertEqual(row['crop_policy'],'keep_imported_default_as_recorded');self.assertFalse(row['crop_controls_changed']);self.assertNotIn('original_ratio_selected_at',row)
+ def test_reels_notice_overlay_is_acknowledged_before_crop_continue(self):
+  self.page.set_content("""<div role="dialog"><h2>裁剪</h2><video></video>
+  <button onclick="document.querySelector('#caption').hidden=false">继续</button>
+  <div id="caption" hidden role="textbox" contenteditable="true"></div></div>
+  <div style="position:fixed;inset:0;background:white">
+  <h2>视频帖现在会以 Reels 的形式分享</h2>
+  <button onclick="this.parentElement.remove()">确定</button></div>""")
+  events={}
+  ui.advance_to_caption(self.page,time.monotonic(),lambda **change:events.update(change))
+  self.assertIn('reels_notice_acknowledged_at',events)
+  self.assertEqual(events['edit_advances'],1)
+
  def test_crop_menu_without_original_option_is_never_opened_and_does_not_block_publish(self):self.no_original_option=True;self.assert_recorded_flow()
  def test_recorded_continue_caption_unnamed_ai_comments_and_unchanged_audio(self):self.assert_recorded_flow()
  def test_recorded_ai_already_off_stays_off(self):self.ai_initial=False;self.assert_recorded_flow()

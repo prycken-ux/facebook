@@ -285,13 +285,36 @@ def editor_scope(page):
    if has_media and (named_control(parent,NEXT_NAMES) is not None or named_control(parent,SHARE_NAMES) is not None):return parent
  return None
 
+REELS_NOTICE=re.compile(r'^(视频帖现在会以 Reels 的形式分享|Video posts are now shared as Reels)$',re.I)
+REELS_ACK=re.compile(r'^(确定|OK)$',re.I)
+
+def reels_notice_ack(page):
+ title=visible(page.get_by_text(REELS_NOTICE,exact=True))
+ if title is None:return None
+ scope=title
+ for _ in range(9):
+  scope=scope.locator('xpath=..')
+  if not scope.count() or scope.evaluate('(e)=>e.tagName') in {'BODY','HTML'}:break
+  button=visible(scope.get_by_role('button',name=REELS_ACK,exact=True))
+  if button is not None:return button
+ raise RuntimeError('已识别Reels提示，但未找到弹窗确认按钮，未点击分享')
+
 def advance_to_caption(page,start,record=lambda **kw:None):
- deadline=min(time.monotonic()+50,start+c.VIDEO_SECONDS-20);last=None;advances=0
+ deadline=min(time.monotonic()+50,start+c.VIDEO_SECONDS-20);last=None;advances=0;notice_acknowledged=False
  # The recovered demonstration goes straight through Crop -> Continue. Preserve
  # the imported default; do not open a ratio menu or claim Original was selected.
  record(crop_policy='keep_imported_default_as_recorded',crop_controls_changed=False)
  while time.monotonic()<deadline:
-  assert_session(page);scope=editor_scope(page)
+  assert_session(page)
+  if visible(page.get_by_text(REELS_NOTICE,exact=True)) is not None:
+   if not notice_acknowledged:
+    button=reels_notice_ack(page)
+    if button is None:continue
+    button.click(timeout=remaining(start,5000))
+    notice_acknowledged=True
+    record(reels_notice_acknowledged_at=c.stamp())
+   page.wait_for_timeout(200);continue
+  scope=editor_scope(page)
   if scope is None:page.wait_for_timeout(150);continue
   caption=visible(scope.locator(CAPTION_BOX))
   if caption is not None:record(caption_editor_ready_at=c.stamp(),edit_advances=advances);return scope,caption

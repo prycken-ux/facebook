@@ -291,6 +291,27 @@ def recover_recorded_crop_gate(root,batch,gate):
  updated=dict(gate,blocked=False,passed=False,recorded_crop_repair=str(audit.relative_to(root)),repair_at=c.stamp());c.save(root/'logs/ig-first-trial-20261127.json',updated)
  print('已核对仅在原始比例查找时停止、未提交；保留原记录，按录制的默认画面直接继续验证首条。',flush=True);return updated
 
+def recover_ins02_reels_notice_gate(root,batch,first,gate_path,gate):
+ """Consume one retry for the reviewed ins02 checkpoint, before any Share."""
+ if not gate.get('blocked') or gate.get('reels_notice_repair'):return gate
+ if first['account']!='ins02' or gate.get('effective_job_key')!=first['key']:return gate
+ row=c.state(root).get(first['key'],{})
+ if c.digest(row)!='1e2502b0b15fcfb887bd2c5e0bf5569ddc2676b1111b9091c5f800b93159691c' or c.submission(row):return gate
+ if any(v.get('video_job')==first['key'] for v in c.read(root/'logs/ig-comment-state.json',{}).values()):return gate
+ folder=c.safe(root,root/row['diagnostic'])
+ if not folder.is_relative_to(root/'logs/diagnostics'):return gate
+ evidence=c.read(folder/'diagnostic.json',{})
+ expected=dict(account=first['account'],username=first['username'],key=first['key'],kind='video',error=row['error'])
+ if any(evidence.get(k)!=v for k,v in expected.items()):return gate
+ lines=evidence.get('visible_text','').splitlines()
+ if not all(line in lines for line in ('裁剪','继续','视频帖现在会以 Reels 的形式分享','确定')):return gate
+ audit=root/'logs/repairs'/('ig-reels-notice-'+uuid.uuid4().hex+'.json')
+ payload=dict(batch_sha256=batch['sha256'],gate_before=gate,row_before=row,diagnostic=evidence,at=c.stamp())
+ c.save(audit,dict(payload=payload,sha256=c.digest(payload)))
+ claimed=dict(gate,reels_notice_repair=str(audit.relative_to(root)))
+ c.save(gate_path,claimed)
+ return dict(claimed,blocked=False)
+
 def coordinator(root,path,run,operation=run_operation):
  root=c.workspace(root);batch=allocation.validate(root,path)
  with c.lock(root,'publisher'):
@@ -311,6 +332,7 @@ def coordinator(root,path,run,operation=run_operation):
   if fallback:
    first=active_jobs[0];gate_path=root/'logs/ig-first-trial-ins02-20261127.json';gate=c.read(gate_path,{})
    if gate and (gate.get('batch_sha256')!=batch['sha256'] or gate.get('job_key')!=first['key'] or gate.get('trial_fallback_authorization')!=fallback['sha256']):raise ValueError('ins02试发门禁与原清单不符，保留待核实')
+   gate=recover_ins02_reels_notice_gate(root,batch,first,gate_path,gate)
    status('preparing','已按用户要求跳过ins01；先试发ins02并核验首评，其余8个等待')
   first_effective=absence.job(root,batch,first);retry_row=c.state(root).get(first_effective['key'],{})
   retry_allowed=bool(permit and first_effective.get('retry_of') and (not retry_row.get('retry_claimed_at') or c.submission(retry_row)))
@@ -327,7 +349,7 @@ def coordinator(root,path,run,operation=run_operation):
      c.update(root,j['key'],retry_of=j['retry_of'],retry_authorization=j['retry_authorization'],retry_claimed_at=c.stamp(),retry_run_id=run)
     operation(root,path,j,'video',run,status)
     row=c.state(root).get(j['key'],{})
-    if not j.get('retry_of') and row.get('video_status')=='failed_before_post' and not row.get('video_retry_used') and re.search('net::ERR_|Timeout|browser.*closed',row.get('error',''),re.I):
+    if not j.get('retry_of') and not (original['key']==first['key'] and gate.get('reels_notice_repair')) and row.get('video_status')=='failed_before_post' and not row.get('video_retry_used') and re.search('net::ERR_|Timeout|browser.*closed',row.get('error',''),re.I):
      c.update(root,j['key'],video_retry_used=True,video_retry_claimed_at=c.stamp());operation(root,path,j,'video',run,status)
    row=c.state(root).get(j['key'],{})
    if c.submission(row) and not verified(root,j):operation(root,path,j,'comment',run,status)
@@ -335,7 +357,7 @@ def coordinator(root,path,run,operation=run_operation):
     src=c.safe(root,root/j['video']);dest=c.safe(root,root/j['published_video'])
     if src.exists() and c.file_info(src)==dict(size=j['video_size'],sha256=j['video_sha256']) and not dest.exists():dest.parent.mkdir(parents=True,exist_ok=True);src.replace(dest)
    if original['key']==first['key']:
-    ok=bool(verified(root,j));c.save(gate_path,dict(batch_sha256=batch['sha256'],job_key=first['key'],effective_job_key=j['key'],absence_retry_authorization=permit['sha256'] if permit and j.get('retry_of') else None,trial_fallback_authorization=fallback['sha256'] if fallback else None,passed=ok,blocked=not ok,checked_at=c.stamp(),**{k:gate[k] for k in ['navigation_syntax_repair','create_entry_repair','recorded_editor_repair','local_file_repair','recorded_crop_repair'] if gate.get(k)}))
+    ok=bool(verified(root,j));c.save(gate_path,dict(batch_sha256=batch['sha256'],job_key=first['key'],effective_job_key=j['key'],absence_retry_authorization=permit['sha256'] if permit and j.get('retry_of') else None,trial_fallback_authorization=fallback['sha256'] if fallback else None,passed=ok,blocked=not ok,checked_at=c.stamp(),**{k:gate[k] for k in ['navigation_syntax_repair','create_entry_repair','recorded_editor_repair','local_file_repair','recorded_crop_repair','reels_notice_repair'] if gate.get(k)}))
     if not ok:
      reason=first['account']+'视频/评论未完整通过，保留其余'+str(len(active_jobs)-1)+'个账号，不重复点击发布';report(root,batch,'review_required',reason);status('review_required',reason);export(root,batch);return 3
     print(first['account']+'视频及首评刷新核验通过；继续其余'+str(len(active_jobs)-1)+'个IG账号。',flush=True)
